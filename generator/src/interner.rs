@@ -1,4 +1,10 @@
-use std::{collections::{HashSet, HashMap}, hash::Hash, mem, marker::PhantomData, fmt::{Debug, Display}};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::{Debug, Display},
+    hash::Hash,
+    marker::PhantomData,
+    mem,
+};
 
 // somewhat naively interns strings by copying them to chunks of memory which are held alive
 // for the whole lifetime of the program, effectively leaking them
@@ -8,7 +14,7 @@ use std::{collections::{HashSet, HashMap}, hash::Hash, mem, marker::PhantomData,
 // fn main() {
 //     let block_bits = 4;
 //     let memory_bits = 32-block_bits;
-    
+
 //     let mut alloc: u32 = 16;
 //     let mut blocks = 1;
 //     loop {
@@ -31,8 +37,10 @@ impl UniqueStr {
         // we must have initialised the interner to get an interned string
         unsafe {
             let block = &GLOBAL_INTERNER.as_ref().unwrap_unchecked().blocks[block_index as usize];
-            let end = std::ptr::read_unaligned::<u32>(block.as_ptr().add(block_offset as usize) as *const u32);
-            let a = (block_offset+4) as usize;
+            let end = std::ptr::read_unaligned::<u32>(
+                block.as_ptr().add(block_offset as usize) as *const u32
+            );
+            let a = (block_offset + 4) as usize;
             let b = end as usize;
             let c = block.len();
             let str = match block.get(a..b) {
@@ -60,7 +68,7 @@ pub struct StringInterner<'a> {
     map: HashMap<&'a str, UniqueStr>,
     blocks: Vec<Box<[u8]>>,
     head_len: usize,
-    spooky: PhantomData<&'a ()>
+    spooky: PhantomData<&'a ()>,
 }
 
 impl StringInterner<'static> {
@@ -69,7 +77,7 @@ impl StringInterner<'static> {
             map: HashMap::new(),
             blocks: vec![vec![0; 4096].into_boxed_slice()],
             head_len: 0,
-            spooky: PhantomData
+            spooky: PhantomData,
         }
     }
     pub fn intern(&'static mut self, string: &str) -> UniqueStr {
@@ -86,18 +94,18 @@ impl StringInterner<'static> {
             self.blocks.push(new_head);
             self.head_len = 0;
         }
-        
+
         let block_index = self.blocks.len() - 1;
         // make borrowchecker happy
         let mut head = self.blocks.last_mut().unwrap();
         let block_offset = self.head_len;
         let string_start = block_offset + 4;
-        let end = string_start+string.len();
+        let end = string_start + string.len();
 
         self.head_len = end;
 
-        assert!(block_index <= 2<<4);
-        assert!(block_offset <= 2<<28);
+        assert!(block_index <= 2 << 4);
+        assert!(block_offset <= 2 << 28);
 
         // block_offset points at a number of the end of the string
         unsafe {
@@ -105,16 +113,14 @@ impl StringInterner<'static> {
         }
 
         // copy string to buffer
-        head[string_start..(string_start+string.len())].copy_from_slice(string.as_bytes());
-                
+        head[string_start..(string_start + string.len())].copy_from_slice(string.as_bytes());
+
         let raw = (block_offset as u32) | ((block_index as u32) << 28);
         let interned = UniqueStr(raw);
-        
-        let str = unsafe {
-            std::str::from_utf8_unchecked(&head[string_start..])
-        };
+
+        let str = unsafe { std::str::from_utf8_unchecked(&head[string_start..]) };
         self.map.insert(str, interned);
-        
+
         interned
     }
 }

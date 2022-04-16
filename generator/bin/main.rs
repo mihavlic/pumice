@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use generator_lib::c_preprocessor::PreprocessorContext;
 
 fn main() {

@@ -11,12 +11,6 @@ extern "system" {
         -> vk::PFN_vkVoidFunction;
 }
 
-// #[cfg(feature = "loaded")]
-// enum LoadingError {
-//     LibraryLoadFailed(libloading::Error),
-//     MissingEntryPoint
-// }
-
 #[cfg(feature = "linked")]
 pub unsafe fn load_linked() -> fn(instance: vk::Instance, name: *const c_char) {
     vkGetInstanceProcAddr
