@@ -11,5 +11,9 @@ edition = "2021"
 name = "generator"
 path = "./bin/main.rs"
 
+[[bin]]
+name = "convert"
+path = "./bin/convert.rs"
+
 [dependencies]
 vk-parse = "0.7"

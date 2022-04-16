@@ -194,7 +194,7 @@ impl PreprocessorContext {
             match next {
                 Token::Preprocessor(dir) => match *dir {
                     "if" => {
-                        let val =parse_expr(&mut lexer, 0).is_positive();
+                        let val = parse_expr(&mut lexer, 0).is_positive();
                         if val {
                             pass_preprocessor_block(&mut lexer, &mut processed);
                         } else {
