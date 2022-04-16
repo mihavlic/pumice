@@ -29,7 +29,10 @@ enum TypeKind {
 }
 
 #[derive(Debug)]
-enum Type {
+struct Type(UniqueStr, TypeBody);
+
+#[derive(Debug)]
+enum TypeBody {
     Alias {
         alias_of: UniqueStr,
         kind: TypeKind,
@@ -82,6 +85,7 @@ enum EnumValue {
 
 #[derive(Debug)]
 struct Feature {
+    name: UniqueStr,
     api: UniqueStr,
     number: UniqueStr,
     protect: Option<UniqueStr>,
@@ -91,6 +95,7 @@ struct Feature {
 #[derive(Debug)]
 // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html#_attributes_of_extension_tags
 struct Extension {
+    name: UniqueStr,
     number: u32,
     sortorder: Option<u32>,
     author: Option<String>,
@@ -147,6 +152,7 @@ struct Plane {
 
 #[derive(Debug)]
 struct Format {
+    name: UniqueStr,
     class: UniqueStr,
     blocksize: u8,
     texels_per_block: u8,
@@ -259,31 +265,31 @@ enum SpirvEnable {
 }
 
 #[derive(Debug)]
-struct SpirvExtensionOrCapability(Vec<SpirvEnable>);
+struct SpirvExtensionOrCapability(UniqueStr, Vec<SpirvEnable>);
 
-fn add_with_name<T>(
+enum ItemKind {
+    Type,
+    Feature,
+    Extension,
+    Format,
+    SpirvCapability,
+    SpirvExtension,
+}
+
+fn add_item<T>(
     vec: &mut Vec<T>,
-    map: &mut HashMap<UniqueStr, u32>,
+    map: &mut HashMap<UniqueStr, (u32, ItemKind)>,
     what: T,
-    name: &str,
+    name: UniqueStr,
+    kind: ItemKind,
 ) {
     let index = TryInto::<u32>::try_into(vec.len()).unwrap();
     vec.push(what);
 
-    let uniquestr = intern(name);
-    let none = map.insert(uniquestr, index);
+    let none = map.insert(name, (index, kind));
 
     // assert that no collisions happen
     assert!(none.is_none());
-}
-
-fn get_by_name<'a, T>(
-    types: &'a mut Vec<T>,
-    types_map: &mut HashMap<UniqueStr, u32>,
-    name: &UniqueStr,
-) -> &'a T {
-    let index = types_map.get(name).unwrap();
-    &types[*index as usize]
 }
 
 pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std::error::Error>> {
@@ -296,22 +302,13 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
     // the objects themselves and a hashmap mapping their names to the object
     // this preserves definition order
     let mut types = Vec::new();
-    let mut types_map = HashMap::new();
-
     let mut features = Vec::new();
-    let mut features_map = HashMap::new();
-
     let mut extensions = Vec::new();
-    let mut extension_map = HashMap::new();
-
     let mut formats = Vec::new();
-    let mut formats_map = HashMap::new();
-
     let mut spirv_capabilities = Vec::new();
-    let mut spirv_capabilities_map = HashMap::new();
-
     let mut spirv_extensions = Vec::new();
-    let mut spirv_extensions_map = HashMap::new();
+
+    let mut object_map = HashMap::new();
 
     for node in registry.0 {
         match node {
@@ -364,18 +361,24 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                 // <type name="int"/>
                                 None => {
                                     // TODO consider hardcoding the ck_platform types and 'int' and ignore them here
-                                    let name = ty.name.unwrap();
+                                    let name = intern(&ty.name.unwrap());
 
                                     let header = match name.as_str() {
                                         "int" => "",
                                         _ => ty.requires.as_ref().unwrap(),
                                     };
 
-                                    let typ = Type::Included {
+                                    let typ = TypeBody::Included {
                                         header: intern(header),
                                     };
 
-                                    add_with_name(&mut types, &mut types_map, typ, &name);
+                                    add_item(
+                                        &mut types,
+                                        &mut object_map,
+                                        Type(name, typ),
+                                        name,
+                                        ItemKind::Type,
+                                    );
                                 }
                                 // <type category="define">
                                 //   #define
@@ -433,12 +436,19 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                             _ => unreachable!(),
                                         },
                                     };
+                                    let name = intern(name);
 
-                                    let typ = Type::Basetype {
+                                    let typ = TypeBody::Basetype {
                                         code: type_code.code.clone(),
                                     };
 
-                                    add_with_name(&mut types, &mut types_map, typ, name);
+                                    add_item(
+                                        &mut types,
+                                        &mut object_map,
+                                        Type(name, typ),
+                                        name,
+                                        ItemKind::Type,
+                                    );
                                 }
                                 // <type requires="VkFramebufferCreateFlagBits" category="bitmask">
                                 //   typedef
@@ -448,13 +458,19 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                 // </type>
                                 Some("bitmask") => {
                                     if let Some(alias) = ty.alias {
-                                        let name = ty.name.unwrap();
-                                        let typ = Type::Alias {
+                                        let name = intern(&ty.name.unwrap());
+                                        let typ = TypeBody::Alias {
                                             alias_of: intern(&alias),
                                             kind: TypeKind::Bitmask,
                                         };
-                                        add_with_name(&mut types, &mut types_map, typ, &name);
-                                        // add_with_name(&mut enum_bitmask_aliases, &mut enum_bitmask_aliases_map, intern(&alias), &name);
+
+                                        add_item(
+                                            &mut types,
+                                            &mut object_map,
+                                            Type(name, typ),
+                                            name,
+                                            ItemKind::Type,
+                                        );
                                     } else {
                                         let type_code = match ty.spec {
                                             TypeSpec::Code(a) => a,
@@ -480,16 +496,22 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                         };
 
                                         let name = match &type_code.markup[1] {
-                                            TypeCodeMarkup::Name(name) => name,
+                                            TypeCodeMarkup::Name(name) => intern(name),
                                             _ => unreachable!(),
                                         };
 
-                                        let typ = Type::Bitmask {
+                                        let typ = TypeBody::Bitmask {
                                             ty: intern(ty),
                                             bits_enum: bits.map(|b| intern(&b)),
                                         };
 
-                                        add_with_name(&mut types, &mut types_map, typ, name);
+                                        add_item(
+                                            &mut types,
+                                            &mut object_map,
+                                            Type(name, typ),
+                                            name,
+                                            ItemKind::Type,
+                                        );
                                     }
                                 }
                                 // <type category="handle" objtypeenum="VK_OBJECT_TYPE_INSTANCE">
@@ -500,12 +522,19 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                 // </type>
                                 Some("handle") => {
                                     if let Some(alias) = ty.alias {
-                                        let name = ty.name.unwrap();
-                                        let typ = Type::Alias {
+                                        let name = intern(&ty.name.unwrap());
+                                        let typ = TypeBody::Alias {
                                             alias_of: intern(&alias),
                                             kind: TypeKind::Handle,
                                         };
-                                        add_with_name(&mut types, &mut types_map, typ, &name);
+
+                                        add_item(
+                                            &mut types,
+                                            &mut object_map,
+                                            Type(name, typ),
+                                            name,
+                                            ItemKind::Type,
+                                        );
                                     } else {
                                         let type_code = match &ty.spec {
                                             TypeSpec::Code(a) => a,
@@ -522,30 +551,43 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                         };
 
                                         let name = match &type_code.markup[1] {
-                                            TypeCodeMarkup::Name(name) => name,
+                                            TypeCodeMarkup::Name(name) => intern(&name),
                                             _ => unreachable!(),
                                         };
 
                                         let type_enum = ty.objtypeenum.unwrap();
 
-                                        let typ = Type::Handle {
+                                        let typ = TypeBody::Handle {
                                             ty: intern(&type_enum),
                                             dispatchable,
                                         };
 
-                                        add_with_name(&mut types, &mut types_map, typ, name);
+                                        add_item(
+                                            &mut types,
+                                            &mut object_map,
+                                            Type(name, typ),
+                                            name,
+                                            ItemKind::Type,
+                                        );
                                     }
                                 }
                                 // <type name="VkAttachmentLoadOp" category="enum"/>
                                 Some("enum") => {
                                     if let Some(alias) = ty.alias {
                                         // add_with_name(&mut enum_bitmask_aliases, &mut enum_bitmask_aliases_map, intern(&alias), &name);
-                                        let name = ty.name.unwrap();
-                                        let typ = Type::Alias {
+                                        let name = intern(&ty.name.unwrap());
+                                        let typ = TypeBody::Alias {
                                             alias_of: intern(&alias),
                                             kind: TypeKind::Enum,
                                         };
-                                        add_with_name(&mut types, &mut types_map, typ, &name);
+
+                                        add_item(
+                                            &mut types,
+                                            &mut object_map,
+                                            Type(name, typ),
+                                            name,
+                                            ItemKind::Type,
+                                        );
                                     }
                                 }
                                 // <type category="funcpointer">
@@ -573,6 +615,8 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                     let mut split = type_code.code.split_ascii_whitespace();
                                     let fun_type = split.nth(1).unwrap();
                                     let ptr_type = split.nth(1).unwrap();
+                                    // TODO ptr_type is probably not the correct thing to use
+                                    let name = intern(ptr_type);
 
                                     let mut args = Vec::new();
                                     // TODO this is dumb
@@ -593,18 +637,18 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                         }
                                     }
 
-                                    let typ = Type::Funcpointer {
+                                    let typ = TypeBody::Funcpointer {
                                         return_type: intern(fun_type),
                                         pointer_type: intern(ptr_type),
                                         args,
                                     };
 
-                                    add_with_name(
+                                    add_item(
                                         &mut types,
-                                        &mut types_map,
-                                        typ,
-                                        // TODO ptr_type is probably not the correct thing to use
-                                        &ptr_type,
+                                        &mut object_map,
+                                        Type(name, typ),
+                                        name,
+                                        ItemKind::Type,
                                     );
                                 }
                                 // <type category="struct" name="VkBaseOutStructure">
@@ -620,14 +664,21 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                 //   </member>
                                 // </type>
                                 Some("struct") => {
-                                    let name = ty.name.unwrap();
+                                    let name = intern(&ty.name.unwrap());
 
                                     if let Some(alias) = ty.alias {
-                                        let typ = Type::Alias {
+                                        let typ = TypeBody::Alias {
                                             alias_of: intern(&alias),
                                             kind: TypeKind::Bitmask,
                                         };
-                                        add_with_name(&mut types, &mut types_map, typ, &name);
+
+                                        add_item(
+                                            &mut types,
+                                            &mut object_map,
+                                            Type(name, typ),
+                                            name,
+                                            ItemKind::Type,
+                                        );
                                     } else {
                                         let members = match ty.spec {
                                             TypeSpec::Members(m) => m,
@@ -651,15 +702,21 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                             }
                                         }
 
-                                        let typ = Type::Struct { members: vec };
+                                        let typ = TypeBody::Struct { members: vec };
 
-                                        add_with_name(&mut types, &mut types_map, typ, &name);
+                                        add_item(
+                                            &mut types,
+                                            &mut object_map,
+                                            Type(name, typ),
+                                            name,
+                                            ItemKind::Type,
+                                        );
                                     }
                                 }
                                 Some(_) => {}
                             }
                         }
-                        vk_parse::TypesChild::Comment(string) => {},
+                        vk_parse::TypesChild::Comment(string) => {}
                         _ => todo!(),
                     }
                 }
@@ -673,7 +730,8 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                         for child in e.children {
                             match child {
                                 vk_parse::EnumsChild::Enum(e) => {
-                                    let name = e.name;
+                                    let name = intern(&e.name);
+
                                     match e.spec {
                                         // <enum type="uint32_t" value="256" name="VK_MAX_PHYSICAL_DEVICE_NAME_SIZE"/>
                                         EnumSpec::Value { mut value, extends } => {
@@ -689,19 +747,33 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                             }
                                             value.retain(|c| c != 'L' && c != 'L' && c != 'F');
 
-                                            let typ = Type::Constant {
+                                            let typ = TypeBody::Constant {
                                                 ty,
                                                 val: intern(&value),
                                             };
-                                            add_with_name(&mut types, &mut types_map, typ, &name);
+
+                                            add_item(
+                                                &mut types,
+                                                &mut object_map,
+                                                Type(name, typ),
+                                                name,
+                                                ItemKind::Type,
+                                            );
                                         }
                                         // <enum name="VK_LUID_SIZE_KHR" alias="VK_LUID_SIZE"/>
                                         EnumSpec::Alias { alias, extends } => {
-                                            let typ = Type::Alias {
+                                            let typ = TypeBody::Alias {
                                                 alias_of: intern(&alias),
                                                 kind: TypeKind::Constant,
                                             };
-                                            add_with_name(&mut types, &mut types_map, typ, &name);
+
+                                            add_item(
+                                                &mut types,
+                                                &mut object_map,
+                                                Type(name, typ),
+                                                name,
+                                                ItemKind::Type,
+                                            );
                                         }
                                         _ => unreachable!(),
                                     };
@@ -716,7 +788,6 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                     // actually an enum
                     Some("enum") => {
                         let mut members = Vec::new();
-
                         for child in e.children {
                             match child {
                                 vk_parse::EnumsChild::Enum(e) => {
@@ -738,16 +809,21 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                 _ => todo!(),
                             }
                         }
-                        let name = e.name.unwrap();
 
-                        let typ = Type::Enum { members };
-                        add_with_name(&mut types, &mut types_map, typ, &name);
+                        let name = intern(&e.name.unwrap());
+                        let typ = TypeBody::Enum { members };
+
+                        add_item(
+                            &mut types,
+                            &mut object_map,
+                            Type(name, typ),
+                            name,
+                            ItemKind::Type,
+                        );
                     }
                     // actually an enum
                     Some("bitmask") => {
-                        let name = e.name.unwrap();
                         let mut members = Vec::new();
-
                         for child in e.children {
                             match child {
                                 vk_parse::EnumsChild::Enum(e) => {
@@ -772,9 +848,16 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                             }
                         }
 
-                        // let is_64_wide = e.bitwidth == Some(64);
-                        let typ = Type::BitmaskBits { members };
-                        add_with_name(&mut types, &mut types_map, typ, &name);
+                        let name = intern(&e.name.unwrap());
+                        let typ = TypeBody::BitmaskBits { members };
+
+                        add_item(
+                            &mut types,
+                            &mut object_map,
+                            Type(name, typ),
+                            name,
+                            ItemKind::Type,
+                        );
                     }
                     _ => todo!(),
                 }
@@ -822,21 +905,35 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                 })
                             }
 
-                            let name = d.proto.name;
+                            let name = intern(&d.proto.name);
                             let return_type = d.proto.type_name.unwrap();
 
-                            let typ = Type::Command {
+                            let typ = TypeBody::Command {
                                 return_type: intern(&return_type),
                                 params,
                             };
-                            add_with_name(&mut types, &mut types_map, typ, &name);
+
+                            add_item(
+                                &mut types,
+                                &mut object_map,
+                                Type(name, typ),
+                                name,
+                                ItemKind::Type,
+                            );
                         }
                         vk_parse::Command::Alias { name, alias } => {
-                            let typ = Type::Alias {
+                            let typ = TypeBody::Alias {
                                 alias_of: intern(&alias),
                                 kind: TypeKind::Command,
                             };
-                            add_with_name(&mut types, &mut types_map, typ, &name);
+                            let name = intern(&name);
+                            add_item(
+                                &mut types,
+                                &mut object_map,
+                                Type(name, typ),
+                                name,
+                                ItemKind::Type,
+                            );
                         }
                         _ => todo!(),
                     }
@@ -845,21 +942,25 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
             RegistryChild::Feature(f) => {
                 let children = convert_extension_children(&f.children, None);
 
+                let name = intern(&f.name);
                 let typ = Feature {
+                    name,
                     api: intern(&f.api),
                     number: intern(&f.number),
                     protect: f.protect.map(|b| intern(&b)),
                     children,
                 };
 
-                add_with_name(&mut features, &mut features_map, typ, &f.name);
+                add_item(&mut features, &mut object_map, typ, name, ItemKind::Feature);
             }
             RegistryChild::Extensions(e) => {
                 for ext in e.children {
                     assert!(ext.number.is_some());
                     let children = convert_extension_children(&ext.children, ext.number);
 
+                    let name = intern(&ext.name);
                     let typ = Extension {
+                        name,
                         number: ext.number.unwrap() as u32,
                         sortorder: ext.sortorder.map(|n| n as u32),
                         author: ext.author,
@@ -877,7 +978,13 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                         specialuse: intern_comma_separated(ext.specialuse.as_deref()),
                     };
 
-                    add_with_name(&mut extensions, &mut extension_map, typ, &ext.name);
+                    add_item(
+                        &mut extensions,
+                        &mut object_map,
+                        typ,
+                        name,
+                        ItemKind::Extension,
+                    );
                 }
             }
             RegistryChild::Formats(children) => {
@@ -954,7 +1061,9 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                         }
                     }
 
+                    let name = intern(&f.name);
                     let typ = Format {
+                        name,
                         class: intern(&f.class),
                         blocksize: f.blockSize,
                         texels_per_block: f.texelsPerBlock,
@@ -962,29 +1071,42 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                         packed: f.packed,
                         compressed: f.compressed.map(|s| intern(&s)),
                         chroma,
-
                         components,
                         planes,
                         spirvimageformats,
                     };
 
-                    add_with_name(&mut formats, &mut formats_map, typ, &f.name);
+                    add_item(&mut formats, &mut object_map, typ, name, ItemKind::Format);
                 }
             }
             RegistryChild::SpirvExtensions(s) => {
                 for ext in s.children {
                     let enables = convert_spirv_enable(&ext.enables);
-                    let typ = SpirvExtensionOrCapability(enables);
-                    
-                    add_with_name(&mut spirv_extensions, &mut spirv_extensions_map, typ, &ext.name);
+                    let name = intern(&ext.name);
+                    let typ = SpirvExtensionOrCapability(name, enables);
+
+                    add_item(
+                        &mut spirv_extensions,
+                        &mut object_map,
+                        typ,
+                        name,
+                        ItemKind::SpirvExtension,
+                    );
                 }
             }
             RegistryChild::SpirvCapabilities(s) => {
                 for cap in s.children {
                     let enables = convert_spirv_enable(&cap.enables);
-                    let typ = SpirvExtensionOrCapability(enables);
-                    
-                    add_with_name(&mut spirv_capabilities, &mut spirv_capabilities_map, typ, &cap.name);
+                    let name = intern(&cap.name);
+                    let typ = SpirvExtensionOrCapability(name, enables);
+
+                    add_item(
+                        &mut spirv_capabilities,
+                        &mut object_map,
+                        typ,
+                        name,
+                        ItemKind::SpirvCapability,
+                    );
                 }
             }
             _ => todo!(),
@@ -1007,9 +1129,7 @@ fn convert_spirv_enable(enables: &[vk_parse::Enable]) -> Vec<SpirvEnable> {
         let out;
         match enable {
             vk_parse::Enable::Version(v) => out = SpirvEnable::Version(intern(&v)),
-            vk_parse::Enable::Extension(e) => {
-                out = SpirvEnable::Extension(intern(&e))
-            }
+            vk_parse::Enable::Extension(e) => out = SpirvEnable::Extension(intern(&e)),
             vk_parse::Enable::Feature(f) => {
                 out = SpirvEnable::Feature {
                     structure: intern(&f.struct_),
