@@ -29,7 +29,7 @@ enum TypeKind {
 }
 
 #[derive(Debug)]
-enum Types {
+enum Type {
     Alias {
         alias_of: UniqueStr,
         kind: TypeKind,
@@ -371,7 +371,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                         _ => ty.requires.as_ref().unwrap(),
                                     };
 
-                                    let typ = Types::Included {
+                                    let typ = Type::Included {
                                         header: intern(header),
                                     };
 
@@ -434,7 +434,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                         },
                                     };
 
-                                    let typ = Types::Basetype {
+                                    let typ = Type::Basetype {
                                         code: type_code.code.clone(),
                                     };
 
@@ -449,7 +449,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                 Some("bitmask") => {
                                     if let Some(alias) = ty.alias {
                                         let name = ty.name.unwrap();
-                                        let typ = Types::Alias {
+                                        let typ = Type::Alias {
                                             alias_of: intern(&alias),
                                             kind: TypeKind::Bitmask,
                                         };
@@ -484,7 +484,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                             _ => unreachable!(),
                                         };
 
-                                        let typ = Types::Bitmask {
+                                        let typ = Type::Bitmask {
                                             ty: intern(ty),
                                             bits_enum: bits.map(|b| intern(&b)),
                                         };
@@ -501,7 +501,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                 Some("handle") => {
                                     if let Some(alias) = ty.alias {
                                         let name = ty.name.unwrap();
-                                        let typ = Types::Alias {
+                                        let typ = Type::Alias {
                                             alias_of: intern(&alias),
                                             kind: TypeKind::Handle,
                                         };
@@ -528,7 +528,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
 
                                         let type_enum = ty.objtypeenum.unwrap();
 
-                                        let typ = Types::Handle {
+                                        let typ = Type::Handle {
                                             ty: intern(&type_enum),
                                             dispatchable,
                                         };
@@ -541,7 +541,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                     if let Some(alias) = ty.alias {
                                         // add_with_name(&mut enum_bitmask_aliases, &mut enum_bitmask_aliases_map, intern(&alias), &name);
                                         let name = ty.name.unwrap();
-                                        let typ = Types::Alias {
+                                        let typ = Type::Alias {
                                             alias_of: intern(&alias),
                                             kind: TypeKind::Enum,
                                         };
@@ -593,7 +593,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                         }
                                     }
 
-                                    let typ = Types::Funcpointer {
+                                    let typ = Type::Funcpointer {
                                         return_type: intern(fun_type),
                                         pointer_type: intern(ptr_type),
                                         args,
@@ -623,7 +623,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                     let name = ty.name.unwrap();
 
                                     if let Some(alias) = ty.alias {
-                                        let typ = Types::Alias {
+                                        let typ = Type::Alias {
                                             alias_of: intern(&alias),
                                             kind: TypeKind::Bitmask,
                                         };
@@ -651,7 +651,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                             }
                                         }
 
-                                        let typ = Types::Struct { members: vec };
+                                        let typ = Type::Struct { members: vec };
 
                                         add_with_name(&mut types, &mut types_map, typ, &name);
                                     }
@@ -689,7 +689,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                             }
                                             value.retain(|c| c != 'L' && c != 'L' && c != 'F');
 
-                                            let typ = Types::Constant {
+                                            let typ = Type::Constant {
                                                 ty,
                                                 val: intern(&value),
                                             };
@@ -697,7 +697,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                         }
                                         // <enum name="VK_LUID_SIZE_KHR" alias="VK_LUID_SIZE"/>
                                         EnumSpec::Alias { alias, extends } => {
-                                            let typ = Types::Alias {
+                                            let typ = Type::Alias {
                                                 alias_of: intern(&alias),
                                                 kind: TypeKind::Constant,
                                             };
@@ -740,7 +740,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                         }
                         let name = e.name.unwrap();
 
-                        let typ = Types::Enum { members };
+                        let typ = Type::Enum { members };
                         add_with_name(&mut types, &mut types_map, typ, &name);
                     }
                     // actually an enum
@@ -773,7 +773,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                         }
 
                         // let is_64_wide = e.bitwidth == Some(64);
-                        let typ = Types::BitmaskBits { members };
+                        let typ = Type::BitmaskBits { members };
                         add_with_name(&mut types, &mut types_map, typ, &name);
                     }
                     _ => todo!(),
@@ -825,14 +825,14 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                             let name = d.proto.name;
                             let return_type = d.proto.type_name.unwrap();
 
-                            let typ = Types::Command {
+                            let typ = Type::Command {
                                 return_type: intern(&return_type),
                                 params,
                             };
                             add_with_name(&mut types, &mut types_map, typ, &name);
                         }
                         vk_parse::Command::Alias { name, alias } => {
-                            let typ = Types::Alias {
+                            let typ = Type::Alias {
                                 alias_of: intern(&alias),
                                 kind: TypeKind::Command,
                             };
@@ -991,12 +991,12 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
         }
     }
 
-    dbg!(types);
-    dbg!(features);
-    dbg!(extensions);
-    dbg!(formats);
-    dbg!(spirv_extensions);
-    dbg!(spirv_capabilities);
+    println!("{:#?}", types);
+    println!("{:#?}", features);
+    println!("{:#?}", extensions);
+    println!("{:#?}", formats);
+    println!("{:#?}", spirv_extensions);
+    println!("{:#?}", spirv_capabilities);
 
     Ok(())
 }
