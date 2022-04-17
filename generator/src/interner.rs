@@ -6,6 +6,12 @@ use std::{
     mem,
 };
 
+use quote::{
+    ToTokens,
+    __private::{Ident, Span},
+    quote,
+};
+
 // somewhat naively interns strings by copying them to chunks of memory which are held alive
 // for the whole lifetime of the program, effectively leaking them
 //
@@ -64,6 +70,16 @@ impl Display for UniqueStr {
     }
 }
 
+#[feature(quote)]
+impl quote::ToTokens for UniqueStr {
+    fn to_tokens(&self, tokens: &mut quote::__private::TokenStream) {
+        let ident = Ident::new(self.as_str(), Span::call_site());
+        tokens.extend(quote! {
+            #ident
+        });
+    }
+}
+
 pub struct StringInterner<'a> {
     map: HashMap<&'a str, UniqueStr>,
     blocks: Vec<Box<[u8]>>,
@@ -118,7 +134,7 @@ impl StringInterner<'static> {
         let raw = (block_offset as u32) | ((block_index as u32) << 28);
         let interned = UniqueStr(raw);
 
-        let str = unsafe { std::str::from_utf8_unchecked(&head[string_start..]) };
+        let str = unsafe { std::str::from_utf8_unchecked(&head[string_start..(string_start + string.len())]) };
         self.map.insert(str, interned);
 
         interned
@@ -135,4 +151,24 @@ pub fn intern(string: &str) -> UniqueStr {
 
         GLOBAL_INTERNER.as_mut().unwrap().intern(string)
     }
+}
+
+#[test]
+fn test_interner() {
+    let a1 = intern("test");
+    let b1 = intern("test2");
+    let a2 = intern("test");
+    let b2 = intern("test2");
+    assert!(a1 != b1);
+    assert_eq!(a1, a2);
+    assert_eq!(a1.as_str(), a2.as_str());
+    assert_eq!(b1, b2);
+    assert_eq!(b1.as_str(), b2.as_str());
+    
+    let mut set = HashSet::new();
+    set.insert(a1);
+    set.insert(b1);
+    
+    assert!(set.get(&a2).is_some());
+    assert!(set.get(&b2).is_some());
 }
