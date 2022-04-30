@@ -5,15 +5,14 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[features]
-
 [[bin]]
 name = "generator"
-path = "./bin/main.rs"
+path = "./bin/generator.rs"
 
 [[bin]]
-name = "convert"
-path = "./bin/convert.rs"
+name = "dump"
+path = "./bin/dump.rs"
 
 [dependencies]
 vk-parse = "0.7"
+lasso = "0.6.0"

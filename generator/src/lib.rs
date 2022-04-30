@@ -1,128 +1,146 @@
 #![allow(unused)]
 
-use std::{
-    collections::{HashMap, HashSet},
-    io::Write,
-    ops::RangeBounds,
-};
 // vk.xml documentation
 // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html
 
-use interner::{intern, UniqueStr};
+use std::{
+    cell::{Ref, RefCell},
+    collections::{HashMap, HashSet},
+    io::Write,
+    ops::RangeBounds,
+    sync::{
+        atomic::{AtomicPtr, Ordering},
+        RwLock,
+    },
+};
+
+use lasso::{Rodeo, RodeoResolver, Spur};
 use type_declaration::{parse_type, TypeDecl};
 use vk_parse::{
     EnumSpec, Error, ExtensionChild, FormatChild, RegistryChild, TypeCodeMarkup, TypeMember,
     TypeSpec,
 };
 
-pub mod c_preprocessor;
-pub mod interner;
+pub mod debug_impl;
 pub mod type_declaration;
+#[macro_use]
+pub mod format_utils;
 
-#[derive(Debug)]
-enum TypeKind {
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum ToplevelKind {
     Handle,
     Constant,
     Enum,
     Bitmask,
     Command,
+    // the folowing kinds cannot? be aliases
+    Alias,
+    Included,
+    Basetype,
+    Funcpointer,
+    Struct,
+    BitmaskBits,
 }
 
 #[derive(Debug)]
-struct Type(UniqueStr, TypeBody);
+pub struct Toplevel(pub Spur, pub ToplevelBody);
 
 #[derive(Debug)]
-enum TypeBody {
+pub enum ToplevelBody {
     Alias {
-        alias_of: UniqueStr,
-        kind: TypeKind,
+        alias_of: Spur,
+        kind: ToplevelKind,
     },
     Included {
-        header: UniqueStr,
+        header: Spur,
     },
     Basetype {
+        /// if the type is created by a preprocessor macro the type is not available
+        ty: Option<Spur>,
         code: String,
     },
     Bitmask {
-        ty: UniqueStr,
-        bits_enum: Option<UniqueStr>,
+        ty: Spur,
+        /// the bits can be missing if it the flags exist but are so far unused
+        bits_enum: Option<Spur>,
     },
     Handle {
-        ty: UniqueStr,
+        object_type: Spur,
         dispatchable: bool,
     },
     Funcpointer {
-        return_type: UniqueStr,
-        pointer_type: UniqueStr,
-        args: Vec<(UniqueStr, TypeDecl)>,
+        return_type: TypeDecl,
+        args: Vec<(Spur, TypeDecl)>,
     },
+    // TODO reconsider splitting off into another item
     Struct {
-        members: Vec<(UniqueStr, TypeDecl)>,
+        union: bool,
+        members: Vec<(Spur, TypeDecl)>,
     },
     Constant {
-        ty: UniqueStr,
-        val: UniqueStr,
+        ty: Spur,
+        val: Spur,
     },
     Enum {
-        members: Vec<(EnumValue, UniqueStr)>,
+        members: Vec<(Spur, EnumValue)>,
     },
     BitmaskBits {
-        members: Vec<(EnumValue, UniqueStr)>,
+        members: Vec<(Spur, EnumValue)>,
     },
     Command {
-        return_type: UniqueStr,
+        return_type: Spur,
         params: Vec<CommandParameter>,
     },
 }
 
 #[derive(Debug)]
 // FIXME kind of ugly, the empty variants of 'bitpos' are value rather than bitpos, and aliases
-enum EnumValue {
+pub enum EnumValue {
     Bitpos(u32),
     Value(i64),
-    Alias(UniqueStr),
+    Alias(Spur),
 }
 
 #[derive(Debug)]
-struct Feature {
-    name: UniqueStr,
-    api: UniqueStr,
-    number: UniqueStr,
-    protect: Option<UniqueStr>,
-    children: Vec<FeatureExtensionItem>,
+pub struct Feature {
+    pub name: Spur,
+    pub api: Spur,
+    pub number: Spur,
+    pub protect: Option<Spur>,
+    pub children: Vec<FeatureExtensionItem>,
 }
 
 #[derive(Debug)]
 // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html#_attributes_of_extension_tags
-struct Extension {
-    name: UniqueStr,
-    number: u32,
-    sortorder: Option<u32>,
-    author: Option<String>,
-    contact: Option<String>,
+pub struct Extension {
+    pub name: Spur,
+    pub number: u32,
+    pub sortorder: Option<u32>,
+    pub author: Option<String>,
+    pub contact: Option<String>,
 
-    ext_type: Option<UniqueStr>,
-    requires: Vec<UniqueStr>,
-    requires_core: Option<UniqueStr>,
-    protect: Option<UniqueStr>,
-    platform: Option<UniqueStr>,
-    supported: Vec<UniqueStr>,
-    promotedto: Option<UniqueStr>,
-    deprecatedby: Option<UniqueStr>,
-    obsoletedby: Option<UniqueStr>,
-    provisional: bool,
-    specialuse: Vec<UniqueStr>,
+    pub ext_type: Option<Spur>,
+    pub requires: Vec<Spur>,
+    pub requires_core: Option<Spur>,
+    pub protect: Option<Spur>,
+    pub platform: Option<Spur>,
+    pub supported: Vec<Spur>,
+    pub promotedto: Option<Spur>,
+    pub deprecatedby: Option<Spur>,
+    pub obsoletedby: Option<Spur>,
+    pub provisional: bool,
+    pub specialuse: Vec<Spur>,
 }
 
 #[derive(Debug)]
-enum YCBREncoding {
+pub enum YCBREncoding {
     E420,
     E422,
     E444,
 }
 
 #[derive(Debug)]
-enum NumericFormat {
+pub enum NumericFormat {
     SFLOAT,
     SINT,
     SNORM,
@@ -135,140 +153,141 @@ enum NumericFormat {
 }
 
 #[derive(Debug)]
-struct Component {
-    name: UniqueStr,
-    bits: Option<u8>, // is none for "compressed"
-    numeric_format: NumericFormat,
-    plane_index: Option<u8>,
+pub struct Component {
+    pub name: Spur,
+    pub bits: Option<u8>, // is none for "compressed"
+    pub numeric_format: NumericFormat,
+    pub plane_index: Option<u8>,
 }
 
 #[derive(Debug)]
-struct Plane {
-    index: u8,
-    width_divisor: u8,
-    height_divisor: u8,
-    compatible: UniqueStr,
+pub struct Plane {
+    pub index: u8,
+    pub width_divisor: u8,
+    pub height_divisor: u8,
+    pub compatible: Spur,
 }
 
 #[derive(Debug)]
-struct Format {
-    name: UniqueStr,
-    class: UniqueStr,
-    blocksize: u8,
-    texels_per_block: u8,
-    block_extent: Option<[u8; 3]>,
-    packed: Option<u8>,
-    compressed: Option<UniqueStr>,
-    chroma: Option<YCBREncoding>,
+pub struct Format {
+    pub name: Spur,
+    pub class: Spur,
+    pub blocksize: u8,
+    pub texels_per_block: u8,
+    pub block_extent: Option<[u8; 3]>,
+    pub packed: Option<u8>,
+    pub compressed: Option<Spur>,
+    pub chroma: Option<YCBREncoding>,
 
-    components: Vec<Component>,
-    planes: Vec<Plane>,
-    spirvimageformats: Vec<UniqueStr>,
+    pub components: Vec<Component>,
+    pub planes: Vec<Plane>,
+    pub spirvimageformats: Vec<Spur>,
 }
 
 #[derive(Debug)]
-struct CommandParameter {
-    len: Option<String>,
-    alt_len: Option<String>,
-    optional: bool,
-    externsync: Option<String>,
-    ty: TypeDecl,
-    name: UniqueStr,
+pub struct CommandParameter {
+    pub name: Spur,
+    pub len: Option<String>,
+    pub alt_len: Option<String>,
+    pub optional: bool,
+    pub externsync: Option<String>,
+    pub ty: TypeDecl,
 }
 
 #[derive(Debug)]
-struct Define {
-    name: UniqueStr,
-    body: String,
+pub struct Define {
+    pub name: Spur,
+    pub body: String,
 }
 
 #[derive(Debug)]
-enum FeatureExtensionItem {
+pub enum FeatureExtensionItem {
     Comment(String),
     // consider splitting this off
     Require {
-        profile: Option<UniqueStr>,
+        profile: Option<Spur>,
         // The api attribute is only supported inside extension tags, since feature tags already define a specific API.
-        api: Vec<UniqueStr>,
+        api: Vec<Spur>,
         // The extension attribute currently does not affect output generators in any way, and is simply metadata. This will be addressed as we better define different types of dependencies between extensions.
         // bruh
-        extension: Option<UniqueStr>,
-        feature: Option<UniqueStr>,
+        extension: Option<Spur>,
+        feature: Option<Spur>,
         items: Vec<InterfaceItem>,
     },
     Remove {
-        profile: Option<UniqueStr>,
+        profile: Option<Spur>,
         // The api attribute is only supported inside extension tags, since feature tags already define a specific API.
-        api: Vec<UniqueStr>,
-        // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html#_enum_tags
-        // the item removed will always be `InterfaceItem::Simple`, api property that can be in <enum> is not applicable I think?
+        api: Vec<Spur>,
+        // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html#_pub enum_tags
+        // the item removed will always be `InterfaceItem::Simple`, api property that can be in <pub enum> is not applicable I think?
         // https://github.com/osor-io/Vulkan/blob/e4bc1b9125645f3db3c8342edc24d81dc497f252/generate_code/generate_vulkan_code.jai#L1586
         // here it seems that the author doesn't handle `api`
-        items: Vec<UniqueStr>,
+        items: Vec<Spur>,
     },
 }
 
 #[derive(Debug)]
-enum ExtendMethod {
+pub enum ExtendMethod {
     Bitpos(u32),
     // extnumber, offset, is positive direction, the notion of a direction when offset could have been negative is stupid
     BitposExtnumber { extnumber: u32, offset: i32 },
     // value can in fact be whatever
     Value(String),
-    Alias(UniqueStr),
+    Alias(Spur),
 }
 
 #[derive(Debug)]
-enum ConstantValue {
+pub enum ConstantValue {
     Value(String),
-    Alias(UniqueStr),
+    Alias(Spur),
 }
 
 #[derive(Debug)]
-enum InterfaceItem {
+pub enum InterfaceItem {
     // just importing already finished items
     // for some reason Enums can have an Api condition
     // even though it can already be scoped by the parent <require>, why??
     Simple {
-        name: UniqueStr,
-        api: Option<UniqueStr>,
+        name: Spur,
+        api: Option<Spur>,
     },
     Extend {
-        name: UniqueStr,
-        extends: UniqueStr,
-        api: Option<UniqueStr>,
+        name: Spur,
+        extends: Spur,
+        api: Option<Spur>,
         method: ExtendMethod,
     },
     AddConstant {
-        name: UniqueStr,
+        name: Spur,
         value: ConstantValue,
     },
 }
 
 // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html#tag-spirvenable
 #[derive(Debug)]
-enum SpirvEnable {
-    Version(UniqueStr),
-    Extension(UniqueStr),
+pub enum SpirvEnable {
+    Version(Spur),
+    Extension(Spur),
     Feature {
-        structure: UniqueStr,
-        feature: UniqueStr,
-        requires: Vec<UniqueStr>,
-        alias: Option<UniqueStr>,
+        structure: Spur,
+        feature: Spur,
+        requires: Vec<Spur>,
+        alias: Option<Spur>,
     },
     Property {
-        property: UniqueStr,
-        member: UniqueStr,
-        value: UniqueStr,
-        requires: Vec<UniqueStr>,
+        property: Spur,
+        member: Spur,
+        value: Spur,
+        requires: Vec<Spur>,
     },
 }
 
 #[derive(Debug)]
-struct SpirvExtensionOrCapability(UniqueStr, Vec<SpirvEnable>);
+pub struct SpirvExtCap(pub Spur, pub Vec<SpirvEnable>);
 
-enum ItemKind {
-    Type,
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum ItemKind {
+    Toplevel,
     Feature,
     Extension,
     Format,
@@ -276,11 +295,58 @@ enum ItemKind {
     SpirvExtension,
 }
 
+pub struct Registry {
+    pub vendors: Vec<vk_parse::CommentedChildren<vk_parse::VendorId>>,
+    pub platforms: Vec<vk_parse::CommentedChildren<vk_parse::Platform>>,
+    pub tags: Vec<vk_parse::CommentedChildren<vk_parse::Tag>>,
+    pub headers: Vec<Spur>,
+    pub defines: Vec<Define>,
+
+    pub toplevel: Vec<Toplevel>,
+    pub features: Vec<Feature>,
+    pub extensions: Vec<Extension>,
+    pub formats: Vec<Format>,
+    pub spirv_capabilities: Vec<SpirvExtCap>,
+    pub spirv_extensions: Vec<SpirvExtCap>,
+    pub item_map: HashMap<Spur, (u32, ItemKind)>,
+    pub interner: RefCell<Rodeo>,
+}
+
+impl Registry {
+    pub fn resolve<'a>(&'a self, spur: &Spur) -> Ref<'a, str> {
+        Ref::map(self.interner.borrow(), |a| a.resolve(spur))
+    }
+    pub fn get(&self, str: &str) -> Option<Spur> {
+        self.interner.borrow().get(str)
+    }
+    pub fn get_or_intern(&self, str: &str) -> Spur {
+        self.interner.borrow_mut().get_or_intern(str)
+    }
+    pub fn new() -> Self {
+        Self {
+            vendors: Default::default(),
+            platforms: Default::default(),
+            tags: Default::default(),
+            headers: Default::default(),
+            defines: Default::default(),
+
+            toplevel: Default::default(),
+            features: Default::default(),
+            extensions: Default::default(),
+            formats: Default::default(),
+            spirv_capabilities: Default::default(),
+            spirv_extensions: Default::default(),
+            item_map: Default::default(),
+            interner: RefCell::new(Rodeo::new()),
+        }
+    }
+}
+
 fn add_item<T>(
     vec: &mut Vec<T>,
-    map: &mut HashMap<UniqueStr, (u32, ItemKind)>,
+    map: &mut HashMap<Spur, (u32, ItemKind)>,
     what: T,
-    name: UniqueStr,
+    name: Spur,
     kind: ItemKind,
 ) {
     let index = TryInto::<u32>::try_into(vec.len()).unwrap();
@@ -292,35 +358,40 @@ fn add_item<T>(
     assert!(none.is_none());
 }
 
-pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std::error::Error>> {
-    let mut vendors = Vec::new();
-    let mut platforms = Vec::new();
-    let mut tags = Vec::new();
-    let mut headers = Vec::new();
-    let mut defines = Vec::new();
+pub fn process_registry(registry: vk_parse::Registry) -> Registry {
+    // let mut reg = Rodeo::new();
+
+    // let mut vendors = Vec::new();
+    // let mut platforms = Vec::new();
+    // let mut tags = Vec::new();
+    // let mut headers = Vec::new();
+    // let mut defines = Vec::new();
 
     // the objects themselves and a hashmap mapping their names to the object
     // this preserves definition order
-    let mut types = Vec::new();
-    let mut features = Vec::new();
-    let mut extensions = Vec::new();
-    let mut formats = Vec::new();
-    let mut spirv_capabilities = Vec::new();
-    let mut spirv_extensions = Vec::new();
+    // let mut toplevel = Vec::new();
+    // let mut features = Vec::new();
+    // let mut extensions = Vec::new();
+    // let mut formats = Vec::new();
+    // let mut spirv_capabilities = Vec::new();
+    // let mut spirv_extensions = Vec::new();
 
-    let mut object_map = HashMap::new();
+    // let mut item_map = HashMap::new();
+
+    let mut reg = Registry::new();
+    // let Registry { vendors, platforms, tags, headers, defines, toplevel, features, extensions, formats, spirv_capabilities, spirv_extensions, item_map, interner } = &mut reg;
 
     for node in registry.0 {
         match node {
             RegistryChild::Comment(_) => {}
             RegistryChild::VendorIds(vendors_) => {
-                vendors.push(vendors_);
+                reg.vendors.push(vendors_);
             }
             RegistryChild::Platforms(platforms_) => {
-                platforms.push(platforms_);
+                reg.platforms.push(platforms_);
             }
             RegistryChild::Tags(tags_) => {
-                tags.push(tags_);
+                reg.tags.push(tags_);
             }
             RegistryChild::Types(types_) => {
                 for child in types_.children {
@@ -334,7 +405,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                     //   <type category="include" name="X11/Xlib.h"/>
                                     let name = ty.name.unwrap();
                                     if name.contains(".h") {
-                                        headers.push(intern(&name));
+                                        reg.headers.push(reg.get_or_intern(&name));
                                     } else {
                                         match ty.spec {
                                             TypeSpec::Code(code) => {
@@ -344,7 +415,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                                     .split_terminator("\"")
                                                     .nth(1)
                                                     .unwrap();
-                                                headers.push(intern(name));
+                                                reg.headers.push(reg.get_or_intern(name));
                                             }
                                             TypeSpec::None | TypeSpec::Members(_) => unreachable!(),
                                             _ => todo!(),
@@ -361,23 +432,24 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                 // <type name="int"/>
                                 None => {
                                     // TODO consider hardcoding the ck_platform types and 'int' and ignore them here
-                                    let name = intern(&ty.name.unwrap());
+                                    let name = ty.name.unwrap();
 
-                                    let header = match name.as_str() {
-                                        "int" => "",
+                                    let header = match &*name {
+                                        "int" => "FIXME_WHAT_TO_DO",
                                         _ => ty.requires.as_ref().unwrap(),
                                     };
 
-                                    let typ = TypeBody::Included {
-                                        header: intern(header),
+                                    let name = reg.get_or_intern(&name);
+                                    let typ = ToplevelBody::Included {
+                                        header: reg.get_or_intern(header),
                                     };
 
                                     add_item(
-                                        &mut types,
-                                        &mut object_map,
-                                        Type(name, typ),
+                                        &mut reg.toplevel,
+                                        &mut reg.item_map,
+                                        Toplevel(name, typ),
                                         name,
-                                        ItemKind::Type,
+                                        ItemKind::Toplevel,
                                     );
                                 }
                                 // <type category="define">
@@ -388,7 +460,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                 //
                                 // for some reason there is also
                                 // <type category="define" requires="VK_NULL_HANDLE" name="VK_DEFINE_NON_DISPATCHABLE_HANDLE">
-                                //   #ifndef VK_DEFINE_NON_DISPATCHABLE_HANDLE #if (VK_USE_64_BIT_PTR_DEFINES==1) #define VK_DEFINE_NON_DISPATCHABLE_HANDLE(object) typedef struct object##_T *object; #else #define VK_DEFINE_NON_DISPATCHABLE_HANDLE(object) typedef uint64_t object; #endif #endif
+                                //   #ifndef VK_DEFINE_NON_DISPATCHABLE_HANDLE #if (VK_USE_64_BIT_PTR_DEFINES==1) #define VK_DEFINE_NON_DISPATCHABLE_HANDLE(object) typedef pub struct object##_T *object; #else #define VK_DEFINE_NON_DISPATCHABLE_HANDLE(object) typedef uint64_t object; #endif #endif
                                 // </type>
                                 Some("define") => {
                                     // FIXME handle requires field, currently hope they are  input in order
@@ -406,13 +478,13 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                     };
 
                                     let define = Define {
-                                        name: intern(name),
-                                        body: type_code.code,
+                                        name: reg.get_or_intern(name),
+                                        body: type_code.code.trim().to_owned(),
                                     };
-                                    defines.push(define);
+                                    reg.defines.push(define);
                                 }
                                 // <type category="basetype">
-                                //   struct
+                                //   pub struct
                                 //   <name>ANativeWindow</name>
                                 //   ;
                                 // </type>
@@ -429,25 +501,33 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                     };
 
                                     // search for a name attribute
-                                    let name = match &type_code.markup[0] {
-                                        TypeCodeMarkup::Name(name) => name,
-                                        _ => match &type_code.markup[1] {
-                                            TypeCodeMarkup::Name(name) => name,
-                                            _ => unreachable!(),
-                                        },
+                                    let name;
+                                    let mut ty = None;
+                                    match &type_code.markup[0] {
+                                        TypeCodeMarkup::Name(n) => name = n,
+                                        TypeCodeMarkup::Type(t) => {
+                                            ty = Some(t);
+                                            name = match &type_code.markup[1] {
+                                                TypeCodeMarkup::Name(n) => n,
+                                                _ => unreachable!(),
+                                            }
+                                        }
+                                        _ => unreachable!(),
                                     };
-                                    let name = intern(name);
+                                    let name = reg.get_or_intern(name);
+                                    let ty = ty.map(|s| reg.get_or_intern(&s));
 
-                                    let typ = TypeBody::Basetype {
-                                        code: type_code.code.clone(),
+                                    let typ = ToplevelBody::Basetype {
+                                        ty,
+                                        code: type_code.code.as_str().trim().to_owned(),
                                     };
 
                                     add_item(
-                                        &mut types,
-                                        &mut object_map,
-                                        Type(name, typ),
+                                        &mut reg.toplevel,
+                                        &mut reg.item_map,
+                                        Toplevel(name, typ),
                                         name,
-                                        ItemKind::Type,
+                                        ItemKind::Toplevel,
                                     );
                                 }
                                 // <type requires="VkFramebufferCreateFlagBits" category="bitmask">
@@ -458,18 +538,18 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                 // </type>
                                 Some("bitmask") => {
                                     if let Some(alias) = ty.alias {
-                                        let name = intern(&ty.name.unwrap());
-                                        let typ = TypeBody::Alias {
-                                            alias_of: intern(&alias),
-                                            kind: TypeKind::Bitmask,
+                                        let name = reg.get_or_intern(&ty.name.unwrap());
+                                        let typ = ToplevelBody::Alias {
+                                            alias_of: reg.get_or_intern(&alias),
+                                            kind: ToplevelKind::Bitmask,
                                         };
 
                                         add_item(
-                                            &mut types,
-                                            &mut object_map,
-                                            Type(name, typ),
+                                            &mut reg.toplevel,
+                                            &mut reg.item_map,
+                                            Toplevel(name, typ),
                                             name,
-                                            ItemKind::Type,
+                                            ItemKind::Toplevel,
                                         );
                                     } else {
                                         let type_code = match ty.spec {
@@ -478,10 +558,10 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                         };
 
                                         // due to vk.xml being a horror produced from C headers
-                                        // bitmasks are actually an enum with the values
-                                        // and a typedef of the actual integer that is passed around vulkan
-                                        // as such this element is for the integer typedef and the values enum is
-                                        // listed as a 'requires' when it is a 32 bit bitmask or in 'bitvalues' when it is 64 bit
+                                        // bitmasks are actually an enum with the values and a typedef of the actual integer that is passed around vulkan
+                                        // as such, this element is for the integer typedef and the values pub enum is listed as a
+                                        // 'requires' when it is a 32 bit bitmask or in 'bitvalues' when it is 64 bit
+                                        // the bits can be missing if it the flags exist but are so far unused
                                         let bits = if let Some(req) = ty.requires {
                                             Some(req)
                                         } else if let Some(req) = ty.bitvalues {
@@ -496,25 +576,25 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                         };
 
                                         let name = match &type_code.markup[1] {
-                                            TypeCodeMarkup::Name(name) => intern(name),
+                                            TypeCodeMarkup::Name(name) => reg.get_or_intern(name),
                                             _ => unreachable!(),
                                         };
 
-                                        let typ = TypeBody::Bitmask {
-                                            ty: intern(ty),
-                                            bits_enum: bits.map(|b| intern(&b)),
+                                        let typ = ToplevelBody::Bitmask {
+                                            ty: reg.get_or_intern(ty),
+                                            bits_enum: bits.map(|b| reg.get_or_intern(&b)),
                                         };
 
                                         add_item(
-                                            &mut types,
-                                            &mut object_map,
-                                            Type(name, typ),
+                                            &mut reg.toplevel,
+                                            &mut reg.item_map,
+                                            Toplevel(name, typ),
                                             name,
-                                            ItemKind::Type,
+                                            ItemKind::Toplevel,
                                         );
                                     }
                                 }
-                                // <type category="handle" objtypeenum="VK_OBJECT_TYPE_INSTANCE">
+                                // <type category="handle" objtypepub enum="VK_OBJECT_TYPE_INSTANCE">
                                 //   <type>VK_DEFINE_HANDLE</type>
                                 //   (
                                 //   <name>VkInstance</name>
@@ -522,18 +602,18 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                 // </type>
                                 Some("handle") => {
                                     if let Some(alias) = ty.alias {
-                                        let name = intern(&ty.name.unwrap());
-                                        let typ = TypeBody::Alias {
-                                            alias_of: intern(&alias),
-                                            kind: TypeKind::Handle,
+                                        let name = reg.get_or_intern(&ty.name.unwrap());
+                                        let typ = ToplevelBody::Alias {
+                                            alias_of: reg.get_or_intern(&alias),
+                                            kind: ToplevelKind::Handle,
                                         };
 
                                         add_item(
-                                            &mut types,
-                                            &mut object_map,
-                                            Type(name, typ),
+                                            &mut reg.toplevel,
+                                            &mut reg.item_map,
+                                            Toplevel(name, typ),
                                             name,
-                                            ItemKind::Type,
+                                            ItemKind::Toplevel,
                                         );
                                     } else {
                                         let type_code = match &ty.spec {
@@ -551,72 +631,75 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                         };
 
                                         let name = match &type_code.markup[1] {
-                                            TypeCodeMarkup::Name(name) => intern(&name),
+                                            TypeCodeMarkup::Name(name) => reg.get_or_intern(&name),
                                             _ => unreachable!(),
                                         };
 
                                         let type_enum = ty.objtypeenum.unwrap();
 
-                                        let typ = TypeBody::Handle {
-                                            ty: intern(&type_enum),
+                                        let typ = ToplevelBody::Handle {
+                                            object_type: reg.get_or_intern(&type_enum),
                                             dispatchable,
                                         };
 
                                         add_item(
-                                            &mut types,
-                                            &mut object_map,
-                                            Type(name, typ),
+                                            &mut reg.toplevel,
+                                            &mut reg.item_map,
+                                            Toplevel(name, typ),
                                             name,
-                                            ItemKind::Type,
+                                            ItemKind::Toplevel,
                                         );
                                     }
                                 }
-                                // <type name="VkAttachmentLoadOp" category="enum"/>
+                                // <type name="VkAttachmentLoadOp" category="pub enum"/>
                                 Some("enum") => {
                                     if let Some(alias) = ty.alias {
-                                        // add_with_name(&mut enum_bitmask_aliases, &mut enum_bitmask_aliases_map, intern(&alias), &name);
-                                        let name = intern(&ty.name.unwrap());
-                                        let typ = TypeBody::Alias {
-                                            alias_of: intern(&alias),
-                                            kind: TypeKind::Enum,
+                                        // add_with_name(&mut pub enum_bitmask_aliases, &mut pub enum_bitmask_aliases_map, int.get_or_intern(&alias), &name);
+                                        let name = reg.get_or_intern(&ty.name.unwrap());
+                                        let typ = ToplevelBody::Alias {
+                                            alias_of: reg.get_or_intern(&alias),
+                                            kind: ToplevelKind::Enum,
                                         };
 
                                         add_item(
-                                            &mut types,
-                                            &mut object_map,
-                                            Type(name, typ),
+                                            &mut reg.toplevel,
+                                            &mut reg.item_map,
+                                            Toplevel(name, typ),
                                             name,
-                                            ItemKind::Type,
+                                            ItemKind::Toplevel,
                                         );
                                     }
                                 }
                                 // <type category="funcpointer">
                                 //   typedef void (VKAPI_PTR *
-                                //   <name>PFN_vkInternalAllocationNotification</name>
+                                //   <name>PFN_vkint.get_or_internalAllocationNotification</name>
                                 //     )(
                                 //   <type>void</type>
                                 //     * pUserData,
                                 //   <type>size_t</type>
                                 //     size,
-                                //   <type>VkInternalAllocationType</type>
+                                //   <type>Vkint.get_or_internalAllocationType</type>
                                 //     allocationType,
                                 //   <type>VkSystemAllocationScope</type>
                                 //     allocationScope);
                                 // </type>
                                 Some("funcpointer") => {
                                     // must parse C code, thanks khronos
-                                    // all 9 declarations? follow this structure:
-                                    // typedef 'return type' (VKAPI_PTR *'ptr type')($('argument type'),)
+                                    // all 9 declarations? follow this pub structure:
+                                    // typedef 'return type' (VKAPI_PTR *'ptr type')($('argument type'),*)
                                     let type_code = match ty.spec {
                                         TypeSpec::Code(a) => a,
                                         _ => unreachable!(),
                                     };
 
+                                    let name = match &type_code.markup[0] {
+                                        TypeCodeMarkup::Name(string) => reg.get_or_intern(string),
+                                        _ => unreachable!(),
+                                    };
+
                                     let mut split = type_code.code.split_ascii_whitespace();
                                     let fun_type = split.nth(1).unwrap();
-                                    let ptr_type = split.nth(1).unwrap();
-                                    // TODO ptr_type is probably not the correct thing to use
-                                    let name = intern(ptr_type);
+                                    split.nth(1);
 
                                     let mut args = Vec::new();
                                     // TODO this is dumb
@@ -625,9 +708,10 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                         for char in arg.chars() {
                                             match char {
                                                 ',' | ')' | ';' => {
-                                                    let (name, ty) = parse_type(&buffer);
+                                                    let (name, ty) =
+                                                        parse_type(&buffer, true, &reg);
 
-                                                    args.push((name, ty));
+                                                    args.push((name.unwrap(), ty));
                                                     buffer.clear();
 
                                                     continue 'outer;
@@ -635,49 +719,49 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                                 _ => buffer.push(char),
                                             }
                                         }
+                                        buffer.push(' ');
                                     }
 
-                                    let typ = TypeBody::Funcpointer {
-                                        return_type: intern(fun_type),
-                                        pointer_type: intern(ptr_type),
+                                    let typ = ToplevelBody::Funcpointer {
+                                        return_type: parse_type(fun_type, false, &reg).1,
                                         args,
                                     };
 
                                     add_item(
-                                        &mut types,
-                                        &mut object_map,
-                                        Type(name, typ),
+                                        &mut reg.toplevel,
+                                        &mut reg.item_map,
+                                        Toplevel(name, typ),
                                         name,
-                                        ItemKind::Type,
+                                        ItemKind::Toplevel,
                                     );
                                 }
-                                // <type category="struct" name="VkBaseOutStructure">
+                                // <type category="pub struct" name="VkBaseOutStructure">
                                 //   <member>
                                 //    <type>VkStructureType</type>
                                 //    <name>sType</name>
                                 //   </member>
                                 //   <member optional="true">
-                                //    struct
+                                //    pub struct
                                 //    <type>VkBaseOutStructure</type>
                                 //    *
                                 //    <name>pNext</name>
                                 //   </member>
                                 // </type>
-                                Some("struct") => {
-                                    let name = intern(&ty.name.unwrap());
+                                category @ Some("struct" | "union") => {
+                                    let name = reg.get_or_intern(&ty.name.unwrap());
 
                                     if let Some(alias) = ty.alias {
-                                        let typ = TypeBody::Alias {
-                                            alias_of: intern(&alias),
-                                            kind: TypeKind::Bitmask,
+                                        let typ = ToplevelBody::Alias {
+                                            alias_of: reg.get_or_intern(&alias),
+                                            kind: ToplevelKind::Bitmask,
                                         };
 
                                         add_item(
-                                            &mut types,
-                                            &mut object_map,
-                                            Type(name, typ),
+                                            &mut reg.toplevel,
+                                            &mut reg.item_map,
+                                            Toplevel(name, typ),
                                             name,
-                                            ItemKind::Type,
+                                            ItemKind::Toplevel,
                                         );
                                     } else {
                                         let members = match ty.spec {
@@ -691,29 +775,33 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                                 TypeMember::Comment(_) => {} // TODO,
                                                 // TODO include more member information from Definition
                                                 // the <member> called sType has a property "values" which is a comma separated list of valid values
-                                                // structextends is comma separated list of structs whose pNext can contain this struct
+                                                // pub structextends is comma separated list of pub structs whose pNext can contain this pub struct
                                                 // returnedonly - consider not generating a Default implementation
                                                 TypeMember::Definition(m) => {
-                                                    let (name, ty) = parse_type(&m.code);
+                                                    let (name, ty) =
+                                                        parse_type(&m.code, true, &reg);
 
-                                                    vec.push((name, ty));
+                                                    vec.push((name.unwrap(), ty));
                                                 }
                                                 _ => todo!(),
                                             }
                                         }
 
-                                        let typ = TypeBody::Struct { members: vec };
+                                        let typ = ToplevelBody::Struct {
+                                            union: category == Some("union"),
+                                            members: vec,
+                                        };
 
                                         add_item(
-                                            &mut types,
-                                            &mut object_map,
-                                            Type(name, typ),
+                                            &mut reg.toplevel,
+                                            &mut reg.item_map,
+                                            Toplevel(name, typ),
                                             name,
-                                            ItemKind::Type,
+                                            ItemKind::Toplevel,
                                         );
                                     }
                                 }
-                                Some(_) => {}
+                                Some(other) => todo!("{:?}", other), // Some(_) => todo!()
                             }
                         }
                         vk_parse::TypesChild::Comment(string) => {}
@@ -722,22 +810,22 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                 }
             }
             RegistryChild::Enums(e) => {
-                match e.kind.as_ref().map(|s| s.as_str()) {
-                    // <enums name="API Constants" comment="Vulkan hardcoded constants - not an enumerated type, part of the header boilerplate">
-                    //   <enum type="uint32_t" value="256" name="VK_MAX_PHYSICAL_DEVICE_NAME_SIZE"/>
+                match e.kind.as_deref() {
+                    // <pub enums name="API Constants" comment="Vulkan hardcoded constants - not an pub enumerated type, part of the header boilerplate">
+                    //   <pub enum type="uint32_t" value="256" name="VK_MAX_PHYSICAL_DEVICE_NAME_SIZE"/>
                     // ..
                     None => {
                         for child in e.children {
                             match child {
                                 vk_parse::EnumsChild::Enum(e) => {
-                                    let name = intern(&e.name);
+                                    let name = reg.get_or_intern(&e.name);
 
                                     match e.spec {
-                                        // <enum type="uint32_t" value="256" name="VK_MAX_PHYSICAL_DEVICE_NAME_SIZE"/>
+                                        // <pub enum type="uint32_t" value="256" name="VK_MAX_PHYSICAL_DEVICE_NAME_SIZE"/>
                                         EnumSpec::Value { mut value, extends } => {
-                                            let ty = intern(&e.type_suffix.unwrap());
+                                            let ty = reg.get_or_intern(&e.type_suffix.unwrap());
 
-                                            // junk like '(~0ULL)' is not valid rust
+                                            // junk like '(~0ULL)' (ie. unsigned long long ie. u64) is not valid rust
                                             // the NOT operator is ! instead of ~ and specifying bit width is not neccessary (I hope)
                                             value.replace("~", "!");
                                             // if the expression is wrapped in parentheses, remove them
@@ -747,32 +835,32 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                             }
                                             value.retain(|c| c != 'L' && c != 'L' && c != 'F');
 
-                                            let typ = TypeBody::Constant {
+                                            let typ = ToplevelBody::Constant {
                                                 ty,
-                                                val: intern(&value),
+                                                val: reg.get_or_intern(&value),
                                             };
 
                                             add_item(
-                                                &mut types,
-                                                &mut object_map,
-                                                Type(name, typ),
+                                                &mut reg.toplevel,
+                                                &mut reg.item_map,
+                                                Toplevel(name, typ),
                                                 name,
-                                                ItemKind::Type,
+                                                ItemKind::Toplevel,
                                             );
                                         }
-                                        // <enum name="VK_LUID_SIZE_KHR" alias="VK_LUID_SIZE"/>
+                                        // <pub enum name="VK_LUID_SIZE_KHR" alias="VK_LUID_SIZE"/>
                                         EnumSpec::Alias { alias, extends } => {
-                                            let typ = TypeBody::Alias {
-                                                alias_of: intern(&alias),
-                                                kind: TypeKind::Constant,
+                                            let typ = ToplevelBody::Alias {
+                                                alias_of: reg.get_or_intern(&alias),
+                                                kind: ToplevelKind::Constant,
                                             };
 
                                             add_item(
-                                                &mut types,
-                                                &mut object_map,
-                                                Type(name, typ),
+                                                &mut reg.toplevel,
+                                                &mut reg.item_map,
+                                                Toplevel(name, typ),
                                                 name,
-                                                ItemKind::Type,
+                                                ItemKind::Toplevel,
                                             );
                                         }
                                         _ => unreachable!(),
@@ -785,24 +873,24 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                             }
                         }
                     }
-                    // actually an enum
+                    // actually an pub enum
                     Some("enum") => {
                         let mut members = Vec::new();
                         for child in e.children {
                             match child {
                                 vk_parse::EnumsChild::Enum(e) => {
-                                    let child_name = intern(&e.name);
+                                    let child_name = reg.get_or_intern(&e.name);
                                     let value = match e.spec {
                                         // EnumSpec::Bitpos { bitpos, extends } => EnumValue::Bitpos(bitpos as u32),
                                         EnumSpec::Value { value, extends } => {
                                             EnumValue::Value(parse_detect_radix(&value))
                                         }
                                         EnumSpec::Alias { alias, extends } => {
-                                            EnumValue::Alias(intern(&alias))
+                                            EnumValue::Alias(reg.get_or_intern(&alias))
                                         }
                                         _ => unreachable!(),
                                     };
-                                    members.push((value, child_name));
+                                    members.push((child_name, value));
                                 }
                                 vk_parse::EnumsChild::Unused(_) => {}
                                 vk_parse::EnumsChild::Comment(_) => {}
@@ -810,24 +898,24 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                             }
                         }
 
-                        let name = intern(&e.name.unwrap());
-                        let typ = TypeBody::Enum { members };
+                        let name = reg.get_or_intern(&e.name.unwrap());
+                        let typ = ToplevelBody::Enum { members };
 
                         add_item(
-                            &mut types,
-                            &mut object_map,
-                            Type(name, typ),
+                            &mut reg.toplevel,
+                            &mut reg.item_map,
+                            Toplevel(name, typ),
                             name,
-                            ItemKind::Type,
+                            ItemKind::Toplevel,
                         );
                     }
-                    // actually an enum
+                    // actually an pub enum
                     Some("bitmask") => {
                         let mut members = Vec::new();
                         for child in e.children {
                             match child {
                                 vk_parse::EnumsChild::Enum(e) => {
-                                    let child_name = intern(&e.name);
+                                    let child_name = reg.get_or_intern(&e.name);
                                     let bitpos = match e.spec {
                                         EnumSpec::Bitpos { bitpos, extends } => {
                                             EnumValue::Bitpos(bitpos as u32)
@@ -836,11 +924,11 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                             EnumValue::Value(parse_detect_radix(&value))
                                         }
                                         EnumSpec::Alias { alias, extends } => {
-                                            EnumValue::Alias(intern(&alias))
+                                            EnumValue::Alias(reg.get_or_intern(&alias))
                                         }
                                         _ => unreachable!("{:#?}", e),
                                     };
-                                    members.push((bitpos, child_name));
+                                    members.push((child_name, bitpos));
                                 }
                                 vk_parse::EnumsChild::Unused(_) => {}
                                 vk_parse::EnumsChild::Comment(_) => {}
@@ -848,15 +936,15 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                             }
                         }
 
-                        let name = intern(&e.name.unwrap());
-                        let typ = TypeBody::BitmaskBits { members };
+                        let name = reg.get_or_intern(&e.name.unwrap());
+                        let typ = ToplevelBody::BitmaskBits { members };
 
                         add_item(
-                            &mut types,
-                            &mut object_map,
-                            Type(name, typ),
+                            &mut reg.toplevel,
+                            &mut reg.item_map,
+                            Toplevel(name, typ),
                             name,
-                            ItemKind::Type,
+                            ItemKind::Toplevel,
                         );
                     }
                     _ => todo!(),
@@ -866,7 +954,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                 for child in c.children {
                     match child {
                         vk_parse::Command::Definition(d) => {
-                            // does the lib really reconstruct C code instead of giving me the full parameters??
+                            // does the lib really reconpub struct C code instead of giving me the full parameters??
                             // repurpose the code from 'funcpointer' parsing
                             // TODO cleanup, switch to using xml directly
                             // VkResult  vkCreateInstance (const  VkInstanceCreateInfo*  pCreateInfo , const  VkAllocationCallbacks*  pAllocator ,  VkInstance*  pInstance );
@@ -881,9 +969,9 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                 for char in arg.chars() {
                                     match char {
                                         ',' | ')' | ';' => {
-                                            let (name, ty) = parse_type(&buffer);
+                                            let (name, ty) = parse_type(&buffer, true, &reg);
 
-                                            args.push((name, ty));
+                                            args.push((name.unwrap(), ty));
                                             buffer.clear();
 
                                             continue 'outer2;
@@ -891,6 +979,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                         _ => buffer.push(char),
                                     }
                                 }
+                                buffer.push(' ');
                             }
 
                             let mut params = Vec::with_capacity(d.params.len());
@@ -905,34 +994,34 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                 })
                             }
 
-                            let name = intern(&d.proto.name);
+                            let name = reg.get_or_intern(&d.proto.name);
                             let return_type = d.proto.type_name.unwrap();
 
-                            let typ = TypeBody::Command {
-                                return_type: intern(&return_type),
+                            let typ = ToplevelBody::Command {
+                                return_type: reg.get_or_intern(&return_type),
                                 params,
                             };
 
                             add_item(
-                                &mut types,
-                                &mut object_map,
-                                Type(name, typ),
+                                &mut reg.toplevel,
+                                &mut reg.item_map,
+                                Toplevel(name, typ),
                                 name,
-                                ItemKind::Type,
+                                ItemKind::Toplevel,
                             );
                         }
                         vk_parse::Command::Alias { name, alias } => {
-                            let typ = TypeBody::Alias {
-                                alias_of: intern(&alias),
-                                kind: TypeKind::Command,
+                            let typ = ToplevelBody::Alias {
+                                alias_of: reg.get_or_intern(&alias),
+                                kind: ToplevelKind::Command,
                             };
-                            let name = intern(&name);
+                            let name = reg.get_or_intern(&name);
                             add_item(
-                                &mut types,
-                                &mut object_map,
-                                Type(name, typ),
+                                &mut reg.toplevel,
+                                &mut reg.item_map,
+                                Toplevel(name, typ),
                                 name,
-                                ItemKind::Type,
+                                ItemKind::Toplevel,
                             );
                         }
                         _ => todo!(),
@@ -940,47 +1029,63 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                 }
             }
             RegistryChild::Feature(f) => {
-                let children = convert_extension_children(&f.children, None);
+                let children = convert_extension_children(&f.children, None, &mut reg);
 
-                let name = intern(&f.name);
+                let name = reg.get_or_intern(&f.name);
                 let typ = Feature {
                     name,
-                    api: intern(&f.api),
-                    number: intern(&f.number),
-                    protect: f.protect.map(|b| intern(&b)),
+                    api: reg.get_or_intern(&f.api),
+                    number: reg.get_or_intern(&f.number),
+                    protect: f.protect.map(|b| reg.get_or_intern(&b)),
                     children,
                 };
 
-                add_item(&mut features, &mut object_map, typ, name, ItemKind::Feature);
+                add_item(
+                    &mut reg.features,
+                    &mut reg.item_map,
+                    typ,
+                    name,
+                    ItemKind::Feature,
+                );
             }
             RegistryChild::Extensions(e) => {
                 for ext in e.children {
                     assert!(ext.number.is_some());
-                    let children = convert_extension_children(&ext.children, ext.number);
+                    let children = convert_extension_children(&ext.children, ext.number, &mut reg);
+                    let deprecatedby = match ext.deprecatedby {
+                        Some(s) => {
+                            if !s.is_empty() {
+                                Some(reg.get_or_intern(&s))
+                            } else {
+                                None
+                            }
+                        }
+                        None => None,
+                    };
 
-                    let name = intern(&ext.name);
+                    let name = reg.get_or_intern(&ext.name);
                     let typ = Extension {
                         name,
                         number: ext.number.unwrap() as u32,
                         sortorder: ext.sortorder.map(|n| n as u32),
                         author: ext.author,
                         contact: ext.contact,
-                        ext_type: ext.ext_type.map(|s| intern(&s)),
-                        requires: intern_comma_separated(ext.requires.as_deref()),
-                        requires_core: ext.requires_core.map(|s| intern(&s)),
-                        protect: ext.protect.map(|s| intern(&s)),
-                        platform: ext.platform.map(|s| intern(&s)),
-                        supported: intern_comma_separated(ext.supported.as_deref()),
-                        promotedto: ext.promotedto.map(|s| intern(&s)),
-                        deprecatedby: ext.deprecatedby.map(|s| intern(&s)),
-                        obsoletedby: ext.obsoletedby.map(|s| intern(&s)),
+                        ext_type: ext.ext_type.map(|s| reg.get_or_intern(&s)),
+                        requires: parse_comma_separated(ext.requires.as_deref(), &mut reg),
+                        requires_core: ext.requires_core.map(|s| reg.get_or_intern(&s)),
+                        protect: ext.protect.map(|s| reg.get_or_intern(&s)),
+                        platform: ext.platform.map(|s| reg.get_or_intern(&s)),
+                        supported: parse_comma_separated(ext.supported.as_deref(), &mut reg),
+                        promotedto: ext.promotedto.map(|s| reg.get_or_intern(&s)),
+                        deprecatedby,
+                        obsoletedby: ext.obsoletedby.map(|s| reg.get_or_intern(&s)),
                         provisional: ext.provisional,
-                        specialuse: intern_comma_separated(ext.specialuse.as_deref()),
+                        specialuse: parse_comma_separated(ext.specialuse.as_deref(), &mut reg),
                     };
 
                     add_item(
-                        &mut extensions,
-                        &mut object_map,
+                        &mut reg.extensions,
+                        &mut reg.item_map,
                         typ,
                         name,
                         ItemKind::Extension,
@@ -1034,7 +1139,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                     _ => Some(bits.parse::<u8>().unwrap()),
                                 };
                                 components.push(Component {
-                                    name: intern(&name),
+                                    name: reg.get_or_intern(&name),
                                     bits,
                                     numeric_format,
                                     plane_index: planeIndex,
@@ -1051,43 +1156,53 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
                                     index,
                                     width_divisor: widthDivisor,
                                     height_divisor: heightDivisor,
-                                    compatible: intern(&compatible),
+                                    compatible: reg.get_or_intern(&compatible),
                                 });
                             }
                             FormatChild::SpirvImageFormat { name, .. } => {
-                                spirvimageformats.push(intern(&name));
+                                spirvimageformats.push(reg.get_or_intern(&name));
                             }
                             _ => todo!(),
                         }
                     }
 
-                    let name = intern(&f.name);
+                    let name = reg.get_or_intern(&f.name);
                     let typ = Format {
                         name,
-                        class: intern(&f.class),
+                        class: reg.get_or_intern(&f.class),
                         blocksize: f.blockSize,
                         texels_per_block: f.texelsPerBlock,
                         block_extent,
                         packed: f.packed,
-                        compressed: f.compressed.map(|s| intern(&s)),
+                        compressed: f.compressed.map(|s| reg.get_or_intern(&s)),
                         chroma,
                         components,
                         planes,
                         spirvimageformats,
                     };
 
-                    add_item(&mut formats, &mut object_map, typ, name, ItemKind::Format);
+                    if &f.name == "VkGeometryInstanceFlagsKHR" {
+                        let a = "help";
+                    }
+
+                    add_item(
+                        &mut reg.formats,
+                        &mut reg.item_map,
+                        typ,
+                        name,
+                        ItemKind::Format,
+                    );
                 }
             }
             RegistryChild::SpirvExtensions(s) => {
                 for ext in s.children {
-                    let enables = convert_spirv_enable(&ext.enables);
-                    let name = intern(&ext.name);
-                    let typ = SpirvExtensionOrCapability(name, enables);
+                    let enables = convert_spirv_enable(&ext.enables, &mut reg);
+                    let name = reg.get_or_intern(&ext.name);
+                    let typ = SpirvExtCap(name, enables);
 
                     add_item(
-                        &mut spirv_extensions,
-                        &mut object_map,
+                        &mut reg.spirv_extensions,
+                        &mut reg.item_map,
                         typ,
                         name,
                         ItemKind::SpirvExtension,
@@ -1096,13 +1211,13 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
             }
             RegistryChild::SpirvCapabilities(s) => {
                 for cap in s.children {
-                    let enables = convert_spirv_enable(&cap.enables);
-                    let name = intern(&cap.name);
-                    let typ = SpirvExtensionOrCapability(name, enables);
+                    let enables = convert_spirv_enable(&cap.enables, &mut reg);
+                    let name = reg.get_or_intern(&cap.name);
+                    let typ = SpirvExtCap(name, enables);
 
                     add_item(
-                        &mut spirv_capabilities,
-                        &mut object_map,
+                        &mut reg.spirv_capabilities,
+                        &mut reg.item_map,
                         typ,
                         name,
                         ItemKind::SpirvCapability,
@@ -1113,37 +1228,30 @@ pub fn process_registry(registry: vk_parse::Registry) -> Result<(), Box<dyn std:
         }
     }
 
-    println!("{:#?}", types);
-    println!("{:#?}", features);
-    println!("{:#?}", extensions);
-    println!("{:#?}", formats);
-    println!("{:#?}", spirv_extensions);
-    println!("{:#?}", spirv_capabilities);
-
-    Ok(())
+    reg
 }
 
-fn convert_spirv_enable(enables: &[vk_parse::Enable]) -> Vec<SpirvEnable> {
+fn convert_spirv_enable(enables: &[vk_parse::Enable], reg: &Registry) -> Vec<SpirvEnable> {
     let mut converted = Vec::new();
     for enable in enables {
         let out;
         match enable {
-            vk_parse::Enable::Version(v) => out = SpirvEnable::Version(intern(&v)),
-            vk_parse::Enable::Extension(e) => out = SpirvEnable::Extension(intern(&e)),
+            vk_parse::Enable::Version(v) => out = SpirvEnable::Version(reg.get_or_intern(&v)),
+            vk_parse::Enable::Extension(e) => out = SpirvEnable::Extension(reg.get_or_intern(&e)),
             vk_parse::Enable::Feature(f) => {
                 out = SpirvEnable::Feature {
-                    structure: intern(&f.struct_),
-                    feature: intern(&f.feature),
-                    requires: intern_comma_separated(f.requires.as_deref()),
-                    alias: f.alias.as_ref().map(|s| intern(&s)),
+                    structure: reg.get_or_intern(&f.struct_),
+                    feature: reg.get_or_intern(&f.feature),
+                    requires: parse_comma_separated(f.requires.as_deref(), reg),
+                    alias: f.alias.as_ref().map(|s| reg.get_or_intern(&s)),
                 }
             }
             vk_parse::Enable::Property(p) => {
                 out = SpirvEnable::Property {
-                    property: intern(&p.property),
-                    member: intern(&p.member),
-                    value: intern(&p.value),
-                    requires: intern_comma_separated(p.requires.as_deref()),
+                    property: reg.get_or_intern(&p.property),
+                    member: reg.get_or_intern(&p.member),
+                    value: reg.get_or_intern(&p.value),
+                    requires: parse_comma_separated(p.requires.as_deref(), reg),
                 }
             }
             _ => todo!(),
@@ -1156,6 +1264,7 @@ fn convert_spirv_enable(enables: &[vk_parse::Enable]) -> Vec<SpirvEnable> {
 fn convert_extension_children(
     children: &[ExtensionChild],
     ext_number: Option<i64>,
+    reg: &Registry,
 ) -> Vec<FeatureExtensionItem> {
     let mut converted = Vec::new();
     for child in children {
@@ -1179,23 +1288,23 @@ fn convert_extension_children(
                         match item {
                             vk_parse::InterfaceItem::Type { name, comment } => {
                                 converted.push(InterfaceItem::Simple {
-                                    name: intern(&name),
+                                    name: reg.get_or_intern(&name),
                                     api: None,
                                 })
                             }
                             vk_parse::InterfaceItem::Command { name, comment } => {
                                 converted.push(InterfaceItem::Simple {
-                                    name: intern(&name),
+                                    name: reg.get_or_intern(&name),
                                     api: None,
                                 })
                             }
                             vk_parse::InterfaceItem::Enum(e) => {
                                 // I don't think this is applicable here as it is already in a <require> which has its own api property
                                 // however the spec says "used to address subtle incompatibilities"
-                                // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html#_enum_tags
+                                // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html#_pub enum_tags
                                 assert!(e.api.is_none());
 
-                                let name = intern(&e.name);
+                                let name = reg.get_or_intern(&e.name);
                                 match &e.spec {
                                     // just a constant, because of course
                                     EnumSpec::None => {
@@ -1209,7 +1318,7 @@ fn convert_extension_children(
                                     } => {
                                         converted.push(InterfaceItem::Extend {
                                             name,
-                                            extends: intern(&extends),
+                                            extends: reg.get_or_intern(&extends),
                                             api: None,
                                             method: ExtendMethod::BitposExtnumber {
                                                 // if this is a feature which itself (as opposed to an extension) doesn't have an extumber, extnumber is always defined
@@ -1227,7 +1336,7 @@ fn convert_extension_children(
                                         converted.push(InterfaceItem::Extend {
                                             name,
                                             // extends can't be None right? how can a global constant be a bitpos? if yes then copy the EnumSpec::Value case and set value to a bitshifted 1?
-                                            extends: intern(extends.as_ref().unwrap()),
+                                            extends: reg.get_or_intern(extends.as_ref().unwrap()),
                                             api: None,
                                             method: ExtendMethod::Bitpos(*bitpos as u32),
                                         });
@@ -1236,7 +1345,7 @@ fn convert_extension_children(
                                         match extends {
                                             Some(e) => converted.push(InterfaceItem::Extend {
                                                 name,
-                                                extends: intern(e),
+                                                extends: reg.get_or_intern(e),
                                                 api: None,
                                                 method: ExtendMethod::Value(value.clone()),
                                             }),
@@ -1251,14 +1360,18 @@ fn convert_extension_children(
                                         match extends {
                                             Some(e) => converted.push(InterfaceItem::Extend {
                                                 name,
-                                                extends: intern(e),
+                                                extends: reg.get_or_intern(e),
                                                 api: None,
-                                                method: ExtendMethod::Alias(intern(alias)),
+                                                method: ExtendMethod::Alias(
+                                                    reg.get_or_intern(alias),
+                                                ),
                                             }),
                                             // global constant
                                             None => converted.push(InterfaceItem::AddConstant {
                                                 name,
-                                                value: ConstantValue::Alias(intern(alias)),
+                                                value: ConstantValue::Alias(
+                                                    reg.get_or_intern(alias),
+                                                ),
                                             }),
                                         }
                                     }
@@ -1273,13 +1386,13 @@ fn convert_extension_children(
                     converted
                 };
 
-                let api = intern_comma_separated(api.as_deref());
+                let api = parse_comma_separated(api.as_deref(), reg);
 
                 converted.push(FeatureExtensionItem::Require {
-                    profile: profile.as_ref().map(|b| intern(&b)),
+                    profile: profile.as_ref().map(|b| reg.get_or_intern(&b)),
                     api,
-                    extension: extension.as_ref().map(|s| intern(&s)),
-                    feature: feature.as_ref().map(|b| intern(&b)),
+                    extension: extension.as_ref().map(|s| reg.get_or_intern(&s)),
+                    feature: feature.as_ref().map(|b| reg.get_or_intern(&b)),
                     items,
                 })
             }
@@ -1307,15 +1420,15 @@ fn convert_extension_children(
                             vk_parse::InterfaceItem::Command { name, comment } => item_name = name,
                             _ => todo!(),
                         }
-                        converted.push(intern(&item_name));
+                        converted.push(reg.get_or_intern(&item_name));
                     }
                     converted
                 };
 
-                let api = intern_comma_separated(api.as_deref());
+                let api = parse_comma_separated(api.as_deref(), reg);
 
                 converted.push(FeatureExtensionItem::Remove {
-                    profile: profile.as_ref().map(|b| intern(&b)),
+                    profile: profile.as_ref().map(|b| reg.get_or_intern(&b)),
                     api,
                     items,
                 })
@@ -1326,9 +1439,12 @@ fn convert_extension_children(
     converted
 }
 
-fn intern_comma_separated(what: Option<&str>) -> Vec<UniqueStr> {
+fn parse_comma_separated(what: Option<&str>, reg: &Registry) -> Vec<Spur> {
     match what {
-        Some(s) => s.split_terminator(',').map(|s| intern(s)).collect(),
+        Some(s) => s
+            .split_terminator(',')
+            .map(|s| reg.get_or_intern(s))
+            .collect(),
         None => Vec::new(),
     }
 }
