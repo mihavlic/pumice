@@ -1,36 +1,68 @@
-use std::fmt::Debug;
+use std::{
+    cell::Cell,
+    fmt::{Debug, Write},
+};
 
 use lasso::{Rodeo, Spur};
 
-use crate::{format_utils::RegistryDisplay, Define, Registry, Toplevel, ToplevelBody};
+use crate::{
+    format_utils::RegistryDisplay, type_declaration::TypeDecl, CommandParameter, Component,
+    ConstantValue, Define, EnumValue, ExtendMethod, Extension, Feature, FeatureExtensionItem,
+    Format, InterfaceItem, Plane, Registry, SpirvEnable, SpirvExtCap, Toplevel, ToplevelBody,
+};
 
-// duplicated from format_utils because we want a slightly different behaviour for
-// some types such as emitting "" for strings
-struct WithRodeo<'a, T: ?Sized>(&'a Rodeo, T);
+// ew, cursed thing that formats owned iterators as slices
+// since iteration mutates the iterator but Display operates on immutable self we need
+// interior mutability, this is unlikely to break but is still discusting
+struct SliceDebug<T>(T);
 
-trait RodeoWrap {
-    fn reg<'a>(&'a self, reg: &'a Rodeo) -> WithRodeo<&'a Self>;
-}
-
-impl<T> RodeoWrap for T {
-    fn reg<'a>(&'a self, reg: &'a Rodeo) -> WithRodeo<&'a Self> {
-        WithRodeo(reg, self)
+impl<T: Iterator> SliceDebug<Cell<Option<T>>> {
+    fn new(iter: impl IntoIterator<IntoIter = T>) -> Self {
+        Self(Cell::new(Some(iter.into_iter())))
     }
 }
 
-impl<'a> Debug for WithRodeo<'a, &Spur> {
+impl<T: Debug, I: Iterator<Item = T>> Debug for SliceDebug<Cell<Option<I>>> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.0.take().unwrap()).finish()
+    }
+}
+
+// duplicated from format_utils because we want the correct Debug behaviour
+// such as emitting "" for strings and the like
+struct WithRegistry<'a, T: ?Sized>(&'a Registry, T);
+
+trait RodeoWrap {
+    fn reg<'a>(&'a self, reg: &'a Registry) -> WithRegistry<&'a Self>;
+}
+
+impl<T> RodeoWrap for T {
+    fn reg<'a>(&'a self, reg: &'a Registry) -> WithRegistry<&'a Self> {
+        WithRegistry(reg, self)
+    }
+}
+
+impl<'a> Debug for WithRegistry<'a, &Spur> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Debug::fmt(&*self.0.resolve(&self.1), f)
     }
 }
 
-impl<'a> Debug for WithRodeo<'a, &Option<Spur>> {
+impl<'a> Debug for WithRegistry<'a, &Vec<Spur>> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.1.iter().map(|s| s.reg(&self.0)))
+            .finish()
+    }
+}
+
+impl<'a> Debug for WithRegistry<'a, &Option<Spur>> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Debug::fmt(&*&self.1.map(|s| self.0.resolve(&s)), f)
     }
 }
 
-impl<'a> Debug for WithRodeo<'a, &Define> {
+impl<'a> Debug for WithRegistry<'a, &Define> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = self.1;
         let reg = self.0;
@@ -41,10 +73,10 @@ impl<'a> Debug for WithRodeo<'a, &Define> {
     }
 }
 
-impl<'a> Debug for WithRodeo<'a, &Toplevel> {
+impl<'a> Debug for WithRegistry<'a, &Toplevel> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = self.1;
         let reg = self.0;
+        let s = self.1;
         f.debug_tuple("Toplevel")
             .field(&s.0.reg(reg))
             .field(&s.1.reg(reg))
@@ -52,7 +84,138 @@ impl<'a> Debug for WithRodeo<'a, &Toplevel> {
     }
 }
 
-impl<'a> Debug for WithRodeo<'a, &ToplevelBody> {
+impl<'a> Debug for WithRegistry<'a, &TypeDecl> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_char('"')?;
+        self.1.format(&self.0, f)?;
+        // Debug::fmt(&self.1, f)?;
+        f.write_char('"')
+    }
+}
+
+impl<'a> Debug for WithRegistry<'a, &EnumValue> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.1 {
+            EnumValue::Alias(s) => s.format(&self.0, f),
+            other => other.fmt(f),
+        }
+    }
+}
+
+impl<'a> Debug for WithRegistry<'a, &CommandParameter> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reg = self.0;
+        let s = self.1;
+        f.debug_struct("CommandParameter")
+            .field("name", &s.name.reg(reg))
+            .field("len", &s.len)
+            .field("alt_len", &s.alt_len)
+            .field("optional", &s.optional)
+            .field("externsync", &s.externsync)
+            .field("ty", &s.ty.reg(reg))
+            .finish()
+    }
+}
+
+impl<'a> Debug for WithRegistry<'a, &Feature> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reg = self.0;
+        let s = self.1;
+        f.debug_struct("Feature")
+            .field("name", &s.name.reg(reg))
+            .field("api", &s.api.reg(reg))
+            .field("number", &s.number.reg(reg))
+            .field("protect", &s.protect.reg(reg))
+            .field(
+                "children",
+                &SliceDebug::new(s.children.iter().map(|c| c.reg(reg))),
+            )
+            .finish()
+    }
+}
+
+impl<'a> Debug for WithRegistry<'a, &FeatureExtensionItem> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reg = self.0;
+        match &self.1 {
+            FeatureExtensionItem::Comment(arg0) => f.debug_tuple("Comment").field(arg0).finish(),
+            FeatureExtensionItem::Require {
+                profile,
+                api,
+                extension,
+                feature,
+                items,
+            } => f
+                .debug_struct("Require")
+                .field("profile", &profile.reg(reg))
+                .field("api", &api.reg(reg))
+                .field("extension", &extension.reg(reg))
+                .field("feature", &feature.reg(reg))
+                .field("items", &SliceDebug::new(items.iter().map(|a| a.reg(reg))))
+                .finish(),
+            FeatureExtensionItem::Remove {
+                profile,
+                api,
+                items,
+            } => f
+                .debug_struct("Remove")
+                .field("profile", &profile.reg(reg))
+                .field("api", &api.reg(reg))
+                .field("items", &items.reg(reg))
+                .finish(),
+        }
+    }
+}
+
+impl<'a> Debug for WithRegistry<'a, &InterfaceItem> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reg = self.0;
+        match &self.1 {
+            InterfaceItem::Simple { name, api } => f
+                .debug_struct("Simple")
+                .field("name", &name.reg(reg))
+                .field("api", &api.reg(reg))
+                .finish(),
+            InterfaceItem::Extend {
+                name,
+                extends,
+                api,
+                method,
+            } => f
+                .debug_struct("Extend")
+                .field("name", &name.reg(reg))
+                .field("extends", &extends.reg(reg))
+                .field("api", &api.reg(reg))
+                .field("method", &method.reg(reg))
+                .finish(),
+            InterfaceItem::AddConstant { name, value } => f
+                .debug_struct("AddConstant")
+                .field("name", &name.reg(reg))
+                .field("value", &value.reg(reg))
+                .finish(),
+        }
+    }
+}
+
+impl<'a> Debug for WithRegistry<'a, &ExtendMethod> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.1 {
+            ExtendMethod::Alias(s) => f.debug_tuple("Alias").field(&s.reg(self.0)).finish(),
+            other => other.fmt(f),
+        }
+    }
+}
+
+impl<'a> Debug for WithRegistry<'a, &ConstantValue> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.1 {
+            ConstantValue::Alias(s) => f.debug_tuple("Alias").field(&s.reg(self.0)).finish(),
+            other => other.fmt(f),
+        }
+    }
+}
+
+impl<'a> Debug for WithRegistry<'a, &ToplevelBody> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let reg = self.0;
         match self.1 {
@@ -85,25 +248,50 @@ impl<'a> Debug for WithRodeo<'a, &ToplevelBody> {
                 .finish(),
             ToplevelBody::Funcpointer { return_type, args } => f
                 .debug_struct("Funcpointer")
-                .field("return_type", return_type)
-                .field("args", args)
+                .field("return_type", &return_type.reg(reg))
+                .field(
+                    "args",
+                    &SliceDebug::new(args.iter().map(|(name, ty)| (name.reg(reg), ty.reg(reg)))),
+                )
                 .finish(),
             ToplevelBody::Struct { union, members } => f
                 .debug_struct("Struct")
                 .field("union", union)
-                .field("members", members)
+                .field(
+                    "members",
+                    &SliceDebug::new(
+                        members
+                            .iter()
+                            .map(|(name, ty)| (name.reg(reg), ty.reg(reg))),
+                    ),
+                )
                 .finish(),
             ToplevelBody::Constant { ty, val } => f
                 .debug_struct("Constant")
                 .field("ty", &ty.reg(reg))
                 .field("val", &val.reg(reg))
                 .finish(),
-            ToplevelBody::Enum { members } => {
-                f.debug_struct("Enum").field("members", members).finish()
-            }
+            ToplevelBody::Enum { members } => f
+                .debug_struct("Enum")
+                .field(
+                    "members",
+                    &SliceDebug::new(
+                        members
+                            .iter()
+                            .map(|(name, ty)| (name.reg(reg), ty.reg(reg))),
+                    ),
+                )
+                .finish(),
             ToplevelBody::BitmaskBits { members } => f
                 .debug_struct("BitmaskBits")
-                .field("members", members)
+                .field(
+                    "members",
+                    &SliceDebug::new(
+                        members
+                            .iter()
+                            .map(|(name, ty)| (name.reg(reg), ty.reg(reg))),
+                    ),
+                )
                 .finish(),
             ToplevelBody::Command {
                 return_type,
@@ -111,7 +299,131 @@ impl<'a> Debug for WithRodeo<'a, &ToplevelBody> {
             } => f
                 .debug_struct("Command")
                 .field("return_type", &return_type.reg(reg))
-                .field("params", params)
+                .field(
+                    "params",
+                    &SliceDebug::new(params.iter().map(|p| p.reg(reg))),
+                )
+                .finish(),
+        }
+    }
+}
+
+impl<'a> Debug for WithRegistry<'a, &Extension> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reg = self.0;
+        let s = self.1;
+        f.debug_struct("Extension")
+            .field("name", &s.name.reg(reg))
+            .field("number", &s.number)
+            .field("sortorder", &s.sortorder)
+            .field("author", &s.author)
+            .field("contact", &s.contact)
+            .field("ext_type", &s.ext_type.reg(reg))
+            .field("requires", &s.requires.reg(reg))
+            .field("requires_core", &s.requires_core.reg(reg))
+            .field("protect", &s.protect.reg(reg))
+            .field("platform", &s.platform.reg(reg))
+            .field("supported", &s.supported.reg(reg))
+            .field("promotedto", &s.promotedto.reg(reg))
+            .field("deprecatedby", &s.deprecatedby.reg(reg))
+            .field("obsoletedby", &s.obsoletedby.reg(reg))
+            .field("provisional", &s.provisional)
+            .field("specialuse", &s.specialuse.reg(reg))
+            .finish()
+    }
+}
+
+impl<'a> Debug for WithRegistry<'a, &Format> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reg = self.0;
+        let s = self.1;
+        f.debug_struct("Format")
+            .field("name", &s.name.reg(reg))
+            .field("class", &s.class.reg(reg))
+            .field("blocksize", &s.blocksize)
+            .field("texels_per_block", &s.texels_per_block)
+            .field("block_extent", &s.block_extent)
+            .field("packed", &s.packed)
+            .field("compressed", &s.compressed.reg(reg))
+            .field("chroma", &s.chroma)
+            .field(
+                "components",
+                &SliceDebug::new(s.components.iter().map(|a| a.reg(reg))),
+            )
+            .field(
+                "planes",
+                &SliceDebug::new(s.planes.iter().map(|a| a.reg(reg))),
+            )
+            .field("spirvimageformats", &s.spirvimageformats.reg(reg))
+            .finish()
+    }
+}
+
+impl<'a> Debug for WithRegistry<'a, &Component> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reg = self.0;
+        let s = self.1;
+        f.debug_struct("Component")
+            .field("name", &s.name.reg(reg))
+            .field("bits", &s.bits)
+            .field("numeric_format", &s.numeric_format)
+            .field("plane_index", &s.plane_index)
+            .finish()
+    }
+}
+
+impl<'a> Debug for WithRegistry<'a, &Plane> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reg = self.0;
+        let s = self.1;
+        f.debug_struct("Plane")
+            .field("index", &s.index)
+            .field("width_divisor", &s.width_divisor)
+            .field("height_divisor", &s.height_divisor)
+            .field("compatible", &s.compatible.reg(reg))
+            .finish()
+    }
+}
+
+impl<'a> Debug for WithRegistry<'a, &SpirvExtCap> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reg = self.0;
+        let s = self.1;
+        f.debug_tuple("SpirvExtCap")
+            .field(&s.0.reg(reg))
+            .field(&SliceDebug::new(s.1.iter().map(|a| a.reg(reg))))
+            .finish()
+    }
+}
+impl<'a> Debug for WithRegistry<'a, &SpirvEnable> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reg = self.0;
+        match self.1 {
+            SpirvEnable::Version(s) => f.debug_tuple("Version").field(&s.reg(reg)).finish(),
+            SpirvEnable::Extension(s) => f.debug_tuple("Extension").field(&s.reg(reg)).finish(),
+            SpirvEnable::Feature {
+                structure,
+                feature,
+                requires,
+                alias,
+            } => f
+                .debug_struct("Feature")
+                .field("structure", &structure.reg(reg))
+                .field("feature", &feature.reg(reg))
+                .field("requires", &requires.reg(reg))
+                .field("alias", &alias.reg(reg))
+                .finish(),
+            SpirvEnable::Property {
+                property,
+                member,
+                value,
+                requires,
+            } => f
+                .debug_struct("Property")
+                .field("property", &property.reg(reg))
+                .field("member", &member.reg(reg))
+                .field("value", &value.reg(reg))
+                .field("requires", &requires.reg(reg))
                 .finish(),
         }
     }
@@ -119,20 +431,20 @@ impl<'a> Debug for WithRodeo<'a, &ToplevelBody> {
 
 impl Debug for Registry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let reg = &*self.interner.borrow();
+        let reg = &self;
 
-        let vendors = &self.vendors.iter().flat_map(|c| &c.children);
-        let platforms = &self.platforms.iter().flat_map(|c| &c.children);
-        let tags = &self.tags.iter().flat_map(|c| &c.children);
-        let headers = &self.headers.iter().map(|s| reg.resolve(s));
-        let defines = &self.defines.iter().map(|d| d.reg(reg));
-        let toplevel = &self.toplevel;
-        let features = &self.features;
-        let extensions = &self.extensions;
-        let formats = &self.formats;
-        let spirv_capabilities = &self.spirv_capabilities;
-        let spirv_extensions = &self.spirv_extensions;
-        let item_map = &self.item_map;
+        let vendors = &SliceDebug::new(self.vendors.iter().flat_map(|c| &c.children));
+        let platforms = &SliceDebug::new(self.platforms.iter().flat_map(|c| &c.children));
+        let tags = &SliceDebug::new(self.tags.iter().flat_map(|a| &a.children));
+        let headers = &SliceDebug::new(self.headers.iter().map(|a| a.reg(reg)));
+        let defines = &SliceDebug::new(self.defines.iter().map(|a| a.reg(reg)));
+        let toplevel = &SliceDebug::new(self.toplevel.iter().map(|a| a.reg(reg)));
+        let features = &SliceDebug::new(self.features.iter().map(|a| a.reg(reg)));
+        let extensions = &SliceDebug::new(self.extensions.iter().map(|a| a.reg(reg)));
+        let formats = &SliceDebug::new(self.formats.iter().map(|a| a.reg(reg)));
+        let spirv_capabilities =
+            &SliceDebug::new(self.spirv_capabilities.iter().map(|a| a.reg(reg)));
+        let spirv_extensions = &SliceDebug::new(self.spirv_extensions.iter().map(|a| a.reg(reg)));
 
         f.debug_struct("Registry")
             .field("vendors", vendors)
@@ -148,6 +460,6 @@ impl Debug for Registry {
             .field("spirv_extensions", spirv_extensions)
             // .field("item_map", item_map)
             // .field("interner", interner)
-            .finish_non_exhaustive()
+            .finish()
     }
 }
