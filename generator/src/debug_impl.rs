@@ -95,8 +95,9 @@ impl<'a> Debug for WithRegistry<'a, &TypeDecl> {
 
 impl<'a> Debug for WithRegistry<'a, &EnumValue> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reg = self.0;
         match self.1 {
-            EnumValue::Alias(s) => s.format(&self.0, f),
+            EnumValue::Alias(s) => f.debug_tuple("Alias").field(&s.reg(reg)).finish(),
             other => other.fmt(f),
         }
     }

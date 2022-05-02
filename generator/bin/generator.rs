@@ -260,7 +260,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     for header in include_headers {
         code!(
             c,
-            "#include \"{}\"\n"
+            "#include \"{}\""
             @ header.reg(&reg)
         )?;
     }
@@ -467,7 +467,7 @@ fn make_enum_member_rusty(
     fn get_next_enum_chunk(str: &str, start: usize) -> usize {
         let mut prev_lowercase = false;
         for (i, c) in str[start..].chars().enumerate() {
-            let cur_lowercase = c.is_ascii_lowercase();
+            let cur_lowercase = c.is_ascii_lowercase() || c.is_numeric();
             if prev_lowercase == true && cur_lowercase == false {
                 return start + i;
             }
