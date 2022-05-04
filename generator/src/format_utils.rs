@@ -13,25 +13,43 @@ use crate::{
 
 pub struct Separated<T: Iterator + Clone> {
     pub iter: T,
+    // the string before writing the content of the iterator
     pub pad: &'static str,
+    // the string after writing the content of the iterator
     pub end: &'static str,
+    // whether to write the end string even for the last element, this is useful for separated but not actually delimited elements
+    // such as function arguments
+    pub end_last: bool,
+    // whether to separate elements with a newline along with the 'end' string padding
+    // the difference here is that we want to emit newlines for every but the last element
+    // but if end_last is set we want to write the end string for every single one
     pub newline: bool,
 }
 
 impl<T: Iterator + Clone> Separated<T> {
-    pub fn new(iter: T, padding: &'static str, end: &'static str, newline: bool) -> Self {
+    pub fn new(
+        iter: T,
+        padding: &'static str,
+        end: &'static str,
+        newline: bool,
+        end_last: bool,
+    ) -> Self {
         Self {
             iter,
             pad: padding,
             end,
+            end_last,
             newline,
         }
     }
     pub fn args(iter: T) -> Self {
-        Self::new(iter, ", ", "", false)
+        Self::new(iter, ", ", "", false, false)
     }
     pub fn members(iter: T) -> Self {
-        Self::new(iter, "    ", ",", true)
+        Self::new(iter, "    ", ",", true, false)
+    }
+    pub fn statements(iter: T) -> Self {
+        Self::new(iter, "    ", ";", true, true)
     }
 }
 
@@ -46,11 +64,11 @@ impl<I: Display, T: Iterator<Item = I> + Clone> Display for Separated<T> {
             }
             first = false;
             Display::fmt(&next, f)?;
-            if !last {
+            if !last || self.end_last {
                 f.write_str(self.end)?;
-                if self.newline {
-                    f.write_char('\n')?;
-                }
+            }
+            if !last && self.newline {
+                f.write_char('\n')?;
             }
         }
         Ok(())

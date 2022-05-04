@@ -212,20 +212,21 @@ fn main() -> Result<(), Box<dyn Error>> {
                 )?;
             }
             ToplevelBody::BitmaskBits { members } => {
+                // skip generating empty impl blocks
+                if members.is_empty() {
+                    continue;
+                }
+
                 // when vulkan has a Bitmask that is reserved for future use and thus has no actual flag values, there are no BitmaskBits defined and the spec omits Bitmask dependency
                 // however of course there are exceptions such as VkSemaphoreCreateFlagBits which is not declared as a dependency but is actually an item :(
                 let bitmask_name = match bitmask_pairing.get(&name) {
                     Some(n) => n,
                     None => continue,
                 };
-                // skip generating empty impl blocks
-                if members.is_empty() {
-                    continue;
-                }
 
                 let ty = get_concrete_type(*bitmask_name, &reg);
-                let members = members.iter().map(|(member_name, val)| {
-                    let name = make_enum_member_rusty(name, *member_name, true, &reg);
+                let bits = members.iter().map(|(member_name, val)| {
+                    let name = make_enum_member_rusty(*bitmask_name, *member_name, true, &reg);
                     let val = match val {
                         EnumValue::Bitpos(pos) => {
                             format!("const {}: {} = 1 << {}", name, ty.reg(&reg), pos)
@@ -247,7 +248,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     "impl {} {{"
                     "    {}"
                     "}}"
-                    @ bitmask_name.reg(&reg), Separated::members(members)
+                    @ bitmask_name.reg(&reg), Separated::statements(bits)
                 )?;
             }
             ToplevelBody::Command {
@@ -458,20 +459,29 @@ fn make_enum_member_rusty(
     constant_syntax: bool,
     reg: &Registry,
 ) -> String {
-    // this function originally allocated vecs and such but with my unhealthy tendencies it now does everything it can inplace
-    // help
+    // there are occasionally numbers as well, right now if the number is preceded by an uppercase number we treat is as a lowercase, otherwise it's uppercase
+
+    // VkVideoEncodeH265CapabilityFlagsEXT
+    // VK_VIDEO_ENCODE_H265_CAPABILITY_SEPARATE_COLOUR_PLANE_BIT_EXT
+
+    // VkFormatFeatureFlags2
+    // VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT
 
     // gets the end position (index of the element after the last one we want)
     // of the current chunk, chunks consist of substrings starting with a uppercase letter
     // and ending with a lowercase letter or at the end of the whole string
     fn get_next_enum_chunk(str: &str, start: usize) -> usize {
-        let mut prev_lowercase = false;
+        let mut prev = 'A'; // any uppercase letter will do
         for (i, c) in str[start..].chars().enumerate() {
-            let cur_lowercase = c.is_ascii_lowercase() || c.is_numeric();
-            if prev_lowercase == true && cur_lowercase == false {
+            // just match all the different situations where we want to end a chunk
+            // Hah|A, Hah|42, 42|Aha
+            if (prev.is_ascii_lowercase() && c.is_ascii_uppercase())
+                || (prev.is_ascii_lowercase() && c.is_ascii_digit())
+                || (prev.is_ascii_digit() && c.is_ascii_uppercase())
+            {
                 return start + i;
             }
-            prev_lowercase = cur_lowercase;
+            prev = c;
         }
         return str.len();
     }
@@ -509,8 +519,6 @@ fn make_enum_member_rusty(
         } else {
             false
         };
-        // we skip any Flags substrings, see above
-        let skip_flags = estr == "Flags";
 
         // we skip Flags as they are part of the enum but not the boilerplate
         if estr == "Flags" {
@@ -547,25 +555,41 @@ fn make_enum_member_rusty(
 fn test_enum_rustify() {
     let mut reg = Registry::new();
 
-    let enum_name = reg.get_or_intern("VkDebugReportFlagsEXT");
-    let member_name = reg.get_or_intern("VK_DEBUG_REPORT_INFORMATION_BIT_EXT");
+    let data = &[
+        (
+            "VkDebugReportFlagsEXT",
+            "VK_DEBUG_REPORT_INFORMATION_BIT_EXT",
+            "INFORMATION_BIT",
+            "InformationBit",
+        ),
+        (
+            "VkTestLongerThingEXT",
+            "VK_TEST_LONGER_THING_HUZZAH_CRABS_EXT",
+            "HUZZAH_CRABS",
+            "HuzzahCrabs",
+        ),
+        (
+            "VkFormatFeatureFlags2",
+            "VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT",
+            "SAMPLED_IMAGE_BIT",
+            "SampledImageBit",
+        ),
+        (
+            "VkVideoEncodeH265CapabilityFlagsEXT",
+            "VK_VIDEO_ENCODE_H265_CAPABILITY_SEPARATE_COLOUR_PLANE_BIT_EXT",
+            "SEPARATE_COLOUR_PLANE_BIT",
+            "SeparateColourPlaneBit",
+        ),
+    ];
 
-    let expect = "INFORMATION_BIT";
-    let out = make_enum_member_rusty(enum_name, member_name, true, &reg);
-    assert_eq!(out, expect);
+    for (enum_name, member_name, const_expect, normal_expect) in data {
+        let enum_name = reg.get_or_intern(enum_name);
+        let member_name = reg.get_or_intern(member_name);
 
-    let expect = "InformationBit";
-    let out = make_enum_member_rusty(enum_name, member_name, false, &reg);
-    assert_eq!(out, expect);
+        let const_syntax = make_enum_member_rusty(enum_name, member_name, true, &reg);
+        assert_eq!(const_expect, &const_syntax);
 
-    let enum_name = reg.get_or_intern("VkTestLongerThingEXT");
-    let member_name = reg.get_or_intern("VK_TEST_LONGER_THING_HUZZAH_CRABS_EXT");
-
-    let expect = "HUZZAH_CRABS";
-    let out = make_enum_member_rusty(enum_name, member_name, true, &reg);
-    assert_eq!(out, expect);
-
-    let expect = "HuzzahCrabs";
-    let out = make_enum_member_rusty(enum_name, member_name, false, &reg);
-    assert_eq!(out, expect);
+        let normal_syntax = make_enum_member_rusty(enum_name, member_name, false, &reg);
+        assert_eq!(normal_expect, &normal_syntax);
+    }
 }
