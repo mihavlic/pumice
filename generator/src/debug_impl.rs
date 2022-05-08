@@ -6,9 +6,9 @@ use std::{
 use lasso::{Rodeo, Spur};
 
 use crate::{
-    format_utils::RegistryDisplay, type_declaration::TypeDecl, CommandParameter, Component,
-    ConstantValue, Define, EnumValue, ExtendMethod, Extension, Feature, FeatureExtensionItem,
-    Format, InterfaceItem, Plane, Registry, SpirvEnable, SpirvExtCap, Toplevel, ToplevelBody,
+    type_declaration::TypeDecl, CommandParameter, Component, ConstantValue, Define, EnumValue,
+    ExtendMethod, Extension, Feature, FeatureExtensionItem, Format, InterfaceItem, Plane, Registry,
+    SpirvEnable, SpirvExtCap, Toplevel, ToplevelBody,
 };
 
 // ew, cursed thing that formats owned iterators as slices
@@ -87,8 +87,7 @@ impl<'a> Debug for WithRegistry<'a, &Toplevel> {
 impl<'a> Debug for WithRegistry<'a, &TypeDecl> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_char('"')?;
-        self.1.format(&self.0, f)?;
-        // Debug::fmt(&self.1, f)?;
+        TypeDecl::fmt(&self.1, f, self.0)?;
         f.write_char('"')
     }
 }

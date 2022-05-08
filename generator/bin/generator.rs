@@ -1,4 +1,11 @@
 #![allow(unused)]
+use format_utils::{RegistryWrap, Separated};
+use generator_lib::{
+    process_registry,
+    type_declaration::{TypeDecl, TypeToken},
+    EnumValue, InterfaceItem, ItemKind, Registry, Toplevel, ToplevelBody, ToplevelKind,
+};
+use lasso::{Rodeo, Spur};
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -8,14 +15,7 @@ use std::{
     path::Path,
 };
 
-use generator_lib::{
-    code, process_registry,
-    type_declaration::{TypeDecl, TypeToken},
-    EnumValue, InterfaceItem, ItemKind, Registry, Toplevel, ToplevelBody, ToplevelKind,
-};
-use lasso::{Rodeo, Spur};
-
-use generator_lib::format_utils::{RegistryDisplay, RegistryWrap, Separated, WithRegistry};
+mod format_utils;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let (reg, errors) = vk_parse::parse_file(&Path::new("/home/eg/Downloads/vk.xml")).unwrap();

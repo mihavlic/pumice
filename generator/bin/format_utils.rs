@@ -4,12 +4,10 @@ use std::{
     marker::PhantomData,
 };
 
+use generator_lib::type_declaration::{TypeDecl, TypeToken};
 use lasso::Spur;
 
-use crate::{
-    type_declaration::{TypeDecl, TypeToken},
-    Registry,
-};
+use crate::Registry;
 
 pub struct Separated<T: Iterator + Clone> {
     pub iter: T,
@@ -159,26 +157,7 @@ impl RegistryDisplay for Spur {
 
 impl RegistryDisplay for TypeDecl {
     fn format(&self, reg: &Registry, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // rust cannot represent bitfields; they need to be resolved higher up, currently we store in this
-        // field the total amount of bits used after merging the bitfields together, so for now this check is disabled
-        // assert!(self.bitfield_len.is_none());
-        for (i, token) in self.tokens.iter().enumerate() {
-            let temp;
-            let str = match token {
-                TypeToken::Const => "const",
-                TypeToken::Mut => "mut",
-                TypeToken::Ptr => "*",
-                TypeToken::Ident(ty) => {
-                    temp = Some(reg.resolve(ty));
-                    temp.as_deref().unwrap()
-                }
-            };
-            f.write_str(str)?;
-            if i != self.tokens.len() - 1 && *token != TypeToken::Ptr {
-                f.write_char(' ')?;
-            }
-        }
-        Ok(())
+        TypeDecl::fmt(self, f, reg)
     }
 }
 

@@ -5,7 +5,7 @@
 
 use std::{
     cell::{Ref, RefCell},
-    collections::{HashMap, HashSet},
+    collections::{hash_map::Entry, HashMap, HashSet},
     io::Write,
     ops::RangeBounds,
     sync::{
@@ -23,8 +23,6 @@ use vk_parse::{
 
 pub mod debug_impl;
 pub mod type_declaration;
-#[macro_use]
-pub mod format_utils;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ToplevelKind {
@@ -310,18 +308,18 @@ pub struct Registry {
     pub spirv_extensions: Vec<SpirvExtCap>,
     pub item_map: HashMap<Spur, (u32, ItemKind)>,
     pub interner: RefCell<Rodeo>,
+    // a map for substituting certain Spurs with Different spurs
+    // this is used at code generation to consistently rename different identifiers
+    // to make them match rust naming conventions better
+    // this is a pretty dumb solution and it is debatable whether this should be implemented here
+    // but keeping everything withou wrapper types makes it by far the least painful solution
+    // another option was preparing all the renames beforehand and then iterating through everything here
+    // and replacing the renamed spurs but that would be quite tiring to maintain and would break any spurs
+    // that the user may have kept in variables for comparison
+    pub renames: HashMap<Spur, Spur>,
 }
 
 impl Registry {
-    pub fn resolve<'a>(&'a self, spur: &Spur) -> Ref<'a, str> {
-        Ref::map(self.interner.borrow(), |a| a.resolve(spur))
-    }
-    pub fn get(&self, str: &str) -> Option<Spur> {
-        self.interner.borrow().get(str)
-    }
-    pub fn get_or_intern(&self, str: &str) -> Spur {
-        self.interner.borrow_mut().get_or_intern(str)
-    }
     pub fn new() -> Self {
         Self {
             vendors: Default::default(),
@@ -338,7 +336,23 @@ impl Registry {
             spirv_extensions: Default::default(),
             item_map: Default::default(),
             interner: RefCell::new(Rodeo::new()),
+            renames: Default::default(),
         }
+    }
+    pub fn add_rename_with(&mut self, original: Spur, with: impl FnOnce() -> Spur) {
+        if let Entry::Vacant(vacant) = self.renames.entry(original) {
+            vacant.insert(with());
+        }
+    }
+    pub fn resolve<'a>(&'a self, spur: &Spur) -> Ref<'a, str> {
+        let spur = self.renames.get(spur).unwrap_or(spur);
+        Ref::map(self.interner.borrow(), |a| a.resolve(spur))
+    }
+    pub fn get(&self, str: &str) -> Option<Spur> {
+        self.interner.borrow().get(str)
+    }
+    pub fn get_or_intern(&self, str: &str) -> Spur {
+        self.interner.borrow_mut().get_or_intern(str)
     }
 }
 
@@ -359,27 +373,7 @@ fn add_item<T>(
 }
 
 pub fn process_registry(registry: vk_parse::Registry) -> Registry {
-    // let mut reg = Rodeo::new();
-
-    // let mut vendors = Vec::new();
-    // let mut platforms = Vec::new();
-    // let mut tags = Vec::new();
-    // let mut headers = Vec::new();
-    // let mut defines = Vec::new();
-
-    // the objects themselves and a hashmap mapping their names to the object
-    // this preserves definition order
-    // let mut toplevel = Vec::new();
-    // let mut features = Vec::new();
-    // let mut extensions = Vec::new();
-    // let mut formats = Vec::new();
-    // let mut spirv_capabilities = Vec::new();
-    // let mut spirv_extensions = Vec::new();
-
-    // let mut item_map = HashMap::new();
-
     let mut reg = Registry::new();
-    // let Registry { vendors, platforms, tags, headers, defines, toplevel, features, extensions, formats, spirv_capabilities, spirv_extensions, item_map, interner } = &mut reg;
 
     for node in registry.0 {
         match node {

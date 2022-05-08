@@ -74,6 +74,28 @@ impl TypeDecl {
         // 'char' Const* Mut* => *Mut *Const char
         self.tokens.reverse();
     }
+    pub fn fmt(&self, f: &mut std::fmt::Formatter<'_>, reg: &Registry) -> std::fmt::Result {
+        // rust cannot represent bitfields; they need to be resolved higher up, currently we store in this
+        // field the total amount of bits used after merging the bitfields together, so for now this check is disabled
+        // assert!(self.bitfield_len.is_none());
+        for (i, token) in self.tokens.iter().enumerate() {
+            let temp;
+            let str = match token {
+                TypeToken::Const => "const",
+                TypeToken::Mut => "mut",
+                TypeToken::Ptr => "*",
+                TypeToken::Ident(ty) => {
+                    temp = Some(reg.resolve(ty));
+                    temp.as_deref().unwrap()
+                }
+            };
+            f.write_str(str)?;
+            if i != self.tokens.len() - 1 && *token != TypeToken::Ptr {
+                f.write_char(' ')?;
+            }
+        }
+        Ok(())
+    }
 }
 
 pub fn parse_type(str: &str, has_name: bool, reg: &Registry) -> (Option<Spur>, TypeDecl) {
