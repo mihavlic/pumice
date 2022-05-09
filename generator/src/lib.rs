@@ -316,7 +316,7 @@ pub struct Registry {
     // another option was preparing all the renames beforehand and then iterating through everything here
     // and replacing the renamed spurs but that would be quite tiring to maintain and would break any spurs
     // that the user may have kept in variables for comparison
-    pub renames: HashMap<Spur, Spur>,
+    pub renames: RefCell<HashMap<Spur, Spur>>,
 }
 
 impl Registry {
@@ -336,16 +336,18 @@ impl Registry {
             spirv_extensions: Default::default(),
             item_map: Default::default(),
             interner: RefCell::new(Rodeo::new()),
-            renames: Default::default(),
+            renames: RefCell::new(Default::default()),
         }
     }
-    pub fn add_rename_with(&mut self, original: Spur, with: impl FnOnce() -> Spur) {
-        if let Entry::Vacant(vacant) = self.renames.entry(original) {
+    pub fn add_rename_with(&self, original: Spur, with: impl FnOnce() -> Spur) {
+        let mut renames = self.renames.borrow_mut();
+        if let Entry::Vacant(vacant) = renames.entry(original) {
             vacant.insert(with());
         }
     }
     pub fn resolve<'a>(&'a self, spur: &Spur) -> Ref<'a, str> {
-        let spur = self.renames.get(spur).unwrap_or(spur);
+        let mut renames = self.renames.borrow_mut();
+        let spur = renames.get(spur).unwrap_or(spur);
         Ref::map(self.interner.borrow(), |a| a.resolve(spur))
     }
     pub fn get(&self, str: &str) -> Option<Spur> {
@@ -353,6 +355,16 @@ impl Registry {
     }
     pub fn get_or_intern(&self, str: &str) -> Spur {
         self.interner.borrow_mut().get_or_intern(str)
+    }
+}
+
+pub trait Intern {
+    fn intern(&self, reg: &Registry) -> Spur;
+}
+
+impl<T: AsRef<str>> Intern for T {
+    fn intern(&self, reg: &Registry) -> Spur {
+        reg.get_or_intern(self.as_ref())
     }
 }
 
@@ -399,7 +411,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                     //   <type category="include" name="X11/Xlib.h"/>
                                     let name = ty.name.unwrap();
                                     if name.contains(".h") {
-                                        reg.headers.push(reg.get_or_intern(&name));
+                                        reg.headers.push(name.intern(&reg));
                                     } else {
                                         match ty.spec {
                                             TypeSpec::Code(code) => {
@@ -409,7 +421,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                                     .split_terminator("\"")
                                                     .nth(1)
                                                     .unwrap();
-                                                reg.headers.push(reg.get_or_intern(name));
+                                                reg.headers.push(name.intern(&reg));
                                             }
                                             TypeSpec::None | TypeSpec::Members(_) => unreachable!(),
                                             _ => todo!(),
@@ -433,9 +445,9 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                         _ => ty.requires.as_ref().unwrap(),
                                     };
 
-                                    let name = reg.get_or_intern(&name);
+                                    let name = name.intern(&reg);
                                     let typ = ToplevelBody::Included {
-                                        header: reg.get_or_intern(header),
+                                        header: header.intern(&reg),
                                     };
 
                                     add_item(
@@ -472,7 +484,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                     };
 
                                     let define = Define {
-                                        name: reg.get_or_intern(name),
+                                        name: name.intern(&reg),
                                         body: type_code.code.trim().to_owned(),
                                     };
                                     reg.defines.push(define);
@@ -508,8 +520,8 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                         }
                                         _ => unreachable!(),
                                     };
-                                    let name = reg.get_or_intern(name);
-                                    let ty = ty.map(|s| reg.get_or_intern(&s));
+                                    let name = name.intern(&reg);
+                                    let ty = ty.map(|s| s.intern(&reg));
 
                                     let typ = ToplevelBody::Basetype {
                                         ty,
@@ -532,9 +544,9 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                 // </type>
                                 Some("bitmask") => {
                                     if let Some(alias) = ty.alias {
-                                        let name = reg.get_or_intern(&ty.name.unwrap());
+                                        let name = ty.name.unwrap().intern(&reg);
                                         let typ = ToplevelBody::Alias {
-                                            alias_of: reg.get_or_intern(&alias),
+                                            alias_of: alias.intern(&reg),
                                             kind: ToplevelKind::Bitmask,
                                         };
 
@@ -570,13 +582,13 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                         };
 
                                         let name = match &type_code.markup[1] {
-                                            TypeCodeMarkup::Name(name) => reg.get_or_intern(name),
+                                            TypeCodeMarkup::Name(name) => name.intern(&reg),
                                             _ => unreachable!(),
                                         };
 
                                         let typ = ToplevelBody::Bitmask {
-                                            ty: reg.get_or_intern(ty),
-                                            bits_enum: bits.map(|b| reg.get_or_intern(&b)),
+                                            ty: ty.intern(&reg),
+                                            bits_enum: bits.map(|b| b.intern(&reg)),
                                         };
 
                                         add_item(
@@ -596,9 +608,9 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                 // </type>
                                 Some("handle") => {
                                     if let Some(alias) = ty.alias {
-                                        let name = reg.get_or_intern(&ty.name.unwrap());
+                                        let name = ty.name.unwrap().intern(&reg);
                                         let typ = ToplevelBody::Alias {
-                                            alias_of: reg.get_or_intern(&alias),
+                                            alias_of: alias.intern(&reg),
                                             kind: ToplevelKind::Handle,
                                         };
 
@@ -625,14 +637,14 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                         };
 
                                         let name = match &type_code.markup[1] {
-                                            TypeCodeMarkup::Name(name) => reg.get_or_intern(&name),
+                                            TypeCodeMarkup::Name(name) => name.intern(&reg),
                                             _ => unreachable!(),
                                         };
 
                                         let type_enum = ty.objtypeenum.unwrap();
 
                                         let typ = ToplevelBody::Handle {
-                                            object_type: reg.get_or_intern(&type_enum),
+                                            object_type: type_enum.intern(&reg),
                                             dispatchable,
                                         };
 
@@ -649,9 +661,9 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                 Some("enum") => {
                                     if let Some(alias) = ty.alias {
                                         // add_with_name(&mut pub enum_bitmask_aliases, &mut pub enum_bitmask_aliases_map, int.get_or_intern(&alias), &name);
-                                        let name = reg.get_or_intern(&ty.name.unwrap());
+                                        let name = ty.name.unwrap().intern(&reg);
                                         let typ = ToplevelBody::Alias {
-                                            alias_of: reg.get_or_intern(&alias),
+                                            alias_of: alias.intern(&reg),
                                             kind: ToplevelKind::Enum,
                                         };
 
@@ -687,7 +699,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                     };
 
                                     let name = match &type_code.markup[0] {
-                                        TypeCodeMarkup::Name(string) => reg.get_or_intern(string),
+                                        TypeCodeMarkup::Name(string) => string.intern(&reg),
                                         _ => unreachable!(),
                                     };
 
@@ -742,11 +754,11 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                 //   </member>
                                 // </type>
                                 category @ Some("struct" | "union") => {
-                                    let name = reg.get_or_intern(&ty.name.unwrap());
+                                    let name = ty.name.unwrap().intern(&reg);
 
                                     if let Some(alias) = ty.alias {
                                         let typ = ToplevelBody::Alias {
-                                            alias_of: reg.get_or_intern(&alias),
+                                            alias_of: alias.intern(&reg),
                                             kind: ToplevelKind::Bitmask,
                                         };
 
@@ -812,12 +824,12 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                         for child in e.children {
                             match child {
                                 vk_parse::EnumsChild::Enum(e) => {
-                                    let name = reg.get_or_intern(&e.name);
+                                    let name = e.name.intern(&reg);
 
                                     match e.spec {
                                         // <pub enum type="uint32_t" value="256" name="VK_MAX_PHYSICAL_DEVICE_NAME_SIZE"/>
                                         EnumSpec::Value { mut value, extends } => {
-                                            let ty = reg.get_or_intern(&e.type_suffix.unwrap());
+                                            let ty = e.type_suffix.unwrap().intern(&reg);
 
                                             // junk like '(~0ULL)' (ie. unsigned long long ie. u64) is not valid rust
                                             // the NOT operator is ! instead of ~ and specifying bit width is not neccessary (I hope)
@@ -831,7 +843,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
 
                                             let typ = ToplevelBody::Constant {
                                                 ty,
-                                                val: reg.get_or_intern(&value),
+                                                val: value.intern(&reg),
                                             };
 
                                             add_item(
@@ -845,7 +857,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                         // <pub enum name="VK_LUID_SIZE_KHR" alias="VK_LUID_SIZE"/>
                                         EnumSpec::Alias { alias, extends } => {
                                             let typ = ToplevelBody::Alias {
-                                                alias_of: reg.get_or_intern(&alias),
+                                                alias_of: alias.intern(&reg),
                                                 kind: ToplevelKind::Constant,
                                             };
 
@@ -873,14 +885,14 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                         for child in e.children {
                             match child {
                                 vk_parse::EnumsChild::Enum(e) => {
-                                    let child_name = reg.get_or_intern(&e.name);
+                                    let child_name = e.name.intern(&reg);
                                     let value = match e.spec {
                                         // EnumSpec::Bitpos { bitpos, extends } => EnumValue::Bitpos(bitpos as u32),
                                         EnumSpec::Value { value, extends } => {
                                             EnumValue::Value(parse_detect_radix(&value))
                                         }
                                         EnumSpec::Alias { alias, extends } => {
-                                            EnumValue::Alias(reg.get_or_intern(&alias))
+                                            EnumValue::Alias(alias.intern(&reg))
                                         }
                                         _ => unreachable!(),
                                     };
@@ -892,7 +904,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                             }
                         }
 
-                        let name = reg.get_or_intern(&e.name.unwrap());
+                        let name = e.name.unwrap().intern(&reg);
                         let typ = ToplevelBody::Enum { members };
 
                         add_item(
@@ -903,13 +915,13 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                             ItemKind::Toplevel,
                         );
                     }
-                    // actually an pub enum
+                    // actually a pub enum
                     Some("bitmask") => {
                         let mut members = Vec::new();
                         for child in e.children {
                             match child {
                                 vk_parse::EnumsChild::Enum(e) => {
-                                    let child_name = reg.get_or_intern(&e.name);
+                                    let child_name = e.name.intern(&reg);
                                     let bitpos = match e.spec {
                                         EnumSpec::Bitpos { bitpos, extends } => {
                                             EnumValue::Bitpos(bitpos as u32)
@@ -918,9 +930,9 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                             EnumValue::Value(parse_detect_radix(&value))
                                         }
                                         EnumSpec::Alias { alias, extends } => {
-                                            EnumValue::Alias(reg.get_or_intern(&alias))
+                                            EnumValue::Alias(alias.intern(&reg))
                                         }
-                                        _ => unreachable!("{:#?}", e),
+                                        _ => unreachable!(),
                                     };
                                     members.push((child_name, bitpos));
                                 }
@@ -930,7 +942,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                             }
                         }
 
-                        let name = reg.get_or_intern(&e.name.unwrap());
+                        let name = e.name.unwrap().intern(&reg);
                         let typ = ToplevelBody::BitmaskBits { members };
 
                         add_item(
@@ -988,11 +1000,11 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                 })
                             }
 
-                            let name = reg.get_or_intern(&d.proto.name);
+                            let name = d.proto.name.intern(&reg);
                             let return_type = d.proto.type_name.unwrap();
 
                             let typ = ToplevelBody::Command {
-                                return_type: reg.get_or_intern(&return_type),
+                                return_type: return_type.intern(&reg),
                                 params,
                             };
 
@@ -1006,10 +1018,10 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                         }
                         vk_parse::Command::Alias { name, alias } => {
                             let typ = ToplevelBody::Alias {
-                                alias_of: reg.get_or_intern(&alias),
+                                alias_of: alias.intern(&reg),
                                 kind: ToplevelKind::Command,
                             };
-                            let name = reg.get_or_intern(&name);
+                            let name = name.intern(&reg);
                             add_item(
                                 &mut reg.toplevel,
                                 &mut reg.item_map,
@@ -1025,12 +1037,12 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
             RegistryChild::Feature(f) => {
                 let children = convert_extension_children(&f.children, None, &mut reg);
 
-                let name = reg.get_or_intern(&f.name);
+                let name = f.name.intern(&reg);
                 let typ = Feature {
                     name,
-                    api: reg.get_or_intern(&f.api),
-                    number: reg.get_or_intern(&f.number),
-                    protect: f.protect.map(|b| reg.get_or_intern(&b)),
+                    api: f.api.intern(&reg),
+                    number: f.number.intern(&reg),
+                    protect: f.protect.map(|b| b.intern(&reg)),
                     children,
                 };
 
@@ -1049,7 +1061,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                     let deprecatedby = match ext.deprecatedby {
                         Some(s) => {
                             if !s.is_empty() {
-                                Some(reg.get_or_intern(&s))
+                                Some(s.intern(&reg))
                             } else {
                                 None
                             }
@@ -1057,22 +1069,22 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                         None => None,
                     };
 
-                    let name = reg.get_or_intern(&ext.name);
+                    let name = ext.name.intern(&reg);
                     let typ = Extension {
                         name,
                         number: ext.number.unwrap() as u32,
                         sortorder: ext.sortorder.map(|n| n as u32),
                         author: ext.author,
                         contact: ext.contact,
-                        ext_type: ext.ext_type.map(|s| reg.get_or_intern(&s)),
+                        ext_type: ext.ext_type.map(|s| s.intern(&reg)),
                         requires: parse_comma_separated(ext.requires.as_deref(), &mut reg),
-                        requires_core: ext.requires_core.map(|s| reg.get_or_intern(&s)),
-                        protect: ext.protect.map(|s| reg.get_or_intern(&s)),
-                        platform: ext.platform.map(|s| reg.get_or_intern(&s)),
+                        requires_core: ext.requires_core.map(|s| s.intern(&reg)),
+                        protect: ext.protect.map(|s| s.intern(&reg)),
+                        platform: ext.platform.map(|s| s.intern(&reg)),
                         supported: parse_comma_separated(ext.supported.as_deref(), &mut reg),
-                        promotedto: ext.promotedto.map(|s| reg.get_or_intern(&s)),
+                        promotedto: ext.promotedto.map(|s| s.intern(&reg)),
                         deprecatedby,
-                        obsoletedby: ext.obsoletedby.map(|s| reg.get_or_intern(&s)),
+                        obsoletedby: ext.obsoletedby.map(|s| s.intern(&reg)),
                         provisional: ext.provisional,
                         specialuse: parse_comma_separated(ext.specialuse.as_deref(), &mut reg),
                     };
@@ -1133,7 +1145,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                     _ => Some(bits.parse::<u8>().unwrap()),
                                 };
                                 components.push(Component {
-                                    name: reg.get_or_intern(&name),
+                                    name: name.intern(&reg),
                                     bits,
                                     numeric_format,
                                     plane_index: planeIndex,
@@ -1150,25 +1162,25 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                     index,
                                     width_divisor: widthDivisor,
                                     height_divisor: heightDivisor,
-                                    compatible: reg.get_or_intern(&compatible),
+                                    compatible: compatible.intern(&reg),
                                 });
                             }
                             FormatChild::SpirvImageFormat { name, .. } => {
-                                spirvimageformats.push(reg.get_or_intern(&name));
+                                spirvimageformats.push(name.intern(&reg));
                             }
                             _ => todo!(),
                         }
                     }
 
-                    let name = reg.get_or_intern(&f.name);
+                    let name = f.name.intern(&reg);
                     let typ = Format {
                         name,
-                        class: reg.get_or_intern(&f.class),
+                        class: f.class.intern(&reg),
                         blocksize: f.blockSize,
                         texels_per_block: f.texelsPerBlock,
                         block_extent,
                         packed: f.packed,
-                        compressed: f.compressed.map(|s| reg.get_or_intern(&s)),
+                        compressed: f.compressed.map(|s| s.intern(&reg)),
                         chroma,
                         components,
                         planes,
@@ -1191,7 +1203,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
             RegistryChild::SpirvExtensions(s) => {
                 for ext in s.children {
                     let enables = convert_spirv_enable(&ext.enables, &mut reg);
-                    let name = reg.get_or_intern(&ext.name);
+                    let name = ext.name.intern(&reg);
                     let typ = SpirvExtCap(name, enables);
 
                     add_item(
@@ -1206,7 +1218,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
             RegistryChild::SpirvCapabilities(s) => {
                 for cap in s.children {
                     let enables = convert_spirv_enable(&cap.enables, &mut reg);
-                    let name = reg.get_or_intern(&cap.name);
+                    let name = cap.name.intern(&reg);
                     let typ = SpirvExtCap(name, enables);
 
                     add_item(
@@ -1230,21 +1242,21 @@ fn convert_spirv_enable(enables: &[vk_parse::Enable], reg: &Registry) -> Vec<Spi
     for enable in enables {
         let out;
         match enable {
-            vk_parse::Enable::Version(v) => out = SpirvEnable::Version(reg.get_or_intern(&v)),
-            vk_parse::Enable::Extension(e) => out = SpirvEnable::Extension(reg.get_or_intern(&e)),
+            vk_parse::Enable::Version(v) => out = SpirvEnable::Version(v.intern(&reg)),
+            vk_parse::Enable::Extension(e) => out = SpirvEnable::Extension(e.intern(&reg)),
             vk_parse::Enable::Feature(f) => {
                 out = SpirvEnable::Feature {
-                    structure: reg.get_or_intern(&f.struct_),
-                    feature: reg.get_or_intern(&f.feature),
+                    structure: f.struct_.intern(&reg),
+                    feature: f.feature.intern(&reg),
                     requires: parse_comma_separated(f.requires.as_deref(), reg),
-                    alias: f.alias.as_ref().map(|s| reg.get_or_intern(&s)),
+                    alias: f.alias.as_ref().map(|s| s.intern(&reg)),
                 }
             }
             vk_parse::Enable::Property(p) => {
                 out = SpirvEnable::Property {
-                    property: reg.get_or_intern(&p.property),
-                    member: reg.get_or_intern(&p.member),
-                    value: reg.get_or_intern(&p.value),
+                    property: p.property.intern(&reg),
+                    member: p.member.intern(&reg),
+                    value: p.value.intern(&reg),
                     requires: parse_comma_separated(p.requires.as_deref(), reg),
                 }
             }
@@ -1282,13 +1294,13 @@ fn convert_extension_children(
                         match item {
                             vk_parse::InterfaceItem::Type { name, comment } => {
                                 converted.push(InterfaceItem::Simple {
-                                    name: reg.get_or_intern(&name),
+                                    name: name.intern(&reg),
                                     api: None,
                                 })
                             }
                             vk_parse::InterfaceItem::Command { name, comment } => {
                                 converted.push(InterfaceItem::Simple {
-                                    name: reg.get_or_intern(&name),
+                                    name: name.intern(&reg),
                                     api: None,
                                 })
                             }
@@ -1298,7 +1310,7 @@ fn convert_extension_children(
                                 // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html#_pub enum_tags
                                 assert!(e.api.is_none());
 
-                                let name = reg.get_or_intern(&e.name);
+                                let name = e.name.intern(&reg);
                                 match &e.spec {
                                     // just a constant, because of course
                                     EnumSpec::None => {
@@ -1312,7 +1324,7 @@ fn convert_extension_children(
                                     } => {
                                         converted.push(InterfaceItem::Extend {
                                             name,
-                                            extends: reg.get_or_intern(&extends),
+                                            extends: extends.intern(&reg),
                                             api: None,
                                             method: ExtendMethod::BitposExtnumber {
                                                 // if this is a feature which itself (as opposed to an extension) doesn't have an extumber, extnumber is always defined
@@ -1330,7 +1342,7 @@ fn convert_extension_children(
                                         converted.push(InterfaceItem::Extend {
                                             name,
                                             // extends can't be None right? how can a global constant be a bitpos? if yes then copy the EnumSpec::Value case and set value to a bitshifted 1?
-                                            extends: reg.get_or_intern(extends.as_ref().unwrap()),
+                                            extends: extends.as_ref().unwrap().intern(&reg),
                                             api: None,
                                             method: ExtendMethod::Bitpos(*bitpos as u32),
                                         });
@@ -1339,7 +1351,7 @@ fn convert_extension_children(
                                         match extends {
                                             Some(e) => converted.push(InterfaceItem::Extend {
                                                 name,
-                                                extends: reg.get_or_intern(e),
+                                                extends: e.intern(&reg),
                                                 api: None,
                                                 method: ExtendMethod::Value(value.clone()),
                                             }),
@@ -1354,18 +1366,14 @@ fn convert_extension_children(
                                         match extends {
                                             Some(e) => converted.push(InterfaceItem::Extend {
                                                 name,
-                                                extends: reg.get_or_intern(e),
+                                                extends: e.intern(&reg),
                                                 api: None,
-                                                method: ExtendMethod::Alias(
-                                                    reg.get_or_intern(alias),
-                                                ),
+                                                method: ExtendMethod::Alias(alias.intern(&reg)),
                                             }),
                                             // global constant
                                             None => converted.push(InterfaceItem::AddConstant {
                                                 name,
-                                                value: ConstantValue::Alias(
-                                                    reg.get_or_intern(alias),
-                                                ),
+                                                value: ConstantValue::Alias(alias.intern(&reg)),
                                             }),
                                         }
                                     }
@@ -1383,10 +1391,10 @@ fn convert_extension_children(
                 let api = parse_comma_separated(api.as_deref(), reg);
 
                 converted.push(FeatureExtensionItem::Require {
-                    profile: profile.as_ref().map(|b| reg.get_or_intern(&b)),
+                    profile: profile.as_ref().map(|b| b.intern(&reg)),
                     api,
-                    extension: extension.as_ref().map(|s| reg.get_or_intern(&s)),
-                    feature: feature.as_ref().map(|b| reg.get_or_intern(&b)),
+                    extension: extension.as_ref().map(|s| s.intern(&reg)),
+                    feature: feature.as_ref().map(|b| b.intern(&reg)),
                     items,
                 })
             }
@@ -1414,7 +1422,7 @@ fn convert_extension_children(
                             vk_parse::InterfaceItem::Command { name, comment } => item_name = name,
                             _ => todo!(),
                         }
-                        converted.push(reg.get_or_intern(&item_name));
+                        converted.push(item_name.intern(&reg));
                     }
                     converted
                 };
@@ -1422,7 +1430,7 @@ fn convert_extension_children(
                 let api = parse_comma_separated(api.as_deref(), reg);
 
                 converted.push(FeatureExtensionItem::Remove {
-                    profile: profile.as_ref().map(|b| reg.get_or_intern(&b)),
+                    profile: profile.as_ref().map(|b| b.intern(&reg)),
                     api,
                     items,
                 })
@@ -1435,10 +1443,7 @@ fn convert_extension_children(
 
 fn parse_comma_separated(what: Option<&str>, reg: &Registry) -> Vec<Spur> {
     match what {
-        Some(s) => s
-            .split_terminator(',')
-            .map(|s| reg.get_or_intern(s))
-            .collect(),
+        Some(s) => s.split_terminator(',').map(|s| s.intern(&reg)).collect(),
         None => Vec::new(),
     }
 }
