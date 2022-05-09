@@ -340,13 +340,19 @@ impl Registry {
         }
     }
     pub fn add_rename_with(&self, original: Spur, with: impl FnOnce() -> Spur) {
-        let mut renames = self.renames.borrow_mut();
-        if let Entry::Vacant(vacant) = renames.entry(original) {
-            vacant.insert(with());
+        let renames_ref = self.renames.borrow();
+        if renames_ref.contains_key(&original) {
+            // we need to drop the Ref because the closure may try to borrow the RefCell inside the registry
+            // this is non-ideal because we can't use the entry api, it would be neccessary to give the cloure
+            // an already borrowed reference but that would require some lines of code to keep the api consistent
+            drop(renames_ref);
+            let rename = with();
+            let none = self.renames.borrow_mut().insert(original, rename);
+            assert!(none.is_none());
         }
     }
     pub fn resolve<'a>(&'a self, spur: &Spur) -> Ref<'a, str> {
-        let mut renames = self.renames.borrow_mut();
+        let mut renames = self.renames.borrow();
         let spur = renames.get(spur).unwrap_or(spur);
         Ref::map(self.interner.borrow(), |a| a.resolve(spur))
     }
