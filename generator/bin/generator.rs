@@ -3,7 +3,7 @@ use format_utils::{RegistryWrap, Separated};
 use generator_lib::{
     process_registry,
     type_declaration::{TypeDecl, TypeToken},
-    EnumValue, InterfaceItem, ItemKind, Registry, Toplevel, ToplevelBody, ToplevelKind,
+    EnumValue, InterfaceItem, Intern, ItemKind, Registry, Toplevel, ToplevelBody, ToplevelKind,
 };
 use lasso::{Rodeo, Spur};
 use std::{
@@ -37,12 +37,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let reg = process_registry(reg);
 
-    // let resolve = |key| {
-    //     reg.resolve(key)
-    // };
-
-    // let int = &reg;
-
     // todo filter items by maximum api version, extensions, and all the other <requires> stuff
     // esentially crawl through all the possible definition places and reject those that don't match the hard limits
     // and refcount all the global items, then emit additional things like when apis can add constants and annotate
@@ -54,6 +48,38 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut c = BufWriter::new(bindgen_file);
     let mut rust = BufWriter::new(rust_file);
 
+    fn batch_rename(reg: &Registry, renames: &[(&str, &str)]) {
+        for (original, rename) in renames {
+            reg.add_rename_with(original.intern(&reg), || rename.intern(&reg));
+        }
+    }
+
+    // TODO this is perhaps not ideal
+    batch_rename(
+        &reg,
+        &[
+            ("uint8_t", "u8"),
+            ("uint16_t", "u16"),
+            ("uint32_t", "u32"),
+            ("uint64_t", "u64"),
+            ("int8_t", "i8"),
+            ("int16_t", "i16"),
+            ("int32_t", "i32"),
+            ("int64_t", "i64"),
+        ],
+    );
+
+    code!(
+        rust,
+        "pub type void = std::ffi::c_void;"
+        "pub type size_t = std::ffi::c_size_t;"
+        "pub type int = std::ffi::c_int;"
+        "pub type uint = std::ffi::c_uint;"
+        "pub type float = std::ffi::c_float;"
+        "pub type double = std::ffi::c_double;"
+        @
+    )?;
+
     // in vulkan bitmasks are implemented as a typedef of an integer that serves as the actual object of the bitmask
     // and a distinct enum that hold the various bitflags, with rust we want to have only the integer with the flags as associated values
     // this needs to know which Bitmask a BitmaskBits specifies the bits for
@@ -64,6 +90,29 @@ fn main() -> Result<(), Box<dyn Error>> {
             ToplevelBody::Bitmask { ty, bits_enum } => {
                 if let Some(bits_enum) = bits_enum {
                     bitmask_pairing.insert(bits_enum, name);
+                    // the rest of vulkan still refers to the *Bits structs even though we don't emit them
+                    reg.add_rename(bits_enum, name);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for item in &reg.toplevel {
+        let name = item.0;
+        match &item.1 {
+            ToplevelBody::Enum { members } => {
+                for (member_name, val) in members.iter() {
+                    reg.add_rename_with(*member_name, || {
+                        make_enum_member_rusty(name, *member_name, false, &reg).intern(&reg)
+                    });
+                }
+            }
+            ToplevelBody::BitmaskBits { members } => {
+                for (member_name, val) in members.iter() {
+                    reg.add_rename_with(*member_name, || {
+                        make_enum_member_rusty(name, *member_name, true, &reg).intern(&reg)
+                    });
                 }
             }
             _ => {}
@@ -123,9 +172,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
             ToplevelBody::Bitmask { ty, bits_enum } => {
+                // TODO when we're actually generating semantically valid rust code add #repr(transparent)
                 code!(
                     rust,
-                    "#[repr(transparent)]"
                     "pub struct {}(pub {});"
                     @ name.reg(&reg), ty.reg(&reg)
                 )?;
@@ -165,7 +214,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     // FIXME this allocates strings, also its sooo ugly
                     let name = match name {
                         SpurOrString::String(s) => s.to_owned(),
-                        SpurOrString::Spur(s) => match resolve_ident(&*reg.resolve(s), &reg) {
+                        SpurOrString::Spur(s) => match resolve_ident(s, &reg) {
                             SpurOrString::String(s) => s,
                             SpurOrString::Spur(s) => reg.resolve(&s).to_owned(),
                         },
@@ -188,11 +237,30 @@ fn main() -> Result<(), Box<dyn Error>> {
                     @ name.reg(&reg), ty.reg(&reg), val.reg(&reg)
                 )?;
             }
+            // TODO what to do with this thing? The make_rusty.. function obviously fails at this
+            // Toplevel(
+            //     "VkColorSpaceKHR",
+            //     Enum {
+            //         members: [
+            //             (
+            //                 "VK_COLOR_SPACE_SRGB_NONLINEAR_KHR",
+            //                 Value(
+            //                     0,
+            //                 ),
+            //             ),
+            //             (
+            //                 "VK_COLORSPACE_SRGB_NONLINEAR_KHR",
+            //                 Alias(
+            //                     "VK_COLOR_SPACE_SRGB_NONLINEAR_KHR",
+            //                 ),
+            //             ),
+            //         ],
+            //     },
+            // )
             ToplevelBody::Enum { members } => {
                 let members = members.iter().map(|(member_name, val)| {
-                    let name = make_enum_member_rusty(name, *member_name, false, &reg);
                     // FIXME this allocates strings
-                    let name = match resolve_ident(&name, &reg) {
+                    let name = match resolve_ident(&member_name, &reg) {
                         SpurOrString::String(s) => s,
                         SpurOrString::Spur(s) => reg.resolve(&s).to_owned(),
                     };
@@ -226,20 +294,19 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                 let ty = get_concrete_type(*bitmask_name, &reg);
                 let bits = members.iter().map(|(member_name, val)| {
-                    let name = make_enum_member_rusty(*bitmask_name, *member_name, true, &reg);
+                    let ty = ty.reg(&reg);
+                    let name = member_name.reg(&reg);
+
                     let val = match val {
                         EnumValue::Bitpos(pos) => {
-                            format!("const {}: {} = 1 << {}", name, ty.reg(&reg), pos)
+                            format!("const {}: {} = 1 << {}", name, ty, pos)
                         }
                         EnumValue::Value(val) => {
-                            format!("const {}: {} = {}", name, ty.reg(&reg), val)
+                            format!("const {}: {} = {}", name, ty, val)
                         }
-                        EnumValue::Alias(alias) => format!(
-                            "const {}: {} = Self::{}",
-                            name,
-                            ty.reg(&reg),
-                            alias.reg(&reg)
-                        ),
+                        EnumValue::Alias(alias) => {
+                            format!("const {}: {} = Self::{}", name, ty, alias.reg(&reg))
+                        }
                     };
                     val
                 });
@@ -270,17 +337,18 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 // this whole functions sucks
-fn resolve_ident<'a>(str: &str, reg: &Registry) -> SpurOrString {
-    match str {
+fn resolve_ident<'a>(spur: &Spur, reg: &Registry) -> SpurOrString {
+    let str = reg.resolve(spur);
+    match &*str {
         // TODO consider using kind
         "type" => SpurOrString::String("type_".to_owned()),
         _ => {
             if str.chars().next().unwrap().is_ascii_digit() {
                 // TODO do something better, perhaps switch the digit with the next char and then fallback to this
                 let mut string = "_".to_owned();
-                string += str;
+                string += &*str;
                 SpurOrString::String(string)
-            } else if let Some(spur) = reg.get(str) {
+            } else if let Some(spur) = reg.get(&*str) {
                 SpurOrString::Spur(spur)
             } else {
                 SpurOrString::String(str.to_owned())
@@ -353,9 +421,12 @@ fn resolve_bitfield_members(
         // start accumulating because it is a bitfield or is again just passed through to resolved
         if let Some(bits) = ty.bitfield_len {
             let type_bits = match ty.tokens[0] {
+                // TODO match against spurs made from &'static str
                 TypeToken::Ident(ty) => match &*reg.resolve(&get_concrete_type(ty, reg)) {
-                    "uint32_t" | "int32_t" | "VkFlags" => 32,
-                    "uint64_t" | "int64_t" | "VkFlags64" => 64,
+                    "uint8_t" | "int8_t" | "u8" | "i8" => 8,
+                    "uint16_t" | "int16_t" | "u16" | "i16" => 16,
+                    "uint32_t" | "int32_t" | "VkFlags" | "u32" | "i32" => 32,
+                    "uint64_t" | "int64_t" | "VkFlags64" | "u64" | "i64" => 64,
                     other => todo!("Add another type ('{}') to this match", other),
                 },
                 // microsoft (https://docs.microsoft.com/en-us/cpp/c-language/c-bit-fields?view=msvc-170) says that only primitive types
@@ -583,8 +654,8 @@ fn test_enum_rustify() {
     ];
 
     for (enum_name, member_name, const_expect, normal_expect) in data {
-        let enum_name = reg.get_or_intern(enum_name);
-        let member_name = reg.get_or_intern(member_name);
+        let enum_name = enum_name.intern(&reg);
+        let member_name = member_name.intern(&reg);
 
         let const_syntax = make_enum_member_rusty(enum_name, member_name, true, &reg);
         assert_eq!(const_expect, &const_syntax);

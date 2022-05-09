@@ -340,19 +340,40 @@ impl Registry {
         }
     }
     pub fn add_rename_with(&self, original: Spur, with: impl FnOnce() -> Spur) {
-        let renames_ref = self.renames.borrow();
-        if renames_ref.contains_key(&original) {
-            // we need to drop the Ref because the closure may try to borrow the RefCell inside the registry
-            // this is non-ideal because we can't use the entry api, it would be neccessary to give the cloure
-            // an already borrowed reference but that would require some lines of code to keep the api consistent
-            drop(renames_ref);
+        // we need to drop the Ref here because the closure may try to borrow the RefCell inside the registry,
+        // this is non-ideal because we can't use the entry api, it would be neccessary to give the cloure
+        // an already borrowed reference but that would require some lines of code to keep the api consistent
+        let get = self.renames.borrow().get(&original).map(|s| *s);
+
+        if let Some(existing) = get {
             let rename = with();
-            let none = self.renames.borrow_mut().insert(original, rename);
+            if existing != rename {
+                panic!("Attempt to rename Spur multiple times.")
+            }
+        } else {
+            let mut rename = with();
+            let mut renames_ref = self.renames.borrow_mut();
+
+            // currently we're using renames to do simple substitutions, this is unnecessary and we may want to preserve the original rename
+            // // if we are renaming a spur that is already renamed we directly replace the spur with that rename
+            // // this will spin forever if any cycles are encountered, too bad!
+            // while let Some(next) = renames_ref.get(&rename) {
+            //     rename = *next;
+            // }
+
+            let none = renames_ref.insert(original, rename);
             assert!(none.is_none());
         }
     }
+    // renaming changes the string that a spur will resolve to, however it keeps all spurs the same
+    // thus we can have multiple *different* spurs resolve to the same string
+    // this is useful for example when merging the two-part bitfield declarations: *Bits and *Flags structs
+    // we use only the *Flags name but all vulkan identifiers use the *Bits as the type, thus we can merge them easily
+    pub fn add_rename(&self, original: Spur, spur: Spur) {
+        self.add_rename_with(original, || spur);
+    }
     pub fn resolve<'a>(&'a self, spur: &Spur) -> Ref<'a, str> {
-        let mut renames = self.renames.borrow();
+        let renames = self.renames.borrow();
         let spur = renames.get(spur).unwrap_or(spur);
         Ref::map(self.interner.borrow(), |a| a.resolve(spur))
     }
