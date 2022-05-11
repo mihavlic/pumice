@@ -1,24 +1,15 @@
-#![allow(unused)]
-
 // vk.xml documentation
 // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html
 
 use std::{
     cell::{Ref, RefCell},
-    collections::{hash_map::Entry, HashMap, HashSet},
-    io::Write,
-    ops::RangeBounds,
-    sync::{
-        atomic::{AtomicPtr, Ordering},
-        RwLock,
-    },
+    collections::HashMap,
 };
 
-use lasso::{Rodeo, RodeoResolver, Spur};
+use lasso::{Rodeo, Spur};
 use type_declaration::{parse_type, TypeDecl};
 use vk_parse::{
-    EnumSpec, Error, ExtensionChild, FormatChild, RegistryChild, TypeCodeMarkup, TypeMember,
-    TypeSpec,
+    EnumSpec, ExtensionChild, FormatChild, RegistryChild, TypeCodeMarkup, TypeMember, TypeSpec,
 };
 
 pub mod debug_impl;
@@ -351,7 +342,7 @@ impl Registry {
                 panic!("Attempt to rename Spur multiple times.")
             }
         } else {
-            let mut rename = with();
+            let rename = with();
             let mut renames_ref = self.renames.borrow_mut();
 
             // currently we're using renames to do simple substitutions, this is unnecessary and we may want to preserve the original rename
@@ -837,7 +828,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                 Some(other) => todo!("{:?}", other), // Some(_) => todo!()
                             }
                         }
-                        vk_parse::TypesChild::Comment(string) => {}
+                        vk_parse::TypesChild::Comment(_string) => {}
                         _ => todo!(),
                     }
                 }
@@ -855,17 +846,33 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
 
                                     match e.spec {
                                         // <pub enum type="uint32_t" value="256" name="VK_MAX_PHYSICAL_DEVICE_NAME_SIZE"/>
-                                        EnumSpec::Value { mut value, extends } => {
+                                        EnumSpec::Value {
+                                            mut value,
+                                            extends: _,
+                                        } => {
                                             let ty = e.type_suffix.unwrap().intern(&reg);
 
                                             // junk like '(~0ULL)' (ie. unsigned long long ie. u64) is not valid rust
                                             // the NOT operator is ! instead of ~ and specifying bit width is not neccessary (I hope)
-                                            value.replace("~", "!");
+
+                                            // replace ~ with !
+                                            assert!(value.is_ascii()); // operating on bytes like this is safe only for ascii
+                                            unsafe {
+                                                for b in value.as_bytes_mut() {
+                                                    if *b == '~' as u8 {
+                                                        *b = '!' as u8;
+                                                    }
+                                                }
+                                            }
+
                                             // if the expression is wrapped in parentheses, remove them
                                             if value.chars().next().unwrap() == '(' {
                                                 value.pop();
                                                 value.remove(0);
                                             }
+
+                                            // remove the bit width specifiers - I assume this is valid since rust doesn't allow integers
+                                            // to be implicitly cast implying that the literal must start at the target bitwidth
                                             value.retain(|c| c != 'L' && c != 'L' && c != 'F');
 
                                             let typ = ToplevelBody::Constant {
@@ -882,7 +889,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                             );
                                         }
                                         // <pub enum name="VK_LUID_SIZE_KHR" alias="VK_LUID_SIZE"/>
-                                        EnumSpec::Alias { alias, extends } => {
+                                        EnumSpec::Alias { alias, extends: _ } => {
                                             let typ = ToplevelBody::Alias {
                                                 alias_of: alias.intern(&reg),
                                                 kind: ToplevelKind::Constant,
@@ -915,10 +922,10 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                     let child_name = e.name.intern(&reg);
                                     let value = match e.spec {
                                         // EnumSpec::Bitpos { bitpos, extends } => EnumValue::Bitpos(bitpos as u32),
-                                        EnumSpec::Value { value, extends } => {
+                                        EnumSpec::Value { value, extends: _ } => {
                                             EnumValue::Value(parse_detect_radix(&value))
                                         }
-                                        EnumSpec::Alias { alias, extends } => {
+                                        EnumSpec::Alias { alias, extends: _ } => {
                                             EnumValue::Alias(alias.intern(&reg))
                                         }
                                         _ => unreachable!(),
@@ -950,13 +957,13 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                 vk_parse::EnumsChild::Enum(e) => {
                                     let child_name = e.name.intern(&reg);
                                     let bitpos = match e.spec {
-                                        EnumSpec::Bitpos { bitpos, extends } => {
+                                        EnumSpec::Bitpos { bitpos, extends: _ } => {
                                             EnumValue::Bitpos(bitpos as u32)
                                         }
-                                        EnumSpec::Value { value, extends } => {
+                                        EnumSpec::Value { value, extends: _ } => {
                                             EnumValue::Value(parse_detect_radix(&value))
                                         }
-                                        EnumSpec::Alias { alias, extends } => {
+                                        EnumSpec::Alias { alias, extends: _ } => {
                                             EnumValue::Alias(alias.intern(&reg))
                                         }
                                         _ => unreachable!(),
@@ -993,7 +1000,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                             // VkResult  vkCreateInstance (const  VkInstanceCreateInfo*  pCreateInfo , const  VkAllocationCallbacks*  pAllocator ,  VkInstance*  pInstance );
 
                             let params = d.code.split_terminator('(').nth(1).unwrap();
-                            let mut split = params.split_ascii_whitespace();
+                            let split = params.split_ascii_whitespace();
 
                             let mut args = Vec::new();
                             // TODO this is dumb
@@ -1084,7 +1091,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
             RegistryChild::Extensions(e) => {
                 for ext in e.children {
                     assert!(ext.number.is_some());
-                    let children = convert_extension_children(&ext.children, ext.number, &mut reg);
+                    let _children = convert_extension_children(&ext.children, ext.number, &mut reg);
                     let deprecatedby = match ext.deprecatedby {
                         Some(s) => {
                             if !s.is_empty() {
@@ -1215,7 +1222,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                     };
 
                     if &f.name == "VkGeometryInstanceFlagsKHR" {
-                        let a = "help";
+                        let _a = "help";
                     }
 
                     add_item(
@@ -1319,18 +1326,17 @@ fn convert_extension_children(
                     let mut converted = Vec::new();
                     for item in items {
                         match item {
-                            vk_parse::InterfaceItem::Type { name, comment } => {
+                            vk_parse::InterfaceItem::Type { name, comment: _ } => {
                                 converted.push(InterfaceItem::Simple {
                                     name: name.intern(&reg),
                                     api: None,
                                 })
                             }
-                            vk_parse::InterfaceItem::Command { name, comment } => {
-                                converted.push(InterfaceItem::Simple {
+                            vk_parse::InterfaceItem::Command { name, comment: _ } => converted
+                                .push(InterfaceItem::Simple {
                                     name: name.intern(&reg),
                                     api: None,
-                                })
-                            }
+                                }),
                             vk_parse::InterfaceItem::Enum(e) => {
                                 // I don't think this is applicable here as it is already in a <require> which has its own api property
                                 // however the spec says "used to address subtle incompatibilities"
@@ -1444,9 +1450,11 @@ fn convert_extension_children(
                         let item_name;
                         match item {
                             vk_parse::InterfaceItem::Comment(_) => continue,
-                            vk_parse::InterfaceItem::Type { name, comment } => item_name = name,
+                            vk_parse::InterfaceItem::Type { name, comment: _ } => item_name = name,
                             vk_parse::InterfaceItem::Enum(e) => item_name = &e.name,
-                            vk_parse::InterfaceItem::Command { name, comment } => item_name = name,
+                            vk_parse::InterfaceItem::Command { name, comment: _ } => {
+                                item_name = name
+                            }
                             _ => todo!(),
                         }
                         converted.push(item_name.intern(&reg));

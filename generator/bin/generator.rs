@@ -1,13 +1,11 @@
-#![allow(unused)]
 use format_utils::{RegistryWrap, Separated};
 use generator_lib::{
     process_registry,
     type_declaration::{TypeDecl, TypeToken},
-    EnumValue, InterfaceItem, Intern, ItemKind, Registry, Toplevel, ToplevelBody, ToplevelKind,
+    EnumValue, Intern, ItemKind, Registry, Toplevel, ToplevelBody, ToplevelKind,
 };
-use lasso::{Rodeo, Spur};
+use lasso::Spur;
 use std::{
-    cell::RefCell,
     collections::HashMap,
     error::Error,
     fmt::Display,
@@ -88,7 +86,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     for item in &reg.toplevel {
         let name = item.0;
         match item.1 {
-            ToplevelBody::Bitmask { ty, bits_enum } => {
+            ToplevelBody::Bitmask { ty: _, bits_enum } => {
                 if let Some(bits_enum) = bits_enum {
                     bitmask_pairing.insert(bits_enum, name);
                     // the rest of vulkan still refers to the *Bits structs even though we don't emit them
@@ -103,14 +101,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         let name = item.0;
         match &item.1 {
             ToplevelBody::Enum { members } => {
-                for (member_name, val) in members.iter() {
+                for (member_name, _val) in members.iter() {
                     reg.add_rename_with(*member_name, || {
                         make_enum_member_rusty(name, *member_name, false, &reg).intern(&reg)
                     });
                 }
             }
             ToplevelBody::BitmaskBits { members } => {
-                for (member_name, val) in members.iter() {
+                for (member_name, _val) in members.iter() {
                     reg.add_rename_with(*member_name, || {
                         make_enum_member_rusty(name, *member_name, true, &reg).intern(&reg)
                     });
@@ -133,7 +131,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
                 ToplevelKind::Constant => {
                     let item = resolve_alias(*alias_of, ToplevelKind::Constant, &reg);
-                    let (ty, val) = match item.1 {
+                    let (ty, _val) = match item.1 {
                         ToplevelBody::Constant { ty, val } => (ty, val),
                         _ => unreachable!(),
                     };
@@ -168,11 +166,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                         @ name.reg(&reg), ty.reg(&reg)
                     )?;
                 } else {
-                    c.write(code.as_bytes());
-                    c.write(b"\n");
+                    c.write(code.as_bytes())?;
+                    c.write(b"\n")?;
                 }
             }
-            ToplevelBody::Bitmask { ty, bits_enum } => {
+            ToplevelBody::Bitmask { ty, bits_enum: _ } => {
                 // TODO when we're actually generating semantically valid rust code add #repr(transparent)
                 code!(
                     rust,
@@ -501,16 +499,16 @@ fn get_concrete_type(toplevel: Spur, reg: &Registry) -> Spur {
         };
         // assert that no weird things are going on as other interface items can't alias this way
         if ty != ItemKind::Toplevel {
-            let b = &*reg.resolve(&toplevel);
-            let a = "s";
+            let _b = &*reg.resolve(&toplevel);
+            let _a = "s";
         }
 
         let top = &reg.toplevel[index as usize];
         match &top.1 {
-            ToplevelBody::Alias { alias_of, kind: alias_kind } => toplevel = *alias_of,
-            ToplevelBody::Bitmask { ty, bits_enum } => toplevel = *ty,
-            ToplevelBody::Handle { object_type, dispatchable } => toplevel = reg.get("uint64_t").unwrap(),
-            ToplevelBody::Constant { ty, val } => toplevel = *ty,
+            ToplevelBody::Alias { alias_of, kind: _alias_kind } => toplevel = *alias_of,
+            ToplevelBody::Bitmask { ty, bits_enum: _ } => toplevel = *ty,
+            ToplevelBody::Handle { object_type: _, dispatchable: _ } => toplevel = reg.get("uint64_t").unwrap(),
+            ToplevelBody::Constant { ty, val: _ } => toplevel = *ty,
             ToplevelBody::Included { .. } |
             ToplevelBody::Basetype { .. } |
             ToplevelBody::Struct { .. } |
@@ -595,8 +593,8 @@ fn make_enum_member_rusty(
 
         // the two strings case-insetively match
         let same = if estr.len() == mstr.len() {
-            let mut e = estr.chars().map(|c| c.to_ascii_lowercase());
-            let mut m = mstr.chars().map(|c| c.to_ascii_lowercase());
+            let e = estr.chars().map(|c| c.to_ascii_lowercase());
+            let m = mstr.chars().map(|c| c.to_ascii_lowercase());
             e.eq(m)
         } else {
             false
@@ -635,7 +633,7 @@ fn make_enum_member_rusty(
 
 #[test]
 fn test_enum_rustify() {
-    let mut reg = Registry::new();
+    let reg = Registry::new();
 
     let data = &[
         (

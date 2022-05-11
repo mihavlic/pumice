@@ -1,10 +1,6 @@
-use std::{
-    borrow::Borrow,
-    fmt::{Arguments, Debug, Display, Formatter, Write},
-    marker::PhantomData,
-};
+use std::fmt::{Arguments, Display, Formatter, Write};
 
-use generator_lib::type_declaration::{TypeDecl, TypeToken};
+use generator_lib::type_declaration::TypeDecl;
 use lasso::Spur;
 
 use crate::Registry;
@@ -72,7 +68,7 @@ impl<T: Iterator + Clone, F: Fn(<T as Iterator>::Item, &mut Formatter<'_>) -> st
             }
 
             first = false;
-            (self.fun)(next, f);
+            (self.fun)(next, f)?;
 
             if !last || self.end_last {
                 f.write_str(self.end)?;
@@ -158,7 +154,7 @@ impl<T: RegistryDisplay> RegistryDisplay for Option<T> {
     fn format(&self, reg: &Registry, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Some(some) => {
-                f.write_str("Some(");
+                f.write_str("Some(")?;
                 some.format(reg, f)?;
                 f.write_char(')')
             }

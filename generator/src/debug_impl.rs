@@ -3,7 +3,7 @@ use std::{
     fmt::{Debug, Write},
 };
 
-use lasso::{Rodeo, Spur};
+use lasso::{Spur};
 
 use crate::{
     type_declaration::TypeDecl, CommandParameter, Component, ConstantValue, Define, EnumValue,

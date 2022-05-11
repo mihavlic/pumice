@@ -1,9 +1,9 @@
 use std::{
-    fmt::{Display, Write},
+    fmt::{Write},
     ops::Deref,
 };
 
-use lasso::{Rodeo, Spur};
+use lasso::{Spur};
 
 use crate::Registry;
 
@@ -47,7 +47,7 @@ impl TypeDecl {
         // Const 'char'** => 'char' Const* Mut*
         while i < self.tokens.len() {
             match self.tokens[i] {
-                TypeToken::Ident(ident) => {}
+                TypeToken::Ident(_ident) => {}
                 // 'char'* => char Mut *
                 TypeToken::Ptr => {
                     if let Some(prev) = i.checked_sub(1) {
