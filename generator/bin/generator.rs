@@ -10,6 +10,7 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     error::Error,
+    fmt::Display,
     fs::File,
     io::{BufWriter, Write},
     path::Path,
@@ -197,11 +198,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             ToplevelBody::Funcpointer { return_type, args } => {
                 let ret = return_type.as_rust_order(&reg);
-                let args = args.iter().map(|(_, n)| n.as_rust_order(&reg));
+                let args = Separated::args(args.iter(), |(_, ty), f| {
+                    ty.as_rust_order(&reg).reg(&reg).fmt(f)
+                });
                 code!(
                     rust,
                     "pub type {} = fn({}) -> {};"
-                    @ name.reg(&reg), Separated::args(args).reg(&reg), ret.reg(&reg)
+                    @ name.reg(&reg), args, ret.reg(&reg)
                 )?;
             }
             ToplevelBody::Struct { union, members } => {
@@ -209,25 +212,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                     true => "union",
                     false => "struct",
                 };
-                let resolved_members = resolve_bitfield_members(&members, &reg);
-                let members = resolved_members.iter().map(|(name, ty)| {
-                    // FIXME this allocates strings, also its sooo ugly
-                    let name = match name {
-                        SpurOrString::String(s) => s.to_owned(),
-                        SpurOrString::Spur(s) => match resolve_ident(s, &reg) {
-                            SpurOrString::String(s) => s,
-                            SpurOrString::Spur(s) => reg.resolve(&s).to_owned(),
-                        },
-                    };
+                let members = resolve_bitfield_members(&members, &reg);
+                let members = Separated::members(members.iter(), |(name, ty), f| {
                     let ty = ty.as_rust_order(&reg);
-                    format!("{}: {}", name, ty.reg(&reg))
+                    format_args!("{}: {}", name.reg(&reg), ty.reg(&reg)).fmt(f)
                 });
                 code!(
                     rust,
                     "pub {} {} {{"
                     "    {}"
                     "}}"
-                    @ keyword, name.reg(&reg), Separated::members(members)
+                    @ keyword, name.reg(&reg), members
                 )?;
             }
             ToplevelBody::Constant { ty, val } => {
@@ -258,25 +253,23 @@ fn main() -> Result<(), Box<dyn Error>> {
             //     },
             // )
             ToplevelBody::Enum { members } => {
-                let members = members.iter().map(|(member_name, val)| {
+                let members = Separated::members(members.iter(), |(name, val), f| {
                     // FIXME this allocates strings
-                    let name = match resolve_ident(&member_name, &reg) {
-                        SpurOrString::String(s) => s,
-                        SpurOrString::Spur(s) => reg.resolve(&s).to_owned(),
-                    };
-                    let val = match val {
-                        EnumValue::Bitpos(pos) => format!("{} = 1 << {}", name, pos),
-                        EnumValue::Value(val) => format!("{} = {}", name, val),
-                        EnumValue::Alias(alias) => format!("{} = Self::{}", name, alias.reg(&reg)),
-                    };
-                    val
+                    let name = resolve_ident(name, &reg).reg(&reg);
+                    match val {
+                        EnumValue::Bitpos(pos) => format_args!("{} = 1 << {}", name, *pos).fmt(f),
+                        EnumValue::Value(val) => format_args!("{} = {}", name, *val).fmt(f),
+                        EnumValue::Alias(alias) => {
+                            format_args!("{} = Self::{}", name, (*alias).reg(&reg)).fmt(f)
+                        }
+                    }
                 });
                 code!(
                     rust,
                     "pub enum {} {{"
                     "    {}"
                     "}}"
-                    @ name.reg(&reg), Separated::members(members)
+                    @ name.reg(&reg), members
                 )?;
             }
             ToplevelBody::BitmaskBits { members } => {
@@ -293,35 +286,65 @@ fn main() -> Result<(), Box<dyn Error>> {
                 };
 
                 let ty = get_concrete_type(*bitmask_name, &reg);
-                let bits = members.iter().map(|(member_name, val)| {
+                let bits = Separated::statements(members.iter(), |(name, val), f| {
                     let ty = ty.reg(&reg);
-                    let name = member_name.reg(&reg);
-
-                    let val = match val {
+                    let name = name.reg(&reg);
+                    match val {
                         EnumValue::Bitpos(pos) => {
-                            format!("const {}: {} = 1 << {}", name, ty, pos)
+                            format_args!("const {}: {} = 1 << {}", name, ty, pos).fmt(f)
                         }
                         EnumValue::Value(val) => {
-                            format!("const {}: {} = {}", name, ty, val)
+                            format_args!("const {}: {} = {}", name, ty, val).fmt(f)
                         }
                         EnumValue::Alias(alias) => {
-                            format!("const {}: {} = Self::{}", name, ty, alias.reg(&reg))
+                            format_args!("const {}: {} = Self::{}", name, ty, alias.reg(&reg))
+                                .fmt(f)
                         }
-                    };
-                    val
+                    }
                 });
                 code!(
                     rust,
                     "impl {} {{"
                     "    {}"
                     "}}"
-                    @ bitmask_name.reg(&reg), Separated::statements(bits)
+                    @ bitmask_name.reg(&reg), bits
                 )?;
             }
             ToplevelBody::Command {
                 return_type,
                 params,
-            } => {}
+            } => {
+                let mut return_str = None;
+                // function just returns 'void'
+                if return_type.tokens.len() == 1 {
+                    if let TypeToken::Ident(ty) = &return_type.tokens[0] {
+                        if &*reg.resolve(ty) == "void" {
+                            return_str = Some("".to_string());
+                        }
+                    }
+                }
+                // the function has an actual return type
+                if return_str.is_none() {
+                    return_str = Some(format!(" -> {}", return_type.as_rust_order(&reg).reg(&reg)));
+                }
+
+                let args = Separated::args(params.iter(), |param, f| {
+                    format_args!(
+                        "{}: {}",
+                        param.name.reg(&reg),
+                        param.ty.as_rust_order(&reg).reg(&reg)
+                    )
+                    .fmt(f)
+                });
+
+                code!(
+                    rust,
+                    "pub fn {}({}){} {{"
+                    "    todo!()"
+                    "}}"
+                    @ name.reg(&reg), args, return_str.unwrap()
+                )?;
+            }
         }
     }
 
@@ -337,37 +360,25 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 // this whole functions sucks
-fn resolve_ident<'a>(spur: &Spur, reg: &Registry) -> SpurOrString {
+fn resolve_ident<'a>(spur: &Spur, reg: &Registry) -> Spur {
     let str = reg.resolve(spur);
     match &*str {
         // TODO consider using kind
-        "type" => SpurOrString::String("type_".to_owned()),
-        _ => {
-            if str.chars().next().unwrap().is_ascii_digit() {
+        "type" => "type_".intern(&reg),
+        other => {
+            if other.chars().next().unwrap().is_ascii_digit() {
                 // TODO do something better, perhaps switch the digit with the next char and then fallback to this
-                let mut string = "_".to_owned();
-                string += &*str;
-                SpurOrString::String(string)
-            } else if let Some(spur) = reg.get(&*str) {
-                SpurOrString::Spur(spur)
+                let new_str = format!("_{}", other);
+                drop(str); // str is keeping the Registry interner RefCell borrowed
+                new_str.intern(&reg)
             } else {
-                SpurOrString::String(str.to_owned())
+                *spur
             }
         }
     }
 }
 
-// resolve_bitfield_members can create new identifiers and borrowchecker doesn't like it that
-// it would need mutable acess to Registry to intern new strings, FIXME
-enum SpurOrString {
-    String(String),
-    Spur(Spur),
-}
-
-fn resolve_bitfield_members(
-    members: &[(Spur, TypeDecl)],
-    reg: &Registry,
-) -> Vec<(SpurOrString, TypeDecl)> {
+fn resolve_bitfield_members(members: &[(Spur, TypeDecl)], reg: &Registry) -> Vec<(Spur, TypeDecl)> {
     let mut resolved = Vec::new();
     let mut last_ty: Option<Vec<TypeToken>> = None;
     let mut current_bits = 0;
@@ -396,14 +407,14 @@ fn resolve_bitfield_members(
 
             // TODO consider some better naming rather than just concatenating everything
             let name = if merged_members.len() == 1 {
-                SpurOrString::Spur(merged_members[0])
+                merged_members[0]
             } else {
                 let mut concat = reg.resolve(&merged_members[0]).to_owned();
                 for member in &merged_members[1..] {
                     concat += "_";
                     concat += &*reg.resolve(&member);
                 }
-                SpurOrString::String(concat)
+                concat.intern(&reg)
             };
             resolved.push((
                 name,
@@ -441,7 +452,7 @@ fn resolve_bitfield_members(
             last_ty = Some(ty.tokens.clone());
             merged_members.push(*name);
         } else {
-            resolved.push((SpurOrString::Spur(*name), ty.clone()));
+            resolved.push((*name, ty.clone()));
         }
     }
 

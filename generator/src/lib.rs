@@ -86,7 +86,7 @@ pub enum ToplevelBody {
         members: Vec<(Spur, EnumValue)>,
     },
     Command {
-        return_type: Spur,
+        return_type: TypeDecl,
         params: Vec<CommandParameter>,
     },
 }
@@ -458,7 +458,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                 // platform types with required headers
                                 // <type requires="X11/Xlib.h" name="Display"/>
                                 //
-                                // there's also, which is of course missing a '.h' so prepare to have a special case
+                                // there's also this, which is of course missing a '.h' so prepare to have a special case
                                 // <type requires="vk_platform" name="void"/>
                                 //
                                 // incredibly enough there is this as well, ##@$@!
@@ -467,14 +467,14 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                     // TODO consider hardcoding the ck_platform types and 'int' and ignore them here
                                     let name = ty.name.unwrap();
 
-                                    let header = match &*name {
-                                        "int" => "FIXME_WHAT_TO_DO",
-                                        _ => ty.requires.as_ref().unwrap(),
-                                    };
+                                    // there is just an 'int' - Why? Just skip it and alias it to std::ffi::c_int later
+                                    if name == "int" {
+                                        continue;
+                                    }
 
                                     let name = name.intern(&reg);
                                     let typ = ToplevelBody::Included {
-                                        header: header.intern(&reg),
+                                        header: ty.requires.as_ref().unwrap().intern(&reg),
                                     };
 
                                     add_item(
@@ -987,7 +987,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                 for child in c.children {
                     match child {
                         vk_parse::Command::Definition(d) => {
-                            // does the lib really reconpub struct C code instead of giving me the full parameters??
+                            // does the lib really reconstruct C code instead of giving me the full parameters??
                             // repurpose the code from 'funcpointer' parsing
                             // TODO cleanup, switch to using xml directly
                             // VkResult  vkCreateInstance (const  VkInstanceCreateInfo*  pCreateInfo , const  VkAllocationCallbacks*  pAllocator ,  VkInstance*  pInstance );
@@ -1031,7 +1031,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                             let return_type = d.proto.type_name.unwrap();
 
                             let typ = ToplevelBody::Command {
-                                return_type: return_type.intern(&reg),
+                                return_type: parse_type(&return_type, false, &reg).1,
                                 params,
                             };
 

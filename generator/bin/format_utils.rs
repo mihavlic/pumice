@@ -1,6 +1,6 @@
 use std::{
     borrow::Borrow,
-    fmt::{Debug, Display, Write},
+    fmt::{Arguments, Debug, Display, Formatter, Write},
     marker::PhantomData,
 };
 
@@ -9,50 +9,60 @@ use lasso::Spur;
 
 use crate::Registry;
 
-pub struct Separated<T: Iterator + Clone> {
-    pub iter: T,
+pub struct Separated<
+    T: Iterator + Clone,
+    F: Fn(<T as Iterator>::Item, &mut Formatter<'_>) -> std::fmt::Result,
+> {
+    iter: T,
+    fun: F,
     // the string before writing the content of the iterator
-    pub pad: &'static str,
+    pad: &'static str,
     // the string after writing the content of the iterator
-    pub end: &'static str,
+    end: &'static str,
     // whether to write the end string even for the last element, this is useful for separated but not actually delimited elements
     // such as function arguments
-    pub end_last: bool,
+    end_last: bool,
     // whether to separate elements with a newline along with the 'end' string padding
     // the difference here is that we want to emit newlines for every but the last element
     // but if end_last is set we want to write the end string for every single one
-    pub newline: bool,
+    newline: bool,
 }
 
-impl<T: Iterator + Clone> Separated<T> {
+impl<T: Iterator + Clone, F: Fn(<T as Iterator>::Item, &mut Formatter<'_>) -> std::fmt::Result>
+    Separated<T, F>
+{
     pub fn new(
         iter: T,
-        padding: &'static str,
+        fun: F,
+        pad: &'static str,
         end: &'static str,
         newline: bool,
         end_last: bool,
     ) -> Self {
         Self {
             iter,
-            pad: padding,
+            fun,
+            pad,
             end,
             end_last,
             newline,
         }
     }
-    pub fn args(iter: T) -> Self {
-        Self::new(iter, ", ", "", false, false)
+    pub fn args(iter: T, fun: F) -> Self {
+        Self::new(iter, fun, ", ", "", false, false)
     }
-    pub fn members(iter: T) -> Self {
-        Self::new(iter, "    ", ",", true, false)
+    pub fn members(iter: T, fun: F) -> Self {
+        Self::new(iter, fun, "    ", ",", true, false)
     }
-    pub fn statements(iter: T) -> Self {
-        Self::new(iter, "    ", ";", true, true)
+    pub fn statements(iter: T, fun: F) -> Self {
+        Self::new(iter, fun, "    ", ";", true, true)
     }
 }
 
-impl<I: Display, T: Iterator<Item = I> + Clone> Display for Separated<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<T: Iterator + Clone, F: Fn(<T as Iterator>::Item, &mut Formatter<'_>) -> std::fmt::Result>
+    Display for Separated<T, F>
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let mut iter = self.iter.clone().peekable();
         let mut first = true;
         while let Some(next) = iter.next() {
@@ -60,8 +70,10 @@ impl<I: Display, T: Iterator<Item = I> + Clone> Display for Separated<T> {
             if !first {
                 f.write_str(self.pad)?;
             }
+
             first = false;
-            Display::fmt(&next, f)?;
+            (self.fun)(next, f);
+
             if !last || self.end_last {
                 f.write_str(self.end)?;
             }
@@ -86,11 +98,11 @@ impl<T> RegistryWrap for T {
 }
 
 pub trait RegistryDisplay {
-    fn format(&self, reg: &Registry, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result;
+    fn format(&self, reg: &Registry, f: &mut Formatter<'_>) -> std::fmt::Result;
 }
 
 impl<'a, T: RegistryDisplay> Display for WithRegistry<'a, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         RegistryDisplay::format(&self.1, self.0, f)
     }
 }
@@ -108,26 +120,32 @@ macro_rules! code {
     }
 }
 
+impl RegistryDisplay for Arguments<'_> {
+    fn format(&self, _: &Registry, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(*self)
+    }
+}
+
 impl RegistryDisplay for &str {
-    fn format(&self, _: &Registry, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn format(&self, _: &Registry, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str(self)
     }
 }
 
 impl RegistryDisplay for String {
-    fn format(&self, _: &Registry, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn format(&self, _: &Registry, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
 impl RegistryDisplay for u32 {
-    fn format(&self, _: &Registry, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn format(&self, _: &Registry, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!("{}", self))
     }
 }
 
 impl RegistryDisplay for bool {
-    fn format(&self, _: &Registry, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn format(&self, _: &Registry, f: &mut Formatter<'_>) -> std::fmt::Result {
         let str = match self {
             true => "true",
             false => "false",
@@ -137,7 +155,7 @@ impl RegistryDisplay for bool {
 }
 
 impl<T: RegistryDisplay> RegistryDisplay for Option<T> {
-    fn format(&self, reg: &Registry, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn format(&self, reg: &Registry, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Some(some) => {
                 f.write_str("Some(");
@@ -150,41 +168,41 @@ impl<T: RegistryDisplay> RegistryDisplay for Option<T> {
 }
 
 impl RegistryDisplay for Spur {
-    fn format(&self, reg: &Registry, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn format(&self, reg: &Registry, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str(&*reg.resolve(self))
     }
 }
 
 impl RegistryDisplay for TypeDecl {
-    fn format(&self, reg: &Registry, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn format(&self, reg: &Registry, f: &mut Formatter<'_>) -> std::fmt::Result {
         TypeDecl::fmt(self, f, reg)
     }
 }
 
-impl<'a, I: RegistryDisplay, T: Iterator<Item = I> + Clone> RegistryDisplay for Separated<T> {
-    fn format(&self, reg: &Registry, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut iter = self.iter.clone().peekable();
-        let mut first = true;
-        while let Some(next) = iter.next() {
-            let last = iter.peek().is_none();
-            if !first {
-                f.write_str(self.pad)?;
-            }
-            first = false;
-            RegistryDisplay::format(&next, reg, f)?;
-            if !last {
-                f.write_str(self.end)?;
-                if self.newline {
-                    f.write_char('\n')?;
-                }
-            }
-        }
-        Ok(())
-    }
-}
+// impl<'a, I: RegistryDisplay, T: Iterator<Item = I> + Clone> RegistryDisplay for Separated<T> {
+//     fn format(&self, reg: &Registry, f: &mut Formatter<'_>) -> std::fmt::Result {
+//         let mut iter = self.iter.clone().peekable();
+//         let mut first = true;
+//         while let Some(next) = iter.next() {
+//             let last = iter.peek().is_none();
+//             if !first {
+//                 f.write_str(self.pad)?;
+//             }
+//             first = false;
+//             RegistryDisplay::format(&next, reg, f)?;
+//             if !last {
+//                 f.write_str(self.end)?;
+//                 if self.newline {
+//                     f.write_char('\n')?;
+//                 }
+//             }
+//         }
+//         Ok(())
+//     }
+// }
 
 impl<T: RegistryDisplay> RegistryDisplay for &T {
-    fn format(&self, reg: &Registry, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn format(&self, reg: &Registry, f: &mut Formatter<'_>) -> std::fmt::Result {
         T::format(self, reg, f)
     }
 }
