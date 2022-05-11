@@ -53,7 +53,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // TODO this is perhaps not ideal
+    // FIXME this is perhaps not ideal
     batch_rename(
         &reg,
         &[
@@ -166,6 +166,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         @ name.reg(&reg), ty.reg(&reg)
                     )?;
                 } else {
+                    // write the raw code to the c file and let bindgen handle it
                     c.write(code.as_bytes())?;
                     c.write(b"\n")?;
                 }
@@ -210,7 +211,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     true => "union",
                     false => "struct",
                 };
-                let members = resolve_bitfield_members(&members, &reg);
+                let members = merge_bitfield_members(&members, &reg);
                 let members = Separated::members(members.iter(), |(name, ty), f| {
                     let ty = ty.as_rust_order(&reg);
                     format_args!("{}: {}", name.reg(&reg), ty.reg(&reg)).fmt(f)
@@ -252,8 +253,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             // )
             ToplevelBody::Enum { members } => {
                 let members = Separated::members(members.iter(), |(name, val), f| {
-                    // FIXME this allocates strings
-                    let name = resolve_ident(name, &reg).reg(&reg);
+                    let name = identifier_need_rename(name, &reg).reg(&reg);
                     match val {
                         EnumValue::Bitpos(pos) => format_args!("{} = 1 << {}", name, *pos).fmt(f),
                         EnumValue::Value(val) => format_args!("{} = {}", name, *val).fmt(f),
@@ -283,10 +283,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     None => continue,
                 };
 
-                let ty = get_concrete_type(*bitmask_name, &reg);
+                let ty = get_concrete_type(*bitmask_name, &reg).reg(&reg);
                 let bits = Separated::statements(members.iter(), |(name, val), f| {
-                    let ty = ty.reg(&reg);
-                    let name = name.reg(&reg);
+                    let name = identifier_need_rename(name, &reg).reg(&reg);
                     match val {
                         EnumValue::Bitpos(pos) => {
                             format_args!("const {}: {} = 1 << {}", name, ty, pos).fmt(f)
@@ -357,26 +356,27 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-// this whole functions sucks
-fn resolve_ident<'a>(spur: &Spur, reg: &Registry) -> Spur {
+// whether the identifier needs to be renamed to be valid in rust
+// escape keywords and prevent identifiers starting with a digit
+fn identifier_need_rename(spur: &Spur, reg: &Registry) -> Option<Spur> {
     let str = reg.resolve(spur);
     match &*str {
         // TODO consider using kind
-        "type" => "type_".intern(&reg),
+        "type" => Some("type_".intern(&reg)),
         other => {
             if other.chars().next().unwrap().is_ascii_digit() {
                 // TODO do something better, perhaps switch the digit with the next char and then fallback to this
                 let new_str = format!("_{}", other);
                 drop(str); // str is keeping the Registry interner RefCell borrowed
-                new_str.intern(&reg)
+                Some(new_str.intern(&reg))
             } else {
-                *spur
+                None
             }
         }
     }
 }
 
-fn resolve_bitfield_members(members: &[(Spur, TypeDecl)], reg: &Registry) -> Vec<(Spur, TypeDecl)> {
+fn merge_bitfield_members(members: &[(Spur, TypeDecl)], reg: &Registry) -> Vec<(Spur, TypeDecl)> {
     let mut resolved = Vec::new();
     let mut last_ty: Option<Vec<TypeToken>> = None;
     let mut current_bits = 0;
@@ -457,9 +457,8 @@ fn resolve_bitfield_members(members: &[(Spur, TypeDecl)], reg: &Registry) -> Vec
     resolved
 }
 
-// it seems that resolve is my new favorite word
-// jumps through as many aliases is needed and returns the concrete toplevel item,
-// in cases where the provided identifier is not and alias it is simply returned back
+// jumps through as many aliases (Toplevel::Alias) is needed and returns the concrete toplevel item,
+// in cases where the provided identifier is not an alias it is simply returned back
 fn resolve_alias(alias: Spur, kind: ToplevelKind, registry: &Registry) -> &Toplevel {
     let mut alias = alias;
     loop {
@@ -485,9 +484,10 @@ fn resolve_alias(alias: Spur, kind: ToplevelKind, registry: &Registry) -> &Tople
     }
 }
 
-// type is roughly synonymous with a toplevel item, the difference between this and resolve_alias
-// is that this also jumps through things preserving the type layout, such as handles or constants
-// this will stop at typedefs as those are handled by bindgen and thus don't have information about
+// get the underlying type of a toplevel item (type is roughly synonymous with a toplevel item),
+// the difference between this and resolve_alias is that this also jumps through things preserving
+// the type layout, such as handles or constants this will stop at typedefs as those are
+// handled by bindgen and thus we don't have information about
 fn get_concrete_type(toplevel: Spur, reg: &Registry) -> Spur {
     let mut toplevel = toplevel;
     loop {
@@ -509,8 +509,16 @@ fn get_concrete_type(toplevel: Spur, reg: &Registry) -> Spur {
             ToplevelBody::Bitmask { ty, bits_enum: _ } => toplevel = *ty,
             ToplevelBody::Handle { object_type: _, dispatchable: _ } => toplevel = reg.get("uint64_t").unwrap(),
             ToplevelBody::Constant { ty, val: _ } => toplevel = *ty,
+            ToplevelBody::Basetype { ty, .. } => {
+                // TODO is this what we want? It was introduced to change the types in bitset members from 'VkFlags' to 'u32'
+                // it is doubtful whether it makes any difference  
+                if let Some(ty) = ty {
+                    toplevel = *ty;
+                } else {
+                    return toplevel;
+                }
+            },
             ToplevelBody::Included { .. } |
-            ToplevelBody::Basetype { .. } |
             ToplevelBody::Struct { .. } |
             ToplevelBody::Funcpointer { .. } => return toplevel,
             ToplevelBody::Command { .. } => unreachable!(),
@@ -539,8 +547,6 @@ fn make_enum_member_rusty(
     constant_syntax: bool,
     reg: &Registry,
 ) -> String {
-    // there are occasionally numbers as well, right now if the number is preceded by an uppercase number we treat is as a lowercase, otherwise it's uppercase
-
     // VkVideoEncodeH265CapabilityFlagsEXT
     // VK_VIDEO_ENCODE_H265_CAPABILITY_SEPARATE_COLOUR_PLANE_BIT_EXT
 
