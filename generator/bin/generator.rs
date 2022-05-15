@@ -529,111 +529,120 @@ fn get_concrete_type(toplevel: Spur, reg: &Registry) -> Spur {
     }
 }
 
-// enum VkPresentModeKHR {
-//     VK_PRESENT_MODE_IMMEDIATE_KHR = 0, -> Immediate = 0,
-//     ..
-// }
-//
+pub struct CamelCaseSplit<'a> {
+    str: &'a str,
+}
+
+impl<'a> CamelCaseSplit<'a> {
+    fn new(str: &'a str) -> Self {
+        Self { str }
+    }
+}
+
+impl<'a> Iterator for CamelCaseSplit<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.str.is_empty() {
+            return None;
+        }
+
+        let mut chars = self.str.chars();
+        let mut prev = chars.next().unwrap();
+
+        for (i, c) in chars.enumerate() {
+            // just match all the different situations where we want to end a "chunk"
+            // Hah|A, Hah|42, 42|Aha
+            if (prev.is_ascii_lowercase() && c.is_ascii_uppercase())
+                || (prev.is_ascii_lowercase() && c.is_ascii_digit())
+                || (prev.is_ascii_digit() && c.is_ascii_uppercase())
+            {
+                let (l, r) = self.str.split_at(i + 1); // +1 because we started iterating after already pulling a character from the iterator
+                self.str = r;
+                return Some(l);
+            }
+            prev = c;
+        }
+
+        return Some(std::mem::replace(&mut self.str, &""));
+    }
+}
+
 // this will fuzzy match on the member name and strip the enum name and the extension tag boilerplate
-// we also have this beauty, so we will have to skip any "Flags":
-//
-// impl VkDebugReportFlagsEXT {
-//     const VK_DEBUG_REPORT_INFORMATION_BIT_EXT: VkFlags = 1 << 0;
-//     ..
-// }
+//  VkDebugReportFlagsEXT -> Vk Debug Report Flags EXT
+//  VK_DEBUG_REPORT_INFORMATION_BIT_EXT -> VK DEBUG REPORT INFORMATION BIT EXT
+// => INFORMATION BIT
 fn make_enum_member_rusty(
     enum_name: Spur,
     member_name: Spur,
     constant_syntax: bool,
     reg: &Registry,
 ) -> String {
+    // enum VkPresentModeKHR {
+    //     VK_PRESENT_MODE_IMMEDIATE_KHR = 0, -> Immediate = 0,
+    //     ..
+    // }
+
+    // we also have this beauty, so we will have to skip any "Flags":
+
+    // impl VkDebugReportFlagsEXT {
+    //     const VK_DEBUG_REPORT_INFORMATION_BIT_EXT: VkFlags = 1 << 0;
+    //     ..
+    // }
+
     // VkVideoEncodeH265CapabilityFlagsEXT
     // VK_VIDEO_ENCODE_H265_CAPABILITY_SEPARATE_COLOUR_PLANE_BIT_EXT
 
     // VkFormatFeatureFlags2
     // VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT
 
-    // gets the end position (index of the element after the last one we want)
-    // of the current chunk, chunks consist of substrings starting with a uppercase letter
-    // and ending with a lowercase letter or at the end of the whole string
-    fn get_next_enum_chunk(str: &str, start: usize) -> usize {
-        let mut prev = 'A'; // any uppercase letter will do
-        for (i, c) in str[start..].chars().enumerate() {
-            // just match all the different situations where we want to end a chunk
-            // Hah|A, Hah|42, 42|Aha
-            if (prev.is_ascii_lowercase() && c.is_ascii_uppercase())
-                || (prev.is_ascii_lowercase() && c.is_ascii_digit())
-                || (prev.is_ascii_digit() && c.is_ascii_uppercase())
-            {
-                return start + i;
-            }
-            prev = c;
-        }
-        return str.len();
-    }
-    // chunks are separated by underscores, we strip the underscore lower down
-    fn get_next_member_chunk(str: &str, start: usize) -> usize {
-        str.get((start + 1)..)
-            .and_then(|s| s.chars().position(|c| c == '_').map(|p| start + p + 1))
-            .unwrap_or(str.len())
-    }
+    let mut out = String::new();
 
     let enum_str = &*reg.resolve(&enum_name);
     let member_str = &*reg.resolve(&member_name);
 
-    let mut enum_start = 0;
-    let mut enum_end = get_next_enum_chunk(enum_str, 0);
+    // we skip "Flags" as they are part of the enum boilerplate but don't occur in the member, see above
+    let mut enum_chunks = CamelCaseSplit::new(enum_str)
+        .filter(|s| *s != "Flags")
+        .peekable();
+    let mut member_chunks = member_str.split('_');
 
-    let mut member_start = 0;
-    let mut member_end = get_next_member_chunk(member_str, 0);
+    while let Some(mstr) = member_chunks.next() {
+        let estr = enum_chunks.peek();
 
-    let mut out = String::new();
-    while member_start < member_str.len() {
-        let estr = &enum_str[enum_start..enum_end];
-        let mut mstr = &member_str[member_start..member_end];
+        // if estr runs out we just continue processing what's left in member_string
+        if let Some(estr) = estr {
+            // the strings can never match if their length differs
+            if estr.len() == mstr.len() {
+                let e = estr.chars().map(|c| c.to_ascii_lowercase());
+                let m = mstr.chars().map(|c| c.to_ascii_lowercase());
 
-        // there are underscores between chunks, we don't want to compare them
-        if &mstr[0..1] == "_" {
-            mstr = &mstr[1..];
+                // case-insetively compare the strings
+                if Iterator::eq(e, m) {
+                    enum_chunks.next();
+                    continue;
+                }
+            }
         }
 
-        // the two strings case-insetively match
-        let same = if estr.len() == mstr.len() {
-            let e = estr.chars().map(|c| c.to_ascii_lowercase());
-            let m = mstr.chars().map(|c| c.to_ascii_lowercase());
-            e.eq(m)
-        } else {
-            false
-        };
-
-        // we skip Flags as they are part of the enum but not the boilerplate
-        if estr == "Flags" {
-            enum_start = enum_end;
-            enum_end = get_next_enum_chunk(enum_str, enum_start);
-        // both are the same, that means they are part of the boilerplate that we want to strip
-        } else if same {
-            enum_start = enum_end;
-            enum_end = get_next_enum_chunk(enum_str, enum_start);
-
-            member_start = member_end;
-            member_end = get_next_member_chunk(member_str, member_start);
-        // we can safely say that this identifier is actually the relevant bit from the original string
-        } else {
+        // the chunks differ, that means that mstr is not a part of the boilerplate and is actually relevant
+        {
             if constant_syntax && !out.is_empty() {
                 out.push('_');
             }
-            let start = out.len();
-            out += mstr;
-            if constant_syntax {
-                out[start..].make_ascii_uppercase();
-            } else {
-                out[(start + 1)..].make_ascii_lowercase();
-            }
 
-            member_start = member_end;
-            member_end = get_next_member_chunk(member_str, member_start);
+            let len = out.len();
+            out += mstr;
+
+            // currently we pushed into out a string that is all upeercase due to being derived from the member string
+            // which is following constant syntax, now if we don't want to output constant syntax we make all but the
+            // first letter that we just added lowercase
+            if !constant_syntax {
+                out[(len + 1)..].make_ascii_lowercase();
+            }
         }
     }
+
     out
 }
 
