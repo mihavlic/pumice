@@ -14,7 +14,10 @@ use std::{
     path::Path,
 };
 
+use crate::workarounds::apply_workarounds;
+
 mod format_utils;
+mod workarounds;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let (reg, errors) = vk_parse::parse_file(&Path::new("/home/eg/Downloads/vk.xml")).unwrap();
@@ -34,7 +37,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     ))
     .unwrap();
 
-    let reg = process_registry(reg);
+    let mut reg = process_registry(reg);
 
     // todo filter items by maximum api version, extensions, and all the other <requires> stuff
     // esentially crawl through all the possible definition places and reject those that don't match the hard limits
@@ -46,6 +49,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut include_headers = Vec::new();
     let mut c = BufWriter::new(bindgen_file);
     let mut rust = BufWriter::new(rust_file);
+
+    apply_workarounds(&mut reg);
 
     fn batch_rename(reg: &Registry, renames: &[(&str, &str)]) {
         for (original, rename) in renames {
@@ -596,7 +601,9 @@ fn make_enum_member_rusty(
     let mut enum_chunks = CamelCaseSplit::new(enum_str)
         .filter(|s| *s != "Flags")
         .peekable();
-    let mut member_chunks = member_str.split('_');
+
+    // let's skip "BIT" as well as it's quite redundant
+    let mut member_chunks = member_str.split('_').filter(|s| *s != "BIT");
 
     while let Some(mstr) = member_chunks.next() {
         let estr = enum_chunks.peek();
@@ -655,8 +662,8 @@ fn test_enum_rustify() {
         (
             "VkDebugReportFlagsEXT",
             "VK_DEBUG_REPORT_INFORMATION_BIT_EXT",
-            "INFORMATION_BIT",
-            "InformationBit",
+            "INFORMATION",
+            "Information",
         ),
         (
             "VkTestLongerThingEXT",
@@ -667,14 +674,14 @@ fn test_enum_rustify() {
         (
             "VkFormatFeatureFlags2",
             "VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT",
-            "SAMPLED_IMAGE_BIT",
-            "SampledImageBit",
+            "SAMPLED_IMAGE",
+            "SampledImage",
         ),
         (
             "VkVideoEncodeH265CapabilityFlagsEXT",
             "VK_VIDEO_ENCODE_H265_CAPABILITY_SEPARATE_COLOUR_PLANE_BIT_EXT",
-            "SEPARATE_COLOUR_PLANE_BIT",
-            "SeparateColourPlaneBit",
+            "SEPARATE_COLOUR_PLANE",
+            "SeparateColourPlane",
         ),
         (
             "VkShadingRatePaletteEntryNV",

@@ -371,7 +371,7 @@ impl Registry {
     pub fn get(&self, str: &str) -> Option<Spur> {
         self.interner.borrow().get(str)
     }
-    pub fn get_or_intern(&self, str: &str) -> Spur {
+    pub fn intern(&self, str: &str) -> Spur {
         self.interner.borrow_mut().get_or_intern(str)
     }
 }
@@ -382,7 +382,17 @@ pub trait Intern {
 
 impl<T: AsRef<str>> Intern for T {
     fn intern(&self, reg: &Registry) -> Spur {
-        reg.get_or_intern(self.as_ref())
+        reg.intern(self.as_ref())
+    }
+}
+
+pub trait Resolve {
+    fn resolve<'a>(&self, reg: &'a Registry) -> Ref<'a, str>;
+}
+
+impl Resolve for Spur {
+    fn resolve<'a>(&self, reg: &'a Registry) -> Ref<'a, str> {
+        reg.resolve(self)
     }
 }
 
