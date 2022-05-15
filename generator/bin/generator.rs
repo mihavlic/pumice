@@ -53,7 +53,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    // keyword conflict renames
+    batch_rename(&reg, &[("type", "kind")]);
+
     // FIXME this is perhaps not ideal
+    // integral types renames
     batch_rename(
         &reg,
         &[
@@ -253,7 +257,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             // )
             ToplevelBody::Enum { members } => {
                 let members = Separated::members(members.iter(), |(name, val), f| {
-                    let name = identifier_need_rename(name, &reg).reg(&reg);
+                    let name = name.reg(&reg);
                     match val {
                         EnumValue::Bitpos(pos) => format_args!("{} = 1 << {}", name, *pos).fmt(f),
                         EnumValue::Value(val) => format_args!("{} = {}", name, *val).fmt(f),
@@ -285,7 +289,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                 let ty = get_concrete_type(*bitmask_name, &reg).reg(&reg);
                 let bits = Separated::statements(members.iter(), |(name, val), f| {
-                    let name = identifier_need_rename(name, &reg).reg(&reg);
+                    let name = name.reg(&reg);
                     match val {
                         EnumValue::Bitpos(pos) => {
                             format_args!("const {}: {} = 1 << {}", name, ty, pos).fmt(f)
@@ -354,26 +358,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
-}
-
-// whether the identifier needs to be renamed to be valid in rust
-// escape keywords and prevent identifiers starting with a digit
-fn identifier_need_rename(spur: &Spur, reg: &Registry) -> Option<Spur> {
-    let str = reg.resolve(spur);
-    match &*str {
-        // TODO consider using kind
-        "type" => Some("type_".intern(&reg)),
-        other => {
-            if other.chars().next().unwrap().is_ascii_digit() {
-                // TODO do something better, perhaps switch the digit with the next char and then fallback to this
-                let new_str = format!("_{}", other);
-                drop(str); // str is keeping the Registry interner RefCell borrowed
-                Some(new_str.intern(&reg))
-            } else {
-                None
-            }
-        }
-    }
 }
 
 fn merge_bitfield_members(members: &[(Spur, TypeDecl)], reg: &Registry) -> Vec<(Spur, TypeDecl)> {
@@ -584,19 +568,28 @@ fn make_enum_member_rusty(
     // }
 
     // we also have this beauty, so we will have to skip any "Flags":
+    //  impl VkDebugReportFlagsEXT {
+    //      const VK_DEBUG_REPORT_INFORMATION_BIT_EXT: VkFlags = 1 << 0;
+    //      ..
+    //  }
 
-    // impl VkDebugReportFlagsEXT {
-    //     const VK_DEBUG_REPORT_INFORMATION_BIT_EXT: VkFlags = 1 << 0;
-    //     ..
-    // }
+    //  VkVideoEncodeH265CapabilityFlagsEXT
+    //  VK_VIDEO_ENCODE_H265_CAPABILITY_SEPARATE_COLOUR_PLANE_BIT_EXT
 
-    // VkVideoEncodeH265CapabilityFlagsEXT
-    // VK_VIDEO_ENCODE_H265_CAPABILITY_SEPARATE_COLOUR_PLANE_BIT_EXT
+    //  VkFormatFeatureFlags2
+    //  VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT
 
-    // VkFormatFeatureFlags2
-    // VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT
+    // we also can have identifiers that begin with digits when stripped of their boilerplate
+    // this is obviously invalid rust and we need to find something to put before it
+    // current solution will be to keep track of the starting character of the previous chunk and use that
+    //  VkShadingRatePaletteEntryNV
+    //  VK_SHADING_RATE_PALETTE_ENTRY_16_INVOCATIONS_PER_PIXEL_NV
+    // => E16InvocationsPerPixel
 
     let mut out = String::new();
+
+    // workaround for identifiers starting with a digit, see above
+    let mut prev_char = None;
 
     let enum_str = &*reg.resolve(&enum_name);
     let member_str = &*reg.resolve(&member_name);
@@ -610,6 +603,8 @@ fn make_enum_member_rusty(
     while let Some(mstr) = member_chunks.next() {
         let estr = enum_chunks.peek();
 
+        let start_char = mstr.chars().next().unwrap();
+
         // if estr runs out we just continue processing what's left in member_string
         if let Some(estr) = estr {
             // the strings can never match if their length differs
@@ -620,6 +615,7 @@ fn make_enum_member_rusty(
                 // case-insetively compare the strings
                 if Iterator::eq(e, m) {
                     enum_chunks.next();
+                    prev_char = Some(start_char); // hmmph
                     continue;
                 }
             }
@@ -627,7 +623,12 @@ fn make_enum_member_rusty(
 
         // the chunks differ, that means that mstr is not a part of the boilerplate and is actually relevant
         {
-            if constant_syntax && !out.is_empty() {
+            if out.is_empty() {
+                // see above
+                if start_char.is_ascii_digit() {
+                    out.push(prev_char.unwrap());
+                }
+            } else if constant_syntax {
                 out.push('_');
             }
 
@@ -641,6 +642,8 @@ fn make_enum_member_rusty(
                 out[(len + 1)..].make_ascii_lowercase();
             }
         }
+
+        prev_char = Some(start_char);
     }
 
     out
@@ -674,6 +677,12 @@ fn test_enum_rustify() {
             "VK_VIDEO_ENCODE_H265_CAPABILITY_SEPARATE_COLOUR_PLANE_BIT_EXT",
             "SEPARATE_COLOUR_PLANE_BIT",
             "SeparateColourPlaneBit",
+        ),
+        (
+            "VkShadingRatePaletteEntryNV",
+            "VK_SHADING_RATE_PALETTE_ENTRY_16_INVOCATIONS_PER_PIXEL_NV",
+            "E16_INVOCATIONS_PER_PIXEL",
+            "E16InvocationsPerPixel",
         ),
     ];
 
