@@ -90,7 +90,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     for item in &reg.toplevel {
         let name = item.0;
         match item.1 {
-            ToplevelBody::Bitmask { ty: _, bits_enum } => {
+            ToplevelBody::Bitmask { bits_enum, .. } => {
                 if let Some(bits_enum) = bits_enum {
                     bitmask_pairing.insert(bits_enum, name);
                     // the rest of vulkan still refers to the *Bits structs even though we don't emit them
@@ -175,7 +175,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     c.write(b"\n")?;
                 }
             }
-            ToplevelBody::Bitmask { ty, bits_enum: _ } => {
+            ToplevelBody::Bitmask { ty, .. } => {
                 // TODO when we're actually generating semantically valid rust code add #repr(transparent)
                 code!(
                     rust,
@@ -487,10 +487,10 @@ fn get_concrete_type(toplevel: Spur, reg: &Registry) -> Spur {
 
         let top = &reg.toplevel[index as usize];
         match &top.1 {
-            ToplevelBody::Alias { alias_of, kind: _alias_kind } => toplevel = *alias_of,
-            ToplevelBody::Bitmask { ty, bits_enum: _ } => toplevel = *ty,
-            ToplevelBody::Handle { object_type: _, dispatchable: _ } => toplevel = reg.get("uint64_t").unwrap(),
-            ToplevelBody::Constant { ty, val: _ } => toplevel = *ty,
+            ToplevelBody::Alias { alias_of, .. } => toplevel = *alias_of,
+            ToplevelBody::Bitmask { ty, .. } => toplevel = *ty,
+            ToplevelBody::Handle { .. } => toplevel = reg.get("uint64_t").unwrap(), // the underlying type of all handles is this 
+            ToplevelBody::Constant { ty, .. } => toplevel = *ty,
             ToplevelBody::Basetype { ty, .. } => {
                 // TODO is this what we want? It was introduced to change the types in bitset members from 'VkFlags' to 'u32'
                 // it is doubtful whether it makes any difference  
