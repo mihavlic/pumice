@@ -481,11 +481,9 @@ fn get_concrete_type(toplevel: Spur, reg: &Registry) -> Spur {
             Some(some) => some,
             None => return toplevel,
         };
+
         // assert that no weird things are going on as other interface items can't alias this way
-        if ty != ItemKind::Toplevel {
-            let _b = &*reg.resolve(&toplevel);
-            let _a = "s";
-        }
+        assert!(ty == ItemKind::Toplevel);
 
         let top = &reg.toplevel[index as usize];
         match &top.1 {
