@@ -1,11 +1,8 @@
-use std::{
-    fmt::{Write},
-    ops::Deref,
-};
+use std::{fmt::Write, ops::Deref};
 
-use lasso::{Spur};
+use lasso::Spur;
 
-use crate::Registry;
+use crate::{Intern, Registry};
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum TypeToken {
@@ -129,7 +126,7 @@ pub fn parse_type(str: &str, has_name: bool, reg: &Registry) -> (Option<Spur>, T
                 let ident = &str[s..i];
                 match ident {
                     "const" => out.tokens.push(TypeToken::Const),
-                    _ => out.tokens.push(TypeToken::Ident(reg.get_or_intern(ident))),
+                    _ => out.tokens.push(TypeToken::Ident(ident.intern(&reg))),
                 }
                 start = None;
             }
@@ -181,10 +178,10 @@ fn test_parse_type() {
     let reg = Registry::new();
 
     let expected = (
-        Some(reg.get_or_intern("deviceName")),
+        Some("deviceName".intern(&reg)),
         TypeDecl {
-            tokens: vec![TypeToken::Ident(reg.get_or_intern("char")), TypeToken::Ptr],
-            array_len: Some(reg.get_or_intern("VK_MAX_PHYSICAL_DEVICE_NAME_SIZE")),
+            tokens: vec![TypeToken::Ident("char".intern(&reg)), TypeToken::Ptr],
+            array_len: Some("VK_MAX_PHYSICAL_DEVICE_NAME_SIZE".intern(&reg)),
             bitfield_len: None,
         },
     );
@@ -196,11 +193,11 @@ fn test_parse_type() {
     assert_eq!(expected, test);
 
     let expected = (
-        Some(reg.get_or_intern("pTest")),
+        Some("pTest".intern(&reg)),
         TypeDecl {
             tokens: vec![
                 TypeToken::Const,
-                TypeToken::Ident(reg.get_or_intern("char")),
+                TypeToken::Ident("char".intern(&reg)),
                 TypeToken::Ptr,
                 TypeToken::Const,
             ],
@@ -218,7 +215,7 @@ fn test_type_parse_convert() {
 
     let c = vec![
         TypeToken::Const,
-        TypeToken::Ident(reg.get_or_intern("VkAccelerationStructureBuildRangeInfoKHR")),
+        TypeToken::Ident("VkAccelerationStructureBuildRangeInfoKHR".intern(&reg)),
         TypeToken::Ptr,
         TypeToken::Const,
         TypeToken::Ptr,
@@ -231,7 +228,7 @@ fn test_type_parse_convert() {
         TypeToken::Const,
         TypeToken::Ptr,
         TypeToken::Const,
-        TypeToken::Ident(reg.get_or_intern("VkAccelerationStructureBuildRangeInfoKHR")),
+        TypeToken::Ident("VkAccelerationStructureBuildRangeInfoKHR".intern(&reg)),
     ];
 
     let c_src = "const VkAccelerationStructureBuildRangeInfoKHR *const**";
