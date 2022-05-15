@@ -920,7 +920,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                             }
                         }
                     }
-                    // actually an pub enum
+                    // actually an enum
                     Some("enum") => {
                         let mut members = Vec::new();
                         for child in e.children {
