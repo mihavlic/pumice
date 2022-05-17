@@ -1,7 +1,4 @@
-use std::{
-    cell::Cell,
-    fmt::{Arguments, Display, Formatter, Write},
-};
+use std::fmt::{Arguments, Display, Formatter, Write};
 
 use generator_lib::type_declaration::TypeDecl;
 use lasso::Spur;
@@ -9,10 +6,10 @@ use lasso::Spur;
 use crate::Registry;
 
 pub struct Separated<
-    T: Iterator,
+    T: Iterator + Clone,
     F: Fn(<T as Iterator>::Item, &mut Formatter<'_>) -> std::fmt::Result,
 > {
-    iter: Cell<Option<T>>,
+    iter: T,
     fun: F,
     // the string before writing the content of the iterator
     pad: &'static str,
@@ -27,7 +24,7 @@ pub struct Separated<
     newline: bool,
 }
 
-impl<T: Iterator, F: Fn(<T as Iterator>::Item, &mut Formatter<'_>) -> std::fmt::Result>
+impl<T: Iterator + Clone, F: Fn(<T as Iterator>::Item, &mut Formatter<'_>) -> std::fmt::Result>
     Separated<T, F>
 {
     pub fn new(
@@ -39,7 +36,7 @@ impl<T: Iterator, F: Fn(<T as Iterator>::Item, &mut Formatter<'_>) -> std::fmt::
         end_last: bool,
     ) -> Self {
         Self {
-            iter: Cell::new(Some(iter)),
+            iter,
             fun,
             pad,
             end,
@@ -58,11 +55,11 @@ impl<T: Iterator, F: Fn(<T as Iterator>::Item, &mut Formatter<'_>) -> std::fmt::
     }
 }
 
-impl<T: Iterator, F: Fn(<T as Iterator>::Item, &mut Formatter<'_>) -> std::fmt::Result> Display
-    for Separated<T, F>
+impl<T: Iterator + Clone, F: Fn(<T as Iterator>::Item, &mut Formatter<'_>) -> std::fmt::Result>
+    Display for Separated<T, F>
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let mut iter = self.iter.replace(None).unwrap().peekable(); // cursed
+        let mut iter = self.iter.clone().peekable();
         let mut first = true;
         while let Some(next) = iter.next() {
             let last = iter.peek().is_none();
