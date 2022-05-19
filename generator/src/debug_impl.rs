@@ -3,12 +3,12 @@ use std::{
     fmt::{Debug, Write},
 };
 
-use lasso::{Spur};
+use lasso::Spur;
 
 use crate::{
     type_declaration::TypeDecl, CommandParameter, Component, ConstantValue, Define, EnumValue,
-    ExtendMethod, Extension, Feature, FeatureExtensionItem, Format, InterfaceItem, Plane, Registry,
-    SpirvEnable, SpirvExtCap, Toplevel, ToplevelBody,
+    ExtendMethod, Extension, Feature, FeatureExtensionItem, Format, InterfaceItem, Plane, Platform,
+    Registry, SpirvEnable, SpirvExtCap, Tag, Toplevel, ToplevelBody,
 };
 
 // ew, cursed thing that formats owned iterators as slices
@@ -59,6 +59,30 @@ impl<'a> Debug for WithRegistry<'a, &Vec<Spur>> {
 impl<'a> Debug for WithRegistry<'a, &Option<Spur>> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Debug::fmt(&*&self.1.map(|s| self.0.resolve(&s)), f)
+    }
+}
+
+impl<'a> Debug for WithRegistry<'a, &Platform> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = self.1;
+        let reg = self.0;
+        f.debug_struct("Platform")
+            .field("name", &s.name.reg(reg))
+            .field("protect", &s.protect.reg(reg))
+            .field("comment", &s.comment)
+            .finish()
+    }
+}
+
+impl<'a> Debug for WithRegistry<'a, &Tag> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = self.1;
+        let reg = self.0;
+        f.debug_struct("Tag")
+            .field("name", &s.name.reg(reg))
+            .field("author", &s.author)
+            .field("contact", &s.contact)
+            .finish()
     }
 }
 
@@ -431,11 +455,10 @@ impl<'a> Debug for WithRegistry<'a, &SpirvEnable> {
 
 impl Debug for Registry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let reg = &self;
+        let reg = self;
 
-        let vendors = &SliceDebug::new(self.vendors.iter().flat_map(|c| &c.children));
-        let platforms = &SliceDebug::new(self.platforms.iter().flat_map(|c| &c.children));
-        let tags = &SliceDebug::new(self.tags.iter().flat_map(|a| &a.children));
+        let platforms = &SliceDebug::new(self.platforms.iter().map(|a| a.reg(reg)));
+        let tags = &SliceDebug::new(self.tags.iter().map(|a| a.reg(reg)));
         let headers = &SliceDebug::new(self.headers.iter().map(|a| a.reg(reg)));
         let defines = &SliceDebug::new(self.defines.iter().map(|a| a.reg(reg)));
         let toplevel = &SliceDebug::new(self.toplevel.iter().map(|a| a.reg(reg)));
@@ -447,7 +470,6 @@ impl Debug for Registry {
         let spirv_extensions = &SliceDebug::new(self.spirv_extensions.iter().map(|a| a.reg(reg)));
 
         f.debug_struct("Registry")
-            .field("vendors", vendors)
             .field("platforms", platforms)
             .field("tags", tags)
             .field("headers", headers)

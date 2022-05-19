@@ -7,10 +7,8 @@ use std::{
 };
 
 use lasso::{Rodeo, Spur};
+use roxmltree::Node;
 use type_declaration::{parse_type, TypeDecl};
-use vk_parse::{
-    EnumSpec, ExtensionChild, FormatChild, RegistryChild, TypeCodeMarkup, TypeMember, TypeSpec,
-};
 
 pub mod debug_impl;
 pub mod type_declaration;
@@ -70,6 +68,7 @@ pub enum ToplevelBody {
         ty: Spur,
         val: Spur,
     },
+    // FIXME merge Enum and Bitmaskbits just like we've done to Struct and Union
     Enum {
         members: Vec<(Spur, EnumValue)>,
     },
@@ -83,7 +82,6 @@ pub enum ToplevelBody {
 }
 
 #[derive(Debug)]
-// FIXME kind of ugly, the empty variants of 'bitpos' are value rather than bitpos, and aliases
 pub enum EnumValue {
     Bitpos(u32),
     Value(i64),
@@ -99,8 +97,8 @@ pub struct Feature {
     pub children: Vec<FeatureExtensionItem>,
 }
 
-#[derive(Debug)]
 // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html#_attributes_of_extension_tags
+#[derive(Debug)]
 pub struct Extension {
     pub name: Spur,
     pub number: u32,
@@ -207,8 +205,8 @@ pub enum FeatureExtensionItem {
         profile: Option<Spur>,
         // The api attribute is only supported inside extension tags, since feature tags already define a specific API.
         api: Vec<Spur>,
-        // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html#_pub enum_tags
-        // the item removed will always be `InterfaceItem::Simple`, api property that can be in <pub enum> is not applicable I think?
+        // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html#_enum_tags
+        // the item removed will always be `InterfaceItem::Simple`, api property that can be in <enum> is not applicable I think?
         // https://github.com/osor-io/Vulkan/blob/e4bc1b9125645f3db3c8342edc24d81dc497f252/generate_code/generate_vulkan_code.jai#L1586
         // here it seems that the author doesn't handle `api`
         items: Vec<Spur>,
@@ -274,6 +272,18 @@ pub enum SpirvEnable {
 #[derive(Debug)]
 pub struct SpirvExtCap(pub Spur, pub Vec<SpirvEnable>);
 
+pub struct Platform {
+    pub name: Spur,
+    pub protect: Spur,
+    pub comment: String,
+}
+
+pub struct Tag {
+    pub name: Spur,
+    pub author: String,
+    pub contact: String,
+}
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ItemKind {
     Toplevel,
@@ -285,9 +295,8 @@ pub enum ItemKind {
 }
 
 pub struct Registry {
-    pub vendors: Vec<vk_parse::CommentedChildren<vk_parse::VendorId>>,
-    pub platforms: Vec<vk_parse::CommentedChildren<vk_parse::Platform>>,
-    pub tags: Vec<vk_parse::CommentedChildren<vk_parse::Tag>>,
+    pub platforms: Vec<Platform>,
+    pub tags: Vec<Tag>,
     pub headers: Vec<Spur>,
     pub defines: Vec<Define>,
 
@@ -313,7 +322,6 @@ pub struct Registry {
 impl Registry {
     pub fn new() -> Self {
         Self {
-            vendors: Default::default(),
             platforms: Default::default(),
             tags: Default::default(),
             headers: Default::default(),
@@ -412,641 +420,404 @@ fn add_item<T>(
     assert!(none.is_none());
 }
 
-pub fn process_registry(registry: vk_parse::Registry) -> Registry {
+trait NodeUtils<'a> {
+    fn intern(&self, attribute: &str, reg: &Registry) -> Spur;
+    fn owned(&self, attribute: &str) -> String;
+    fn get(&'a self, attribute: &str) -> &'a str;
+    fn child_text(&'a self, child: &str) -> &'a str;
+    fn try_child_text(&'a self, child: &str) -> Option<&'a str>;
+}
+
+impl<'a, 'b> NodeUtils<'b> for Node<'a, 'b> {
+    fn intern(&self, attribute: &str, reg: &Registry) -> Spur {
+        self.attribute(attribute).unwrap().intern(reg)
+    }
+    fn owned(&self, attribute: &str) -> String {
+        self.attribute(attribute).unwrap().to_owned()
+    }
+    fn get(&'a self, attribute: &str) -> &'a str {
+        self.attribute(attribute).unwrap()
+    }
+    fn child_text(&'a self, child: &str) -> &'a str {
+        iter_children(*self)
+            .find(|n| n.tag_name().name() == child)
+            .unwrap()
+            .text()
+            .unwrap()
+    }
+    fn try_child_text(&'a self, child: &str) -> Option<&'a str> {
+        Some(
+            iter_children(*self)
+                .find(|n| n.tag_name().name() == child)?
+                .text()
+                .unwrap(),
+        )
+    }
+}
+
+// the kind must be a closure so that it may be lazily evaluated as in some cases it needs to
+//  do some computation that would be invalid if the node is not an alias in the first place
+fn try_alias(t: Node, kind: &dyn Fn() -> ToplevelKind, reg: &mut Registry) -> bool {
+    if let Some(alias) = t.attribute("alias") {
+        let typ = ToplevelBody::Alias {
+            alias_of: alias.intern(&*reg),
+            kind: kind(),
+        };
+
+        let name = t.intern("name", &*reg);
+
+        add_item(
+            &mut reg.toplevel,
+            &mut reg.item_map,
+            Toplevel(name, typ),
+            name,
+            ItemKind::Toplevel,
+        );
+
+        return true;
+    }
+
+    return false;
+}
+
+fn iter_children<'a, 'b: 'a>(node: Node<'a, 'b>) -> impl Iterator<Item = Node<'a, 'b>> {
+    // nice and readable
+    node.first_child().into_iter().flat_map(|c| {
+        c.next_siblings()
+            .filter(|n| !n.tag_name().name().is_empty())
+    })
+}
+
+fn collect_node_text(n: Node, buf: &mut String) {
+    for d in n.children() {
+        // struct member definitions contain comments, we don't want these
+        if d.tag_name().name() != "comment" {
+            d.text().map(|s| {
+                // there may not be any whitespace in the text within the separate elements
+                // as a heuristic to preserve formatting, this is only applied if the split
+                // is between two text characters as otherwise it likely doesn't matter
+                if buf.ends_with(|c: char| c.is_ascii_alphanumeric())
+                    && s.starts_with(|c: char| c.is_ascii_alphanumeric())
+                {
+                    buf.push(' ');
+                }
+
+                buf.push_str(s)
+            });
+        }
+    }
+}
+
+pub fn process_registry(xml: &str) -> Registry {
     let mut reg = Registry::new();
 
-    for node in registry.0 {
-        match node {
-            RegistryChild::Comment(_) => {}
-            RegistryChild::VendorIds(vendors_) => {
-                reg.vendors.push(vendors_);
+    let doc = roxmltree::Document::parse(xml).unwrap();
+
+    let r = doc
+        .descendants()
+        .find(|n| n.has_tag_name("registry"))
+        .unwrap();
+
+    // quite a few places require a string to collect some text into and then further process it
+    let mut buf = String::new();
+
+    for n in iter_children(r) {
+        match n.tag_name().name() {
+            "comment" => {} // TODO propagate this information
+            "platforms" => {
+                for c in iter_children(n) {
+                    let p = Platform {
+                        name: c.intern("name", &reg),
+                        protect: c.intern("protect", &reg),
+                        comment: c.owned("comment"),
+                    };
+                    reg.platforms.push(p);
+                }
             }
-            RegistryChild::Platforms(platforms_) => {
-                reg.platforms.push(platforms_);
+            "tags" => {
+                for c in iter_children(n) {
+                    let t = Tag {
+                        name: c.intern("name", &reg),
+                        author: c.owned("author"),
+                        contact: c.owned("contact"),
+                    };
+                    reg.tags.push(t);
+                }
             }
-            RegistryChild::Tags(tags_) => {
-                reg.tags.push(tags_);
-            }
-            RegistryChild::Types(types_) => {
-                for child in types_.children {
-                    match child {
-                        vk_parse::TypesChild::Type(ty) => {
-                            match ty.category.as_ref().map(|s| s.as_str()) {
-                                // list of potential headers to be included
-                                Some("include") => {
-                                    // distinguish between:
-                                    //   <type name="vk_platform" category="include">#include "vk_platform.h"</type>
-                                    //   <type category="include" name="X11/Xlib.h"/>
-                                    let name = ty.name.unwrap();
-                                    if name.contains(".h") {
-                                        reg.headers.push(name.intern(&reg));
-                                    } else {
-                                        match ty.spec {
-                                            TypeSpec::Code(code) => {
-                                                // #include "vk_platform.h"
-                                                let name = code
-                                                    .code
-                                                    .split_terminator("\"")
-                                                    .nth(1)
-                                                    .unwrap();
-                                                reg.headers.push(name.intern(&reg));
-                                            }
-                                            TypeSpec::None | TypeSpec::Members(_) => unreachable!(),
-                                            _ => todo!(),
-                                        };
-                                    }
-                                }
-                                // platform types with required headers
-                                // <type requires="X11/Xlib.h" name="Display"/>
-                                //
-                                // there's also this, which is of course missing a '.h' so prepare to have a special case
-                                // <type requires="vk_platform" name="void"/>
-                                //
-                                // incredibly enough there is this as well, ##@$@!
-                                // <type name="int"/>
-                                None => {
-                                    // TODO consider hardcoding the ck_platform types and 'int' and ignore them here
-                                    let name = ty.name.unwrap();
+            "types" => {
+                for t in iter_children(n) {
+                    if t.tag_name().name() == "comment" {
+                        continue;
+                    }
 
-                                    // there is just an 'int' - Why? Just skip it and alias it to std::ffi::c_int later
-                                    if name == "int" {
-                                        continue;
-                                    }
+                    let category = t.attribute("category");
 
-                                    let name = name.intern(&reg);
-                                    let typ = ToplevelBody::Included {
-                                        header: ty.requires.as_ref().unwrap().intern(&reg),
-                                    };
-
-                                    add_item(
-                                        &mut reg.toplevel,
-                                        &mut reg.item_map,
-                                        Toplevel(name, typ),
-                                        name,
-                                        ItemKind::Toplevel,
-                                    );
-                                }
-                                // <type category="define">
-                                //   #define
-                                //   <name>VK_MAKE_API_VERSION</name>
-                                //   (variant, major, minor, patch) \ ((((uint32_t)(variant)) << 29) | (((uint32_t)(major)) << 22) | (((uint32_t)(minor)) << 12) | ((uint32_t)(patch)))
-                                // </type>
-                                //
-                                // for some reason there is also
-                                // <type category="define" requires="VK_NULL_HANDLE" name="VK_DEFINE_NON_DISPATCHABLE_HANDLE">
-                                //   #ifndef VK_DEFINE_NON_DISPATCHABLE_HANDLE #if (VK_USE_64_BIT_PTR_DEFINES==1) #define VK_DEFINE_NON_DISPATCHABLE_HANDLE(object) typedef pub struct object##_T *object; #else #define VK_DEFINE_NON_DISPATCHABLE_HANDLE(object) typedef uint64_t object; #endif #endif
-                                // </type>
-                                Some("define") => {
-                                    // FIXME handle requires field, currently hope they are  input in order
-                                    let type_code = match ty.spec {
-                                        TypeSpec::Code(a) => a,
-                                        _ => unreachable!(),
-                                    };
-
-                                    let name = match &ty.name {
-                                        Some(n) => n,
-                                        None => match &type_code.markup[0] {
-                                            TypeCodeMarkup::Name(name) => name,
-                                            _ => unreachable!(),
-                                        },
-                                    };
-
-                                    let define = Define {
-                                        name: name.intern(&reg),
-                                        body: type_code.code.trim().to_owned(),
-                                    };
-                                    reg.defines.push(define);
-                                }
-                                // <type category="basetype">
-                                //   pub struct
-                                //   <name>ANativeWindow</name>
-                                //   ;
-                                // </type>
-                                // <type category="basetype">
-                                //   typedef
-                                //   <type>uint32_t</type>
-                                //   <name>VkSampleMask</name>
-                                //   ;
-                                // </type>
-                                Some("basetype") => {
-                                    let type_code = match &ty.spec {
-                                        TypeSpec::Code(a) => a,
-                                        _ => unreachable!(),
-                                    };
-
-                                    // search for a name attribute
-                                    let name;
-                                    let mut ty = None;
-                                    match &type_code.markup[0] {
-                                        TypeCodeMarkup::Name(n) => name = n,
-                                        TypeCodeMarkup::Type(t) => {
-                                            ty = Some(t);
-                                            name = match &type_code.markup[1] {
-                                                TypeCodeMarkup::Name(n) => n,
-                                                _ => unreachable!(),
-                                            }
-                                        }
-                                        _ => unreachable!(),
-                                    };
-                                    let name = name.intern(&reg);
-                                    let ty = ty.map(|s| s.intern(&reg));
-
-                                    let typ = ToplevelBody::Basetype {
-                                        ty,
-                                        code: type_code.code.as_str().trim().to_owned(),
-                                    };
-
-                                    add_item(
-                                        &mut reg.toplevel,
-                                        &mut reg.item_map,
-                                        Toplevel(name, typ),
-                                        name,
-                                        ItemKind::Toplevel,
-                                    );
-                                }
-                                // <type requires="VkFramebufferCreateFlagBits" category="bitmask">
-                                //   typedef
-                                //   <type>VkFlags</type>
-                                //   <name>VkFramebufferCreateFlags</name>
-                                //   ;
-                                // </type>
-                                Some("bitmask") => {
-                                    if let Some(alias) = ty.alias {
-                                        let name = ty.name.unwrap().intern(&reg);
-                                        let typ = ToplevelBody::Alias {
-                                            alias_of: alias.intern(&reg),
-                                            kind: ToplevelKind::Bitmask,
-                                        };
-
-                                        add_item(
-                                            &mut reg.toplevel,
-                                            &mut reg.item_map,
-                                            Toplevel(name, typ),
-                                            name,
-                                            ItemKind::Toplevel,
-                                        );
-                                    } else {
-                                        let type_code = match ty.spec {
-                                            TypeSpec::Code(a) => a,
-                                            _ => unreachable!(),
-                                        };
-
-                                        // due to vk.xml being a horror produced from C headers
-                                        // bitmasks are actually an enum with the values and a typedef of the actual integer that is passed around vulkan
-                                        // as such, this element is for the integer typedef and the values pub enum is listed as a
-                                        // 'requires' when it is a 32 bit bitmask or in 'bitvalues' when it is 64 bit
-                                        // the bits can be missing if it the flags exist but are so far unused
-                                        let bits = if let Some(req) = ty.requires {
-                                            Some(req)
-                                        } else if let Some(req) = ty.bitvalues {
-                                            Some(req)
-                                        } else {
-                                            None
-                                        };
-
-                                        let ty = match &type_code.markup[0] {
-                                            TypeCodeMarkup::Type(ty) => ty,
-                                            _ => unreachable!(),
-                                        };
-
-                                        let name = match &type_code.markup[1] {
-                                            TypeCodeMarkup::Name(name) => name.intern(&reg),
-                                            _ => unreachable!(),
-                                        };
-
-                                        let typ = ToplevelBody::Bitmask {
-                                            ty: ty.intern(&reg),
-                                            bits_enum: bits.map(|b| b.intern(&reg)),
-                                        };
-
-                                        add_item(
-                                            &mut reg.toplevel,
-                                            &mut reg.item_map,
-                                            Toplevel(name, typ),
-                                            name,
-                                            ItemKind::Toplevel,
-                                        );
-                                    }
-                                }
-                                // <type category="handle" objtypepub enum="VK_OBJECT_TYPE_INSTANCE">
-                                //   <type>VK_DEFINE_HANDLE</type>
-                                //   (
-                                //   <name>VkInstance</name>
-                                //   )
-                                // </type>
-                                Some("handle") => {
-                                    if let Some(alias) = ty.alias {
-                                        let name = ty.name.unwrap().intern(&reg);
-                                        let typ = ToplevelBody::Alias {
-                                            alias_of: alias.intern(&reg),
-                                            kind: ToplevelKind::Handle,
-                                        };
-
-                                        add_item(
-                                            &mut reg.toplevel,
-                                            &mut reg.item_map,
-                                            Toplevel(name, typ),
-                                            name,
-                                            ItemKind::Toplevel,
-                                        );
-                                    } else {
-                                        let type_code = match &ty.spec {
-                                            TypeSpec::Code(a) => a,
-                                            _ => unreachable!(),
-                                        };
-
-                                        let dispatchable = match &type_code.markup[0] {
-                                            TypeCodeMarkup::Type(string) => match string.as_str() {
-                                                "VK_DEFINE_HANDLE" => true,
-                                                "VK_DEFINE_NON_DISPATCHABLE_HANDLE" => false,
-                                                _ => unreachable!(),
-                                            },
-                                            _ => unreachable!(),
-                                        };
-
-                                        let name = match &type_code.markup[1] {
-                                            TypeCodeMarkup::Name(name) => name.intern(&reg),
-                                            _ => unreachable!(),
-                                        };
-
-                                        let type_enum = ty.objtypeenum.unwrap();
-
-                                        let typ = ToplevelBody::Handle {
-                                            object_type: type_enum.intern(&reg),
-                                            dispatchable,
-                                        };
-
-                                        add_item(
-                                            &mut reg.toplevel,
-                                            &mut reg.item_map,
-                                            Toplevel(name, typ),
-                                            name,
-                                            ItemKind::Toplevel,
-                                        );
-                                    }
-                                }
-                                // <type name="VkAttachmentLoadOp" category="pub enum"/>
-                                Some("enum") => {
-                                    if let Some(alias) = ty.alias {
-                                        // add_with_name(&mut pub enum_bitmask_aliases, &mut pub enum_bitmask_aliases_map, int.get_or_intern(&alias), &name);
-                                        let name = ty.name.unwrap().intern(&reg);
-                                        let typ = ToplevelBody::Alias {
-                                            alias_of: alias.intern(&reg),
-                                            kind: ToplevelKind::Enum,
-                                        };
-
-                                        add_item(
-                                            &mut reg.toplevel,
-                                            &mut reg.item_map,
-                                            Toplevel(name, typ),
-                                            name,
-                                            ItemKind::Toplevel,
-                                        );
-                                    }
-                                }
-                                // <type category="funcpointer">
-                                //   typedef void (VKAPI_PTR *
-                                //   <name>PFN_vkint.get_or_internalAllocationNotification</name>
-                                //     )(
-                                //   <type>void</type>
-                                //     * pUserData,
-                                //   <type>size_t</type>
-                                //     size,
-                                //   <type>Vkint.get_or_internalAllocationType</type>
-                                //     allocationType,
-                                //   <type>VkSystemAllocationScope</type>
-                                //     allocationScope);
-                                // </type>
-                                Some("funcpointer") => {
-                                    // must parse C code, thanks khronos
-                                    // all 9 declarations? follow this pub structure:
-                                    // typedef 'return type' (VKAPI_PTR *'ptr type')($('argument type'),*)
-                                    let type_code = match ty.spec {
-                                        TypeSpec::Code(a) => a,
-                                        _ => unreachable!(),
-                                    };
-
-                                    let name = match &type_code.markup[0] {
-                                        TypeCodeMarkup::Name(string) => string.intern(&reg),
-                                        _ => unreachable!(),
-                                    };
-
-                                    let mut split = type_code.code.split_ascii_whitespace();
-                                    let fun_type = split.nth(1).unwrap();
-                                    split.nth(1);
-
-                                    let mut args = Vec::new();
-                                    // TODO this is dumb
-                                    let mut buffer = String::new();
-                                    'outer: for arg in split {
-                                        for char in arg.chars() {
-                                            match char {
-                                                ',' | ')' | ';' => {
-                                                    let (name, ty) =
-                                                        parse_type(&buffer, true, &reg);
-
-                                                    args.push((name.unwrap(), ty));
-                                                    buffer.clear();
-
-                                                    continue 'outer;
-                                                }
-                                                _ => buffer.push(char),
-                                            }
-                                        }
-                                        buffer.push(' ');
-                                    }
-
-                                    let typ = ToplevelBody::Funcpointer {
-                                        return_type: parse_type(fun_type, false, &reg).1,
-                                        args,
-                                    };
-
-                                    add_item(
-                                        &mut reg.toplevel,
-                                        &mut reg.item_map,
-                                        Toplevel(name, typ),
-                                        name,
-                                        ItemKind::Toplevel,
-                                    );
-                                }
-                                // <type category="pub struct" name="VkBaseOutStructure">
-                                //   <member>
-                                //    <type>VkStructureType</type>
-                                //    <name>sType</name>
-                                //   </member>
-                                //   <member optional="true">
-                                //    pub struct
-                                //    <type>VkBaseOutStructure</type>
-                                //    *
-                                //    <name>pNext</name>
-                                //   </member>
-                                // </type>
-                                category @ Some("struct" | "union") => {
-                                    let name = ty.name.unwrap().intern(&reg);
-
-                                    if let Some(alias) = ty.alias {
-                                        let typ = ToplevelBody::Alias {
-                                            alias_of: alias.intern(&reg),
-                                            kind: ToplevelKind::Bitmask,
-                                        };
-
-                                        add_item(
-                                            &mut reg.toplevel,
-                                            &mut reg.item_map,
-                                            Toplevel(name, typ),
-                                            name,
-                                            ItemKind::Toplevel,
-                                        );
-                                    } else {
-                                        let members = match ty.spec {
-                                            TypeSpec::Members(m) => m,
-                                            _ => unreachable!(),
-                                        };
-
-                                        let mut vec = Vec::new();
-                                        for member in members {
-                                            match member {
-                                                TypeMember::Comment(_) => {} // TODO,
-                                                // TODO include more member information from Definition
-                                                // the <member> called sType has a property "values" which is a comma separated list of valid values
-                                                // pub structextends is comma separated list of pub structs whose pNext can contain this pub struct
-                                                // returnedonly - consider not generating a Default implementation
-                                                TypeMember::Definition(m) => {
-                                                    let (name, ty) =
-                                                        parse_type(&m.code, true, &reg);
-
-                                                    vec.push((name.unwrap(), ty));
-                                                }
-                                                _ => todo!(),
-                                            }
-                                        }
-
-                                        let typ = ToplevelBody::Struct {
-                                            union: category == Some("union"),
-                                            members: vec,
-                                        };
-
-                                        add_item(
-                                            &mut reg.toplevel,
-                                            &mut reg.item_map,
-                                            Toplevel(name, typ),
-                                            name,
-                                            ItemKind::Toplevel,
-                                        );
-                                    }
-                                }
-                                Some(other) => todo!("{:?}", other), // Some(_) => todo!()
-                            }
-                        }
-                        vk_parse::TypesChild::Comment(_string) => {}
+                    // handle all aliases here, all of them have the same form
+                    let kind = || match category {
+                        Some("bitmask") => ToplevelKind::Bitmask,
+                        Some("handle") => ToplevelKind::Handle,
+                        Some("enum") => ToplevelKind::Enum,
+                        // struct and union representation is the same
+                        // a bool flag discriminates between the two
+                        Some("struct" | "union") => ToplevelKind::Struct,
                         _ => todo!(),
+                    };
+
+                    if try_alias(t, &kind, &mut reg) {
+                        continue;
                     }
-                }
-            }
-            RegistryChild::Enums(e) => {
-                match e.kind.as_deref() {
-                    // <pub enums name="API Constants" comment="Vulkan hardcoded constants - not an pub enumerated type, part of the header boilerplate">
-                    //   <pub enum type="uint32_t" value="256" name="VK_MAX_PHYSICAL_DEVICE_NAME_SIZE"/>
-                    // ..
-                    None => {
-                        for child in e.children {
-                            match child {
-                                vk_parse::EnumsChild::Enum(e) => {
-                                    let name = e.name.intern(&reg);
 
-                                    match e.spec {
-                                        // <pub enum type="uint32_t" value="256" name="VK_MAX_PHYSICAL_DEVICE_NAME_SIZE"/>
-                                        EnumSpec::Value { mut value, .. } => {
-                                            let ty = e.type_suffix.unwrap().intern(&reg);
-
-                                            // junk like '(~0ULL)' (ie. unsigned long long ie. u64) is not valid rust
-                                            // the NOT operator is ! instead of ~ and specifying bit width is not neccessary (I hope)
-
-                                            // replace ~ with !
-                                            assert!(value.is_ascii()); // operating on bytes like this is safe only for ascii
-                                            unsafe {
-                                                for b in value.as_bytes_mut() {
-                                                    if *b == '~' as u8 {
-                                                        *b = '!' as u8;
-                                                    }
-                                                }
-                                            }
-
-                                            // if the expression is wrapped in parentheses, remove them
-                                            if value.chars().next().unwrap() == '(' {
-                                                value.pop();
-                                                value.remove(0);
-                                            }
-
-                                            // remove the bit width specifiers - I assume this is valid since rust doesn't allow integers
-                                            // to be implicitly cast implying that the literal must start at the target bitwidth
-                                            value.retain(|c| c != 'L' && c != 'L' && c != 'F');
-
-                                            let typ = ToplevelBody::Constant {
-                                                ty,
-                                                val: value.intern(&reg),
-                                            };
-
-                                            add_item(
-                                                &mut reg.toplevel,
-                                                &mut reg.item_map,
-                                                Toplevel(name, typ),
-                                                name,
-                                                ItemKind::Toplevel,
-                                            );
-                                        }
-                                        // <pub enum name="VK_LUID_SIZE_KHR" alias="VK_LUID_SIZE"/>
-                                        EnumSpec::Alias { alias, .. } => {
-                                            let typ = ToplevelBody::Alias {
-                                                alias_of: alias.intern(&reg),
-                                                kind: ToplevelKind::Constant,
-                                            };
-
-                                            add_item(
-                                                &mut reg.toplevel,
-                                                &mut reg.item_map,
-                                                Toplevel(name, typ),
-                                                name,
-                                                ItemKind::Toplevel,
-                                            );
-                                        }
-                                        _ => unreachable!(),
-                                    };
-                                }
-                                // useless for binding and only 2 occurences in xml
-                                vk_parse::EnumsChild::Unused(_) => {}
-                                vk_parse::EnumsChild::Comment(_) => {}
-                                _ => todo!(),
+                    match category {
+                        // <type name="vk_platform" category="include">#include "vk_platform.h"</type>
+                        // <type category="include" name="X11/Xlib.h"/>
+                        Some("include") => {
+                            let name = t.get("name");
+                            if name.contains(".h") {
+                                reg.headers.push(name.intern(&reg));
+                            } else {
+                                // #include "vk_platform.h"
+                                let code = t.text().unwrap();
+                                let name = code.split_terminator('"').nth(1).unwrap();
+                                reg.headers.push(name.intern(&reg));
                             }
                         }
-                    }
-                    // actually an enum
-                    Some("enum") => {
-                        let mut members = Vec::new();
-                        for child in e.children {
-                            match child {
-                                vk_parse::EnumsChild::Enum(e) => {
-                                    let child_name = e.name.intern(&reg);
-                                    let value = match e.spec {
-                                        // EnumSpec::Bitpos { bitpos, extends } => EnumValue::Bitpos(bitpos as u32),
-                                        EnumSpec::Value { value, .. } => {
-                                            EnumValue::Value(parse_detect_radix(&value))
-                                        }
-                                        EnumSpec::Alias { alias, .. } => {
-                                            EnumValue::Alias(alias.intern(&reg))
-                                        }
-                                        _ => unreachable!(),
-                                    };
-                                    members.push((child_name, value));
-                                }
-                                vk_parse::EnumsChild::Unused(_) => {}
-                                vk_parse::EnumsChild::Comment(_) => {}
-                                _ => todo!(),
+                        // <type requires="X11/Xlib.h" name="Display"/>
+                        // <type requires="vk_platform" name="void"/>
+                        // <type name="int"/>
+                        None => {
+                            let name = t.get("name");
+
+                            // there is just an 'int' - Why? - Just skip it and hardcode an alias to std::ffi::c_int later
+                            if name == "int" {
+                                continue;
                             }
+
+                            let name = name.intern(&reg);
+
+                            let typ = ToplevelBody::Included {
+                                header: t.intern("requires", &reg),
+                            };
+
+                            add_item(
+                                &mut reg.toplevel,
+                                &mut reg.item_map,
+                                Toplevel(name, typ),
+                                name,
+                                ItemKind::Toplevel,
+                            );
                         }
+                        // <type category="define">
+                        //   #define
+                        //   <name>VK_MAKE_API_VERSION</name>
+                        //   (variant, major, minor, patch) \ ((((uint32_t)(variant)) << 29) | (((uint32_t)(major)) << 22) | (((uint32_t)(minor)) << 12) | ((uint32_t)(patch)))
+                        // </type>
+                        // <type category="define" requires="VK_NULL_HANDLE" name="VK_DEFINE_NON_DISPATCHABLE_HANDLE">
+                        //   #ifndef VK_DEFINE_NON_DISPATCHABLE_HANDLE #if (VK_USE_64_BIT_PTR_DEFINES==1) #define VK_DEFINE_NON_DISPATCHABLE_HANDLE(object) typedef pub struct object##_T *object; #else #define VK_DEFINE_NON_DISPATCHABLE_HANDLE(object) typedef uint64_t object; #endif #endif
+                        // </type>
+                        Some("define") => {
+                            // wow, the name is either specified as an attribute or delimited with an element within the contained text
+                            let name = t.attribute("name").unwrap_or_else(|| t.child_text("name"));
 
-                        let name = e.name.unwrap().intern(&reg);
-                        let typ = ToplevelBody::Enum { members };
+                            buf.clear();
+                            collect_node_text(t, &mut buf);
 
-                        add_item(
-                            &mut reg.toplevel,
-                            &mut reg.item_map,
-                            Toplevel(name, typ),
-                            name,
-                            ItemKind::Toplevel,
-                        );
-                    }
-                    // actually a pub enum
-                    Some("bitmask") => {
-                        let mut members = Vec::new();
-                        for child in e.children {
-                            match child {
-                                vk_parse::EnumsChild::Enum(e) => {
-                                    let child_name = e.name.intern(&reg);
-                                    let bitpos = match e.spec {
-                                        EnumSpec::Bitpos { bitpos, .. } => {
-                                            EnumValue::Bitpos(bitpos as u32)
-                                        }
-                                        EnumSpec::Value { value, .. } => {
-                                            EnumValue::Value(parse_detect_radix(&value))
-                                        }
-                                        EnumSpec::Alias { alias, .. } => {
-                                            EnumValue::Alias(alias.intern(&reg))
-                                        }
-                                        _ => unreachable!(),
-                                    };
-                                    members.push((child_name, bitpos));
-                                }
-                                vk_parse::EnumsChild::Unused(_) => {}
-                                vk_parse::EnumsChild::Comment(_) => {}
-                                _ => todo!(),
-                            }
+                            let define = Define {
+                                name: name.intern(&reg),
+                                body: buf.trim().to_owned(),
+                            };
+
+                            reg.defines.push(define);
                         }
+                        // <type category="basetype">struct <name>ANativeWindow</name>;</type>
+                        // <type category="basetype">typedef <type>uint32_t</type> <name>VkSampleMask</name>;</type>
+                        Some("basetype") => {
+                            let name = t.child_text("name").intern(&reg);
+                            let ty = t.try_child_text("type").map(|s| s.intern(&reg));
 
-                        let name = e.name.unwrap().intern(&reg);
-                        let typ = ToplevelBody::BitmaskBits { members };
+                            let mut buf = String::new();
+                            collect_node_text(t, &mut buf);
 
-                        add_item(
-                            &mut reg.toplevel,
-                            &mut reg.item_map,
-                            Toplevel(name, typ),
-                            name,
-                            ItemKind::Toplevel,
-                        );
-                    }
-                    _ => todo!(),
-                }
-            }
-            RegistryChild::Commands(c) => {
-                for child in c.children {
-                    match child {
-                        vk_parse::Command::Definition(d) => {
-                            // does the lib really reconstruct C code instead of giving me the full parameters??
-                            // repurpose the code from 'funcpointer' parsing
-                            // TODO cleanup, switch to using xml directly
-                            // VkResult  vkCreateInstance (const  VkInstanceCreateInfo*  pCreateInfo , const  VkAllocationCallbacks*  pAllocator ,  VkInstance*  pInstance );
+                            let typ = ToplevelBody::Basetype {
+                                ty,
+                                code: buf.trim().to_owned(),
+                            };
 
-                            let params = d.code.split_terminator('(').nth(1).unwrap();
-                            let split = params.split_ascii_whitespace();
+                            add_item(
+                                &mut reg.toplevel,
+                                &mut reg.item_map,
+                                Toplevel(name, typ),
+                                name,
+                                ItemKind::Toplevel,
+                            );
+                        }
+                        // <type requires="VkFramebufferCreateFlagBits" category="bitmask">
+                        //   typedef
+                        //   <type>VkFlags</type>
+                        //   <name>VkFramebufferCreateFlags</name>
+                        //   ;
+                        // </type>
+                        // <type category="bitmask" name="VkGeometryFlagsNV" alias="VkGeometryFlagsKHR"/>
+                        Some("bitmask") => {
+                            let name = t.child_text("name").intern(&reg);
+                            let ty = t.child_text("type").intern(&reg);
+
+                            // due to vk.xml being a horror produced from C headers
+                            // bitmasks are actually an enum with the values and a typedef of the actual integer that is passed around vulkan
+                            // as such, this element is for the integer typedef and the values pub enum is listed as a
+                            // 'requires' when it is a 32 bit bitmask or in 'bitvalues' when it is 64 bit
+                            // the bits can be missing if it the flags exist but are so far unused
+                            let bits = if let Some(req) = t.attribute("requires") {
+                                Some(req)
+                            } else if let Some(req) = t.attribute("bitvalues") {
+                                Some(req)
+                            } else {
+                                None
+                            };
+
+                            let typ = ToplevelBody::Bitmask {
+                                ty,
+                                bits_enum: bits.map(|b| b.intern(&reg)),
+                            };
+
+                            add_item(
+                                &mut reg.toplevel,
+                                &mut reg.item_map,
+                                Toplevel(name, typ),
+                                name,
+                                ItemKind::Toplevel,
+                            );
+                        }
+                        // <type category="handle" objtypeenum="VK_OBJECT_TYPE_INSTANCE"><type>VK_DEFINE_HANDLE</type>(<name>VkInstance</name>)</type>
+                        // <type category="handle" name="VkDescriptorUpdateTemplateKHR" alias="VkDescriptorUpdateTemplate"/>
+                        Some("handle") => {
+                            let name = t.child_text("name").intern(&reg);
+                            let object_type = t.intern("objtypeenum", &reg);
+
+                            let ty = t.child_text("type"); // type as in kind
+                            let dispatchable = match ty {
+                                "VK_DEFINE_HANDLE" => true,
+                                "VK_DEFINE_NON_DISPATCHABLE_HANDLE" => false,
+                                _ => unreachable!(),
+                            };
+
+                            let typ = ToplevelBody::Handle {
+                                object_type,
+                                dispatchable,
+                            };
+
+                            add_item(
+                                &mut reg.toplevel,
+                                &mut reg.item_map,
+                                Toplevel(name, typ),
+                                name,
+                                ItemKind::Toplevel,
+                            );
+                        }
+                        // <type name="VkAttachmentLoadOp" category="enum"/>
+                        // <type category="enum" name="VkPrivateDataSlotCreateFlagBitsEXT" alias="VkPrivateDataSlotCreateFlagBits"/>
+                        Some("enum") => {
+                            // the alias variant has already been handled above, if it's not an alias we skip
+                            // the node as it is essentially just a C prototype and the actual definition is later on
+                        }
+                        // <type category="funcpointer">
+                        //   typedef void (VKAPI_PTR *<name>PFN_vkInternalAllocationNotification</name>)(
+                        //     <type>void</type>*                      pUserData,
+                        //     <type>size_t</type>                     size,
+                        //     <type>VkInternalAllocationType</type>   allocationType,
+                        //     <type>VkSystemAllocationScope</type>    allocationScope
+                        //   );
+                        // </type>
+                        Some("funcpointer") => {
+                            // must parse C code, thanks khronos
+                            // all 9 instances of this follow this structure:
+                            // typedef 'return type' (VKAPI_PTR *'ptr type')($('argument type'),*)
+
+                            let name = t.child_text("name").intern(&reg);
+
+                            // since the incredible way that the xml is structured, pointer syntax and const decorations are not specially marked
+                            // thus it actually becomes easier to collect all the text into a String and parse it manually
+
+                            let mut text = String::new();
+                            collect_node_text(t, &mut text);
+
+                            let mut brackets = text.split('(');
+
+                            // println!(
+                            //     "\n {} \n{:#?}\n",
+                            //     text,
+                            //     brackets.clone().collect::<Vec<_>>()
+                            // );
+
+                            let return_type = {
+                                let first = brackets.next().unwrap();
+                                let clean = first.trim_start_matches("typedef");
+                                parse_type(clean, false, &reg).1
+                            };
+
+                            // waste the second parenthesis
+                            brackets.next().unwrap();
+
+                            let args_text = brackets
+                                .next()
+                                .unwrap()
+                                .trim_end()
+                                .trim_end_matches(&[')', ';']);
+
+                            // println!("  '{}'", &args_text);
 
                             let mut args = Vec::new();
-                            // TODO this is dumb
-                            let mut buffer = String::new();
-                            'outer2: for arg in split {
-                                for char in arg.chars() {
-                                    match char {
-                                        ',' | ')' | ';' => {
-                                            let (name, ty) = parse_type(&buffer, true, &reg);
+                            for arg in args_text.split(',') {
+                                // println!("  wee");
+                                // println!("  // {} //", &arg);
 
-                                            args.push((name.unwrap(), ty));
-                                            buffer.clear();
+                                let (name, ty) = parse_type(&arg, true, &reg);
+                                args.push((name.unwrap(), ty));
+                            }
 
-                                            continue 'outer2;
-                                        }
-                                        _ => buffer.push(char),
-                                    }
+                            let typ = ToplevelBody::Funcpointer { return_type, args };
+
+                            add_item(
+                                &mut reg.toplevel,
+                                &mut reg.item_map,
+                                Toplevel(name, typ),
+                                name,
+                                ItemKind::Toplevel,
+                            );
+                        }
+                        // <type category="struct" name="VkBaseOutStructure">
+                        //   <member>
+                        //    <type>VkStructureType</type>
+                        //    <name>sType</name>
+                        //   </member>
+                        //   <member optional="true">
+                        //    struct
+                        //    <type>VkBaseOutStructure</type>
+                        //    *
+                        //    <name>pNext</name>
+                        //   </member>
+                        // </type>
+                        // <type category="struct" name="VkImageStencilUsageCreateInfoEXT" alias="VkImageStencilUsageCreateInfo"/>
+                        category @ Some("struct" | "union") => {
+                            let name = t.intern("name", &reg);
+                            let mut members = Vec::new();
+
+                            for member in iter_children(t) {
+                                match member.tag_name().name() {
+                                    "member" => {}
+                                    "comment" => continue,
+                                    _ => unreachable!(),
                                 }
-                                buffer.push(' ');
+
+                                buf.clear();
+                                collect_node_text(member, &mut buf);
+                                let (name, ty) = parse_type(&buf, true, &reg);
+
+                                members.push((name.unwrap(), ty));
                             }
 
-                            let mut params = Vec::with_capacity(d.params.len());
-                            for (i, p) in d.params.into_iter().enumerate() {
-                                params.push(CommandParameter {
-                                    len: p.len,
-                                    alt_len: p.altlen,
-                                    optional: p.optional.as_deref() == Some("true"),
-                                    externsync: p.externsync,
-                                    ty: args[i].1.clone(),
-                                    name: args[i].0,
-                                })
-                            }
-
-                            let name = d.proto.name.intern(&reg);
-                            let return_type = d.proto.type_name.unwrap();
-
-                            let typ = ToplevelBody::Command {
-                                return_type: parse_type(&return_type, false, &reg).1,
-                                params,
+                            let typ = ToplevelBody::Struct {
+                                union: category == Some("union"),
+                                members,
                             };
 
                             add_item(
@@ -1057,33 +828,198 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                 ItemKind::Toplevel,
                             );
                         }
-                        vk_parse::Command::Alias { name, alias } => {
-                            let typ = ToplevelBody::Alias {
-                                alias_of: alias.intern(&reg),
-                                kind: ToplevelKind::Command,
-                            };
-                            let name = name.intern(&reg);
-                            add_item(
-                                &mut reg.toplevel,
-                                &mut reg.item_map,
-                                Toplevel(name, typ),
-                                name,
-                                ItemKind::Toplevel,
-                            );
-                        }
-                        _ => todo!(),
+                        _ => {}
                     }
                 }
             }
-            RegistryChild::Feature(f) => {
-                let children = convert_extension_children(&f.children, None, &mut reg);
+            "enums" => {
+                match n.attribute("type") {
+                    // <enums name="API Constants" comment="Vulkan hardcoded constants - not an enumerated type, part of the header boilerplate">
+                    None => {
+                        for e in iter_children(n) {
+                            assert_eq!(e.tag_name().name(), "enum");
+                            let name = e.intern("name", &reg);
 
-                let name = f.name.intern(&reg);
+                            // <enum name="VK_LUID_SIZE_KHR" alias="VK_LUID_SIZE"/>
+                            if try_alias(e, &|| ToplevelKind::Constant, &mut reg) {
+                                continue;
+                            }
+
+                            // <enum type="uint32_t" value="256" name="VK_MAX_PHYSICAL_DEVICE_NAME_SIZE"/>
+                            let ty = e.intern("type", &reg);
+                            let mut value = e.get("value").to_owned(); // owned due to needing to mutate
+
+                            // junk like '(~0ULL)' (ie. unsigned long long ie. u64) is not valid rust
+                            // the NOT operator is ! instead of ~ and specifying bit width is not neccessary (I hope)
+
+                            // replace ~ with !
+                            assert!(value.is_ascii()); // operating on bytes like this is safe only for ascii
+                            unsafe {
+                                for b in value.as_bytes_mut() {
+                                    if *b == '~' as u8 {
+                                        *b = '!' as u8;
+                                    }
+                                }
+                            }
+
+                            // if the expression is wrapped in parentheses, remove them
+                            if value.chars().next().unwrap() == '(' {
+                                value.pop();
+                                value.remove(0);
+                            }
+
+                            // remove the bit width specifiers - I assume this is valid since rust doesn't allow integers
+                            // to be implicitly cast implying that the literal must start at the target bitwidth
+                            value.retain(|c| c != 'L' && c != 'L' && c != 'F');
+
+                            let typ = ToplevelBody::Constant {
+                                ty,
+                                val: value.intern(&reg),
+                            };
+
+                            add_item(
+                                &mut reg.toplevel,
+                                &mut reg.item_map,
+                                Toplevel(name, typ),
+                                name,
+                                ItemKind::Toplevel,
+                            );
+                        }
+                    }
+                    // <enums name="VkImageLayout" type="enum">
+                    category @ Some("enum" | "bitmask") => {
+                        assert_eq!(n.tag_name().name(), "enums");
+                        let name = n.intern("name", &reg);
+
+                        let mut members = Vec::new();
+                        for e in iter_children(n) {
+                            match e.tag_name().name() {
+                                "enum" => {}
+                                "comment" | "unused" => continue, // I don't think tracking unused values is ever useful
+                                _ => unreachable!(),
+                            }
+
+                            let variant_name = e.intern("name", &reg);
+
+                            // <enum value="0" name="VK_IMAGE_LAYOUT_UNDEFINED" comment="..."/>
+                            // <enum bitpos="0" name="VK_QUEUE_GRAPHICS_BIT" comment="..."/>
+                            // <enum name="VK_STENCIL_FRONT_AND_BACK" alias="VK_STENCIL_FACE_FRONT_AND_BACK"/>
+                            let val = if let Some(value) = e.attribute("value") {
+                                EnumValue::Value(parse_detect_radix(value))
+                            } else if let Some(bitpos) = e.attribute("bitpos") {
+                                EnumValue::Bitpos(bitpos.parse().unwrap())
+                            } else if let Some(alias) = e.attribute("alias") {
+                                EnumValue::Alias(alias.intern(&reg))
+                            } else {
+                                unreachable!()
+                            };
+
+                            members.push((variant_name, val));
+                        }
+
+                        // FIXME merge the enum variants for more straightforward code
+                        let typ = match category {
+                            Some("enum") => ToplevelBody::Enum { members },
+                            Some("bitmask") => ToplevelBody::BitmaskBits { members },
+                            _ => unreachable!(),
+                        };
+
+                        add_item(
+                            &mut reg.toplevel,
+                            &mut reg.item_map,
+                            Toplevel(name, typ),
+                            name,
+                            ItemKind::Toplevel,
+                        );
+                    }
+                    _ => unimplemented!(),
+                }
+            }
+            "commands" => {
+                for c in iter_children(n) {
+                    assert_eq!(c.tag_name().name(), "command");
+
+                    // <command name="vkResetQueryPoolEXT" alias="vkResetQueryPool"/>
+                    if try_alias(c, &|| ToplevelKind::Command, &mut reg) {
+                        continue;
+                    }
+
+                    // <command successcodes="VK_SUCCESS" errorcodes="VK_ERROR_OUT_OF_HOST_MEMORY,VK_ERROR_OUT_OF_DEVICE_MEMORY,VK_ERROR_INITIALIZATION_FAILED,VK_ERROR_LAYER_NOT_PRESENT,VK_ERROR_EXTENSION_NOT_PRESENT,VK_ERROR_INCOMPATIBLE_DRIVER">
+                    //     <proto><type>VkResult</type> <name>vkCreateInstance</name></proto>
+                    //     <param>const <type>VkInstanceCreateInfo</type>* <name>pCreateInfo</name></param>
+                    //     <param optional="true">const <type>VkAllocationCallbacks</type>* <name>pAllocator</name></param>
+                    //     <param><type>VkInstance</type>* <name>pInstance</name></param>
+                    // </command>
+                    let mut declaration = iter_children(c);
+
+                    let (name, return_type) = {
+                        let proto = declaration.next().unwrap();
+
+                        buf.clear();
+                        collect_node_text(proto, &mut buf);
+
+                        let (name, ty) = parse_type(&buf, true, &reg);
+                        (name.unwrap(), ty)
+                    };
+
+                    let mut params = Vec::new();
+                    for p in declaration {
+                        match p.tag_name().name() {
+                            "param" => {}
+                            "implicitexternsyncparams" => continue,
+                            _ => unreachable!(),
+                        }
+
+                        buf.clear();
+                        collect_node_text(p, &mut buf);
+                        let (name, ty) = parse_type(&buf, true, &reg);
+
+                        params.push(CommandParameter {
+                            name: name.unwrap(),
+                            len: p.attribute("len").map(|s| s.to_owned()),
+                            alt_len: p.attribute("altlen").map(|s| s.to_owned()),
+                            // FIXME this can be a comma separated list, help
+                            optional: p
+                                .attribute("optional")
+                                .map(|s| s.starts_with("true"))
+                                .unwrap_or(false),
+                            externsync: p.attribute("externsync").map(|s| s.to_owned()),
+                            ty,
+                        })
+                    }
+
+                    let typ = ToplevelBody::Command {
+                        return_type,
+                        params,
+                    };
+
+                    add_item(
+                        &mut reg.toplevel,
+                        &mut reg.item_map,
+                        Toplevel(name, typ),
+                        name,
+                        ItemKind::Toplevel,
+                    );
+                }
+            }
+            // <feature api="vulkan" name="VK_VERSION_1_0" number="1.0" comment="Vulkan core API interface definitions">
+            //     <require comment="Header boilerplate">
+            //         <type name="vk_platform"/>
+            //         <type name="VK_DEFINE_HANDLE"/>
+            //         <type name="VK_USE_64_BIT_PTR_DEFINES"/>
+            //         <type name="VK_DEFINE_NON_DISPATCHABLE_HANDLE"/>
+            //         <type name="VK_NULL_HANDLE"/>
+            //     </require>
+            "feature" => {
+                let name = n.intern("name", &reg);
+
+                let children = convert_extension_children(n, None, &mut reg);
+
                 let typ = Feature {
                     name,
-                    api: f.api.intern(&reg),
-                    number: f.number.intern(&reg),
-                    protect: f.protect.map(|b| b.intern(&reg)),
+                    api: n.intern("api", &reg),
+                    number: n.intern("number", &reg),
+                    protect: n.attribute("protect").map(|s| s.intern(&reg)),
                     children,
                 };
 
@@ -1095,39 +1031,52 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                     ItemKind::Feature,
                 );
             }
-            RegistryChild::Extensions(e) => {
-                for ext in e.children {
-                    assert!(ext.number.is_some());
-                    let _children = convert_extension_children(&ext.children, ext.number, &mut reg);
-                    let deprecatedby = match ext.deprecatedby {
-                        Some(s) => {
-                            if !s.is_empty() {
-                                Some(s.intern(&reg))
-                            } else {
-                                None
-                            }
-                        }
-                        None => None,
-                    };
+            // <extensions comment="Vulkan extension interface definitions">
+            //     <extension name="VK_KHR_surface" number="1" type="instance" author="KHR" contact="James Jones @cubanismo,Ian Elliott @ianelliottus" supported="vulkan">
+            //         <require>
+            //             <enum value="25"                                                name="VK_KHR_SURFACE_SPEC_VERSION"/>
+            //             <enum value="&quot;VK_KHR_surface&quot;"                        name="VK_KHR_SURFACE_EXTENSION_NAME"/>
+            //             <enum offset="0" extends="VkResult" dir="-"                     name="VK_ERROR_SURFACE_LOST_KHR"/>
+            //             <enum offset="1" extends="VkResult" dir="-"                     name="VK_ERROR_NATIVE_WINDOW_IN_USE_KHR"/>
+            //             <enum offset="0" extends="VkObjectType"                         name="VK_OBJECT_TYPE_SURFACE_KHR"/>
+            //             <type name="VkSurfaceKHR"/>
+            //             <type name="VkSurfaceTransformFlagBitsKHR"/>
+            //             <type name="VkPresentModeKHR"/>
+            //             <typ
+            "extensions" => {
+                for e in iter_children(n) {
+                    let name = e.intern("name", &reg);
 
-                    let name = ext.name.intern(&reg);
+                    // this is in fact an extension, it needs to have a number
+                    let extnumber = e.get("number").parse().unwrap();
+                    // FIXME the children are not actually included in the output
+                    let _children = convert_extension_children(e, Some(extnumber), &reg);
+                    let deprecatedby = e.attribute("deprecatedby").and_then(|s| {
+                        // thanks VK_NV_glsl_shader
+                        if s.is_empty() {
+                            None
+                        } else {
+                            Some(s.intern(&reg))
+                        }
+                    });
+
                     let typ = Extension {
                         name,
-                        number: ext.number.unwrap() as u32,
-                        sortorder: ext.sortorder.map(|n| n as u32),
-                        author: ext.author,
-                        contact: ext.contact,
-                        ext_type: ext.ext_type.map(|s| s.intern(&reg)),
-                        requires: parse_comma_separated(ext.requires.as_deref(), &mut reg),
-                        requires_core: ext.requires_core.map(|s| s.intern(&reg)),
-                        protect: ext.protect.map(|s| s.intern(&reg)),
-                        platform: ext.platform.map(|s| s.intern(&reg)),
-                        supported: parse_comma_separated(ext.supported.as_deref(), &mut reg),
-                        promotedto: ext.promotedto.map(|s| s.intern(&reg)),
+                        number: extnumber,
+                        sortorder: e.attribute("sortorder").map(|s| s.parse().unwrap()),
+                        author: e.attribute("author").map(|s| s.to_owned()),
+                        contact: e.attribute("contact").map(|s| s.to_owned()),
+                        ext_type: e.attribute("type").map(|s| s.intern(&reg)),
+                        requires: parse_comma_separated(e.attribute("requires"), &reg),
+                        requires_core: e.attribute("requiresCore").map(|s| s.intern(&reg)),
+                        protect: e.attribute("protect").map(|s| s.intern(&reg)),
+                        platform: e.attribute("platform").map(|s| s.intern(&reg)),
+                        supported: parse_comma_separated(e.attribute("supported"), &reg),
+                        promotedto: e.attribute("promotedto").map(|s| s.intern(&reg)),
                         deprecatedby,
-                        obsoletedby: ext.obsoletedby.map(|s| s.intern(&reg)),
-                        provisional: ext.provisional,
-                        specialuse: parse_comma_separated(ext.specialuse.as_deref(), &mut reg),
+                        obsoletedby: e.attribute("obsoletedby").map(|s| s.intern(&reg)),
+                        provisional: e.attribute("provisional") == Some("true"),
+                        specialuse: parse_comma_separated(e.attribute("specialuse"), &reg),
                     };
 
                     add_item(
@@ -1139,9 +1088,14 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                     );
                 }
             }
-            RegistryChild::Formats(children) => {
-                for f in children.children {
-                    let block_extent = f.blockExtent.map(|s| {
+            // <formats>
+            //     <format name="VK_FORMAT_R4G4_UNORM_PACK8" class="8-bit" blockSize="1" texelsPerBlock="1" packed="8">
+            //         <component name="R" bits="4" numericFormat="UNORM"/>
+            //         <component name="G" bits="4" numericFormat="UNORM"/>
+            //     </format>
+            "formats" => {
+                for format in iter_children(n) {
+                    let block_extent = format.attribute("blockExtent").map(|s| {
                         let mut split = s.split_terminator(',').map(|s| s.parse::<u8>().unwrap());
                         [
                             split.next().unwrap(),
@@ -1149,7 +1103,7 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                             split.next().unwrap(),
                         ]
                     });
-                    let chroma = f.chroma.map(|s| match s.as_str() {
+                    let chroma = format.attribute("chroma").map(|s| match s {
                         "420" => YCBREncoding::E420,
                         "422" => YCBREncoding::E422,
                         "444" => YCBREncoding::E444,
@@ -1160,16 +1114,10 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                     let mut planes = Vec::new();
                     let mut spirvimageformats = Vec::new();
 
-                    for child in f.children {
-                        match child {
-                            FormatChild::Component {
-                                name,
-                                bits,
-                                numericFormat,
-                                planeIndex,
-                                ..
-                            } => {
-                                let numeric_format = match numericFormat.as_str() {
+                    for child in iter_children(format) {
+                        match child.tag_name().name() {
+                            "component" => {
+                                let numeric_format = match child.get("numericFormat") {
                                     "SFLOAT" => NumericFormat::SFLOAT,
                                     "SINT" => NumericFormat::SINT,
                                     "SNORM" => NumericFormat::SNORM,
@@ -1181,56 +1129,48 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                                     "USCALED" => NumericFormat::USCALED,
                                     _ => unreachable!(),
                                 };
-                                let bits = match bits.as_str() {
+                                let bits = match child.get("bits") {
                                     "compressed" => None,
-                                    _ => Some(bits.parse::<u8>().unwrap()),
+                                    other => Some(other.parse::<u8>().unwrap()),
                                 };
                                 components.push(Component {
-                                    name: name.intern(&reg),
+                                    name: child.intern("name", &reg),
                                     bits,
                                     numeric_format,
-                                    plane_index: planeIndex,
+                                    plane_index: child
+                                        .attribute("planeIndex")
+                                        .map(|s| s.parse().unwrap()),
                                 });
                             }
-                            FormatChild::Plane {
-                                index,
-                                widthDivisor,
-                                heightDivisor,
-                                compatible,
-                                ..
-                            } => {
+                            "plane" => {
                                 planes.push(Plane {
-                                    index,
-                                    width_divisor: widthDivisor,
-                                    height_divisor: heightDivisor,
-                                    compatible: compatible.intern(&reg),
+                                    index: child.get("index").parse().unwrap(),
+                                    width_divisor: child.get("widthDivisor").parse().unwrap(),
+                                    height_divisor: child.get("heightDivisor").parse().unwrap(),
+                                    compatible: child.intern("compatible", &reg),
                                 });
                             }
-                            FormatChild::SpirvImageFormat { name, .. } => {
-                                spirvimageformats.push(name.intern(&reg));
+                            "spirvimageformat" => {
+                                spirvimageformats.push(child.intern("name", &reg));
                             }
-                            _ => todo!(),
+                            _ => unreachable!(),
                         }
                     }
 
-                    let name = f.name.intern(&reg);
+                    let name = format.intern("name", &reg);
                     let typ = Format {
                         name,
-                        class: f.class.intern(&reg),
-                        blocksize: f.blockSize,
-                        texels_per_block: f.texelsPerBlock,
+                        class: format.intern("class", &reg),
+                        blocksize: format.get("blockSize").parse().unwrap(),
+                        texels_per_block: format.get("texelsPerBlock").parse().unwrap(),
                         block_extent,
-                        packed: f.packed,
-                        compressed: f.compressed.map(|s| s.intern(&reg)),
+                        packed: format.attribute("packed").map(|s| s.parse().unwrap()),
+                        compressed: format.attribute("compressed").map(|s| s.intern(&reg)),
                         chroma,
                         components,
                         planes,
                         spirvimageformats,
                     };
-
-                    if &f.name == "VkGeometryInstanceFlagsKHR" {
-                        let _a = "help";
-                    }
 
                     add_item(
                         &mut reg.formats,
@@ -1241,242 +1181,177 @@ pub fn process_registry(registry: vk_parse::Registry) -> Registry {
                     );
                 }
             }
-            RegistryChild::SpirvExtensions(s) => {
-                for ext in s.children {
-                    let enables = convert_spirv_enable(&ext.enables, &mut reg);
-                    let name = ext.name.intern(&reg);
+            tag @ ("spirvextensions" | "spirvcapabilities") => {
+                for c in iter_children(n) {
+                    let name = c.intern("name", &reg);
+                    let enables = convert_spirv_enable(c, &mut reg);
+
                     let typ = SpirvExtCap(name, enables);
 
-                    add_item(
-                        &mut reg.spirv_extensions,
-                        &mut reg.item_map,
-                        typ,
-                        name,
-                        ItemKind::SpirvExtension,
-                    );
-                }
-            }
-            RegistryChild::SpirvCapabilities(s) => {
-                for cap in s.children {
-                    let enables = convert_spirv_enable(&cap.enables, &mut reg);
-                    let name = cap.name.intern(&reg);
-                    let typ = SpirvExtCap(name, enables);
+                    let (kind, vec) = match tag {
+                        "spirvextensions" => (ItemKind::SpirvExtension, &mut reg.spirv_extensions),
+                        "spirvcapabilities" => {
+                            (ItemKind::SpirvCapability, &mut reg.spirv_capabilities)
+                        }
+                        _ => unreachable!(),
+                    };
 
-                    add_item(
-                        &mut reg.spirv_capabilities,
-                        &mut reg.item_map,
-                        typ,
-                        name,
-                        ItemKind::SpirvCapability,
-                    );
+                    add_item(vec, &mut reg.item_map, typ, name, kind);
                 }
             }
-            _ => todo!(),
+            other => unimplemented!("Aaaaa {} aaa", other),
         }
     }
-
     reg
 }
 
-fn convert_spirv_enable(enables: &[vk_parse::Enable], reg: &Registry) -> Vec<SpirvEnable> {
+fn convert_spirv_enable(n: Node, reg: &Registry) -> Vec<SpirvEnable> {
     let mut converted = Vec::new();
-    for enable in enables {
-        let out;
-        match enable {
-            vk_parse::Enable::Version(v) => out = SpirvEnable::Version(v.intern(&reg)),
-            vk_parse::Enable::Extension(e) => out = SpirvEnable::Extension(e.intern(&reg)),
-            vk_parse::Enable::Feature(f) => {
-                out = SpirvEnable::Feature {
-                    structure: f.struct_.intern(&reg),
-                    feature: f.feature.intern(&reg),
-                    requires: parse_comma_separated(f.requires.as_deref(), reg),
-                    alias: f.alias.as_ref().map(|s| s.intern(&reg)),
-                }
-            }
-            vk_parse::Enable::Property(p) => {
-                out = SpirvEnable::Property {
-                    property: p.property.intern(&reg),
-                    member: p.member.intern(&reg),
-                    value: p.value.intern(&reg),
-                    requires: parse_comma_separated(p.requires.as_deref(), reg),
-                }
-            }
-            _ => todo!(),
-        }
+    for enable in iter_children(n) {
+        assert!(enable.tag_name().name() == "enable");
+
+        let attrs = enable.attributes();
+        assert!(attrs.len() > 0);
+
+        let val = attrs[0].value().intern(&reg);
+        // there are four variants of the enable tag, here we discriminate by the first attribute
+        // FIXME this is rather fragile
+        let out = match attrs[0].name() {
+            "version" => SpirvEnable::Version(val),
+            "extension" => SpirvEnable::Extension(val),
+            "struct" => SpirvEnable::Feature {
+                structure: val,
+                feature: enable.intern("feature", &reg),
+                requires: parse_comma_separated(enable.attribute("requires"), &reg),
+                alias: enable.attribute("alias").map(|s| s.intern(&reg)),
+            },
+            "property" => SpirvEnable::Property {
+                property: val,
+                member: enable.intern("member", &reg),
+                value: enable.intern("value", &reg),
+                requires: parse_comma_separated(enable.attribute("requires"), &reg),
+            },
+            _ => unreachable!(),
+        };
+
         converted.push(out);
     }
     converted
 }
 
 fn convert_extension_children(
-    children: &[ExtensionChild],
-    ext_number: Option<i64>,
+    n: Node,
+    ext_number: Option<u32>,
     reg: &Registry,
 ) -> Vec<FeatureExtensionItem> {
     let mut converted = Vec::new();
-    for child in children {
-        match child {
-            ExtensionChild::Require {
-                api,
-                profile,
-                extension,
-                feature,
-                comment,
-                items,
-            } => {
-                if let Some(comment) = comment {
-                    converted.push(FeatureExtensionItem::Comment(comment.clone()));
-                }
+    for child in iter_children(n) {
+        if let Some(comment) = child.attribute("comment") {
+            converted.push(FeatureExtensionItem::Comment(comment.to_owned()));
+        }
 
-                let items = {
-                    let items: &[vk_parse::InterfaceItem] = &items;
-                    let mut converted = Vec::new();
-                    for item in items {
-                        match item {
-                            vk_parse::InterfaceItem::Type { name, .. } => {
-                                converted.push(InterfaceItem::Simple {
-                                    name: name.intern(&reg),
-                                    api: None,
-                                })
-                            }
-                            vk_parse::InterfaceItem::Command { name, .. } => {
-                                converted.push(InterfaceItem::Simple {
-                                    name: name.intern(&reg),
-                                    api: None,
-                                })
-                            }
-                            vk_parse::InterfaceItem::Enum(e) => {
-                                // I don't think this is applicable here as it is already in a <require> which has its own api property
-                                // however the spec says "used to address subtle incompatibilities"
-                                // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html#_pub enum_tags
-                                assert!(e.api.is_none());
+        match child.tag_name().name() {
+            "require" => {
+                let mut items = Vec::new();
+                for item in iter_children(child) {
+                    let tag_name = item.tag_name().name();
 
-                                let name = e.name.intern(&reg);
-                                match &e.spec {
-                                    // just a constant, because of course
-                                    EnumSpec::None => {
-                                        converted.push(InterfaceItem::Simple { name, api: None })
+                    if tag_name == "comment" {
+                        continue;
+                    }
+
+                    let name = item.intern("name", &reg);
+                    let iitem = match tag_name {
+                        "type" | "command" => InterfaceItem::Simple { name, api: None },
+                        "enum" => {
+                            // I don't think this is applicable here as it is already in a <require> which has its own api property
+                            // however the spec says "used to address subtle incompatibilities"
+                            // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html#_pub enum_tags
+                            assert!(child.attribute("api").is_none());
+
+                            if let Some(extends) = item.attribute("extends") {
+                                let method = if let Some(offset) = item.attribute("offset") {
+                                    let offset = offset.parse::<i32>().unwrap();
+                                    let extnumber = item
+                                        .attribute("extnumber")
+                                        .map(|s| s.parse::<u32>().unwrap());
+                                    let dir = item.attribute("dir");
+
+                                    ExtendMethod::BitposExtnumber {
+                                        // if this is a feature which itself (as opposed to an extension) doesn't have an extumber, extnumber is always defined
+                                        extnumber: extnumber.or(ext_number).unwrap(),
+                                        offset: if dir == Some("-") { -offset } else { offset }
+                                            as i32,
                                     }
-                                    EnumSpec::Offset {
-                                        offset,
-                                        extends,
-                                        extnumber,
-                                        dir,
-                                    } => {
-                                        converted.push(InterfaceItem::Extend {
-                                            name,
-                                            extends: extends.intern(&reg),
-                                            api: None,
-                                            method: ExtendMethod::BitposExtnumber {
-                                                // if this is a feature which itself (as opposed to an extension) doesn't have an extumber, extnumber is always defined
-                                                extnumber: extnumber.or(ext_number).unwrap() as u32,
-                                                offset: if *dir == true {
-                                                    *offset
-                                                } else {
-                                                    -*offset
-                                                }
-                                                    as i32,
-                                            },
-                                        })
+                                } else if let Some(bitpos) = item.attribute("bitpos") {
+                                    let bitpos = bitpos.parse::<u32>().unwrap();
+                                    // extends can't be None right? how can a global constant be a bitpos? if yes then copy the EnumSpec::Value case and set value to a bitshifted 1?
+                                    ExtendMethod::Bitpos(bitpos)
+                                } else if let Some(value) = item.attribute("value") {
+                                    ExtendMethod::Value(value.to_owned())
+                                } else if let Some(value) = item.attribute("alias") {
+                                    ExtendMethod::Alias(value.intern(&reg))
+                                } else {
+                                    unreachable!()
+                                };
+
+                                InterfaceItem::Extend {
+                                    name,
+                                    extends: extends.intern(&reg),
+                                    api: None,
+                                    method,
+                                }
+                            } else {
+                                if let Some(value) = item.attribute("value") {
+                                    InterfaceItem::AddConstant {
+                                        name,
+                                        value: ConstantValue::Value(value.to_owned()),
                                     }
-                                    EnumSpec::Bitpos { bitpos, extends } => {
-                                        converted.push(InterfaceItem::Extend {
-                                            name,
-                                            // extends can't be None right? how can a global constant be a bitpos? if yes then copy the EnumSpec::Value case and set value to a bitshifted 1?
-                                            extends: extends.as_ref().unwrap().intern(&reg),
-                                            api: None,
-                                            method: ExtendMethod::Bitpos(*bitpos as u32),
-                                        });
-                                    }
-                                    EnumSpec::Value { value, extends } => {
-                                        match extends {
-                                            Some(e) => converted.push(InterfaceItem::Extend {
-                                                name,
-                                                extends: e.intern(&reg),
-                                                api: None,
-                                                method: ExtendMethod::Value(value.clone()),
-                                            }),
-                                            // global constant
-                                            None => converted.push(InterfaceItem::AddConstant {
-                                                name,
-                                                value: ConstantValue::Value(value.clone()),
-                                            }),
-                                        }
-                                    }
-                                    EnumSpec::Alias { alias, extends } => {
-                                        match extends {
-                                            Some(e) => converted.push(InterfaceItem::Extend {
-                                                name,
-                                                extends: e.intern(&reg),
-                                                api: None,
-                                                method: ExtendMethod::Alias(alias.intern(&reg)),
-                                            }),
-                                            // global constant
-                                            None => converted.push(InterfaceItem::AddConstant {
-                                                name,
-                                                value: ConstantValue::Alias(alias.intern(&reg)),
-                                            }),
-                                        }
-                                    }
-                                    _ => todo!(),
+                                } else {
+                                    InterfaceItem::Simple { name, api: None }
                                 }
                             }
-                            // TODO consider adding comment to InterfaceItem
-                            vk_parse::InterfaceItem::Comment(_) => continue,
-                            _ => todo!(),
                         }
-                    }
-                    converted
-                };
-
-                let api = parse_comma_separated(api.as_deref(), reg);
-
-                converted.push(FeatureExtensionItem::Require {
-                    profile: profile.as_ref().map(|b| b.intern(&reg)),
-                    api,
-                    extension: extension.as_ref().map(|s| s.intern(&reg)),
-                    feature: feature.as_ref().map(|b| b.intern(&reg)),
-                    items,
-                })
-            }
-            ExtensionChild::Remove {
-                api,
-                profile,
-                comment,
-                items,
-            } => {
-                // extensions removing things is dubious at best, thanks to the spec for being explicit
-                // "It is unlikely that a type would ever be removed, although this usage is allowed by the schema."
-                if let Some(comment) = comment {
-                    converted.push(FeatureExtensionItem::Comment(comment.clone()));
+                        _ => unimplemented!(),
+                    };
+                    items.push(iitem);
                 }
 
-                let items = {
-                    let items: &[vk_parse::InterfaceItem] = &items;
-                    let mut converted = Vec::new();
-                    for item in items {
-                        let item_name;
-                        match item {
-                            vk_parse::InterfaceItem::Comment(_) => continue,
-                            vk_parse::InterfaceItem::Type { name, .. } => item_name = name,
-                            vk_parse::InterfaceItem::Enum(e) => item_name = &e.name,
-                            vk_parse::InterfaceItem::Command { name, .. } => item_name = name,
-                            _ => todo!(),
-                        }
-                        converted.push(item_name.intern(&reg));
-                    }
-                    converted
-                };
+                let profile = child.attribute("profile").map(|s| s.intern(&reg));
+                let api = parse_comma_separated(child.attribute("api"), reg);
+                let extension = child.attribute("extension").map(|s| s.intern(&reg));
+                let feature = child.attribute("feature").map(|s| s.intern(&reg));
 
-                let api = parse_comma_separated(api.as_deref(), reg);
+                converted.push(FeatureExtensionItem::Require {
+                    profile,
+                    api,
+                    extension,
+                    feature,
+                    items,
+                });
+            }
+            "remove" => {
+                // extensions removing things is dubious at best, thanks to the spec for being explicit
+                // "It is unlikely that a type would ever be removed, although this usage is allowed by the schema."
+
+                let mut items = Vec::new();
+                for item in iter_children(child) {
+                    // if you're going to be removing something, obbviously only the name
+                    // is neccessary and no other information is given
+                    let name = item.intern("name", &reg);
+                    items.push(name);
+                }
+
+                let profile = child.attribute("profile").map(|s| s.intern(&reg));
+                let api = parse_comma_separated(child.attribute("api"), reg);
 
                 converted.push(FeatureExtensionItem::Remove {
-                    profile: profile.as_ref().map(|b| b.intern(&reg)),
+                    profile,
                     api,
                     items,
-                })
+                });
             }
-            _ => todo!(),
+            _ => unreachable!(),
         }
     }
     converted
@@ -1489,10 +1364,10 @@ fn parse_comma_separated(what: Option<&str>, reg: &Registry) -> Vec<Spur> {
     }
 }
 
-fn parse_detect_radix(what: &str) -> i64 {
-    if what.len() > 2 && what[0..2] == (*"0x") {
-        i64::from_str_radix(&what[2..], 16).unwrap()
+fn parse_detect_radix(str: &str) -> i64 {
+    if str.len() > 2 && &str[0..2] == "0x" {
+        i64::from_str_radix(&str[2..], 16).unwrap()
     } else {
-        i64::from_str_radix(what, 10).unwrap()
+        i64::from_str_radix(str, 10).unwrap()
     }
 }

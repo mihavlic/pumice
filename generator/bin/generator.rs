@@ -11,7 +11,6 @@ use std::{
     fmt::Display,
     fs::File,
     io::{BufWriter, Write},
-    path::Path,
 };
 
 use crate::workarounds::apply_workarounds;
@@ -20,11 +19,6 @@ mod format_utils;
 mod workarounds;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let (reg, errors) = vk_parse::parse_file(&Path::new("/home/eg/Downloads/vk.xml")).unwrap();
-    if !errors.is_empty() {
-        eprintln!("{:#?}", errors);
-    }
-
     let bindgen_file = File::create(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../generated/bindgen.c"
@@ -37,7 +31,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     ))
     .unwrap();
 
-    let mut reg = process_registry(reg);
+    let mut reg = process_registry(&std::fs::read_to_string("/home/eg/Downloads/vk.xml")?);
 
     // todo filter items by maximum api version, extensions, and all the other <requires> stuff
     // esentially crawl through all the possible definition places and reject those that don't match the hard limits
@@ -451,7 +445,7 @@ fn merge_bitfield_members(members: &[(Spur, TypeDecl)], reg: &Registry) -> Vec<(
 fn resolve_alias(alias: Spur, kind: ToplevelKind, registry: &Registry) -> &Toplevel {
     let mut alias = alias;
     loop {
-        // what if the alias is to something that is added by bindgen and is never in our registry?
+        // FIXME what if the alias is to something that is added by bindgen and is never in our registry?
         let &(index, ty) = registry
             .item_map
             .get(&alias)

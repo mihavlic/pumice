@@ -14,5 +14,5 @@ name = "dump"
 path = "./bin/dump.rs"
 
 [dependencies]
-vk-parse = "0.7"
 lasso = "0.6.0"
+roxmltree = "0.14.1"
