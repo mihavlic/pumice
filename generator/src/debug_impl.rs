@@ -353,6 +353,10 @@ impl<'a> Debug for WithRegistry<'a, &Extension> {
             .field("obsoletedby", &s.obsoletedby.reg(reg))
             .field("provisional", &s.provisional)
             .field("specialuse", &s.specialuse.reg(reg))
+            .field(
+                "children",
+                &SliceDebug::new(s.children.iter().map(|c| c.reg(reg))),
+            )
             .finish()
     }
 }

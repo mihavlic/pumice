@@ -117,6 +117,7 @@ pub struct Extension {
     pub obsoletedby: Option<Spur>,
     pub provisional: bool,
     pub specialuse: Vec<Spur>,
+    pub children: Vec<FeatureExtensionItem>,
 }
 
 #[derive(Debug)]
@@ -1049,8 +1050,7 @@ pub fn process_registry(xml: &str) -> Registry {
 
                     // this is in fact an extension, it needs to have a number
                     let extnumber = e.get("number").parse().unwrap();
-                    // FIXME the children are not actually included in the output
-                    let _children = convert_extension_children(e, Some(extnumber), &reg);
+                    let children = convert_extension_children(e, Some(extnumber), &reg);
                     let deprecatedby = e.attribute("deprecatedby").and_then(|s| {
                         // thanks VK_NV_glsl_shader
                         if s.is_empty() {
@@ -1077,6 +1077,7 @@ pub fn process_registry(xml: &str) -> Registry {
                         obsoletedby: e.attribute("obsoletedby").map(|s| s.intern(&reg)),
                         provisional: e.attribute("provisional") == Some("true"),
                         specialuse: parse_comma_separated(e.attribute("specialuse"), &reg),
+                        children,
                     };
 
                     add_item(

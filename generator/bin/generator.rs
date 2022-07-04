@@ -342,9 +342,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                 code2!(
                     rust,
-                    "pub fn {}({}){} {{"
-                    "    todo!()"
-                    "}}"
+                    "pub fn {}({}){} {{}}"
                     @ name.reg(&reg), args, return_str.unwrap()
                 )?;
             }
