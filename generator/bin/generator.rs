@@ -1,22 +1,24 @@
-use format_utils::{RegistryWrap, Separated};
+use crate::{
+    format_utils::{FormatWriter, Separated, WriteWriteAdapter},
+    workarounds::apply_workarounds,
+};
 use generator_lib::{
     process_registry,
     type_declaration::{TypeDecl, TypeToken},
     EnumValue, Intern, ItemKind, Registry, Toplevel, ToplevelBody, ToplevelKind,
 };
 use lasso::Spur;
+use registry_format::RegistryWrap;
 use std::{
     collections::HashMap,
     error::Error,
-    fmt::Display,
+    fmt::{Display, Write},
     fs::File,
-    io::{BufWriter, Write},
+    io::BufWriter,
 };
 
-use crate::workarounds::apply_workarounds;
-
 mod format_utils;
-mod format_utils2;
+mod registry_format;
 mod workarounds;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -42,8 +44,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     // api definitions at a rough granuality first without shoving it all into the compiler
 
     let mut include_headers = Vec::new();
-    let mut c = BufWriter::new(bindgen_file);
-    let mut rust = BufWriter::new(rust_file);
+    let mut rust = FormatWriter::new(WriteWriteAdapter(BufWriter::new(rust_file)));
+    let mut c = FormatWriter::new(WriteWriteAdapter(BufWriter::new(bindgen_file)));
 
     apply_workarounds(&mut reg);
 
@@ -72,7 +74,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         ],
     );
 
-    code!(
+    code2!(
         rust,
         "pub type void = std::ffi::c_void;"
         "pub type size_t = std::ffi::c_size_t;"
@@ -127,7 +129,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         match &item.1 {
             ToplevelBody::Alias { alias_of, kind } => match kind {
                 ToplevelKind::Command => {
-                    code!(
+                    code2!(
                         rust,
                         "// TODO alias of command '{}'"
                         @ name.reg(&reg)
@@ -140,14 +142,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                         _ => unreachable!(),
                     };
 
-                    code!(
+                    code2!(
                         rust,
                         "pub const {}: {} = {};"
                         @ name.reg(&reg), ty.reg(&reg), alias_of.reg(&reg)
                     )?;
                 }
                 _ => {
-                    code!(
+                    code2!(
                         rust,
                         "pub type {} = {};"
                         @ name.reg(&reg), alias_of.reg(&reg)
@@ -164,20 +166,20 @@ fn main() -> Result<(), Box<dyn Error>> {
             // TODO parse the typedef (and replace it with an alias) so that we have more complete information
             ToplevelBody::Basetype { ty, code } => {
                 if let Some(ty) = ty {
-                    code!(
+                    code2!(
                         rust,
                         "pub type {} = {};"
                         @ name.reg(&reg), ty.reg(&reg)
                     )?;
                 } else {
                     // write the raw code to the c file and let bindgen handle it
-                    c.write(code.as_bytes())?;
-                    c.write(b"\n")?;
+                    c.write_str(code)?;
+                    c.write_char('\n');
                 }
             }
             ToplevelBody::Bitmask { ty, .. } => {
                 // TODO when we're actually generating semantically valid rust code add #repr(transparent)
-                code!(
+                code2!(
                     rust,
                     "pub struct {}(pub {});"
                     @ name.reg(&reg), ty.reg(&reg)
@@ -191,7 +193,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     true => "dispatchable, ",
                     false => "",
                 };
-                code!(
+                code2!(
                     rust,
                     "/// {}{}"
                     "#[repr(transparent)]"
@@ -204,7 +206,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let args = Separated::args(args.iter(), |(_, ty), f| {
                     ty.as_rust_order(&reg).reg(&reg).fmt(f)
                 });
-                code!(
+                code2!(
                     rust,
                     "pub type {} = fn({}) -> {};"
                     @ name.reg(&reg), args, ret.reg(&reg)
@@ -220,7 +222,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let ty = ty.as_rust_order(&reg);
                     format_args!("{}: {}", name.reg(&reg), ty.reg(&reg)).fmt(f)
                 });
-                code!(
+                code2!(
                     rust,
                     "pub {} {} {{"
                     "    {}"
@@ -229,7 +231,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 )?;
             }
             ToplevelBody::Constant { ty, val } => {
-                code!(
+                code2!(
                     rust,
                     "pub const {}: {} = {};"
                     @ name.reg(&reg), ty.reg(&reg), val.reg(&reg)
@@ -266,7 +268,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         }
                     }
                 });
-                code!(
+                code2!(
                     rust,
                     "pub enum {} {{"
                     "    {}"
@@ -303,7 +305,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         }
                     }
                 });
-                code!(
+                code2!(
                     rust,
                     "impl {} {{"
                     "    {}"
@@ -338,7 +340,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     .fmt(f)
                 });
 
-                code!(
+                code2!(
                     rust,
                     "pub fn {}({}){} {{"
                     "    todo!()"
@@ -350,7 +352,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     for header in include_headers {
-        code!(
+        code2!(
             c,
             "#include \"{}\""
             @ header.reg(&reg)

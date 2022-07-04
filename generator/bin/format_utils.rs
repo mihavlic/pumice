@@ -1,204 +1,236 @@
-use std::fmt::{Arguments, Display, Formatter, Write};
+use std::fmt::{Display, Formatter, Write};
 
-use generator_lib::type_declaration::TypeDecl;
-use lasso::Spur;
+#[derive(PartialEq, Eq)]
+enum State {
+    Start,
+    Whitespace,
+    Newline,
+}
 
-use crate::Registry;
+// a state machine that does some simple formatting on text that is written to it
+pub struct FormatWriter<W: Write> {
+    inner: W,
+    indent: usize,
+    state: State,
+}
+
+impl<W: Write> Write for FormatWriter<W> {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        for char in s.chars() {
+            self.write_char(char);
+        }
+        Ok(())
+    }
+    fn write_char(&mut self, c: char) -> std::fmt::Result {
+        self.write_char(c);
+        Ok(())
+    }
+}
+
+const IDENT_STR: &'static str = "    ";
+
+impl<W: Write> FormatWriter<W> {
+    pub fn new(writer: W) -> Self {
+        Self {
+            inner: writer,
+            indent: 0,
+            state: State::Newline,
+        }
+    }
+    pub fn write_char(&mut self, c: char) {
+        // match situations where the state doesn't change and nothing is written
+        if (c.is_whitespace() && (self.state == State::Whitespace || self.state == State::Newline))
+            || (c == '\n' && self.state == State::Newline)
+        {
+            return;
+        }
+
+        match c {
+            '{' => {
+                self.indent += 1;
+                self.state = State::Start;
+            }
+            '}' => {
+                // if this number underverflows during a release build it will
+                // result in 2^64 indents being printed and, well, that's not good
+                self.indent = self.indent.saturating_sub(1);
+                self.state = State::Start;
+            }
+            _ => {}
+        }
+
+        match c {
+            '\n' => {
+                if self.state != State::Newline {
+                    self.state = State::Newline;
+                }
+            }
+            _ if c.is_whitespace() => {
+                // State::Newline cannot be overriden by State::Whitespace
+                if self.state != State::Newline {
+                    self.state = State::Whitespace;
+                    // we delay printing the indentation to the next character in case it's
+                    // a brace that would modify the indentation before itself
+                }
+            }
+            _ => {
+                if self.state == State::Newline {
+                    for _ in 0..self.indent {
+                        self.write_raw(IDENT_STR);
+                    }
+                }
+                self.state = State::Start;
+            }
+        }
+
+        self.write_char_raw(c);
+    }
+    pub fn flush_newline(&mut self) {
+        if self.state != State::Newline {
+            self.write_char('\n');
+        }
+    }
+    pub fn write_char_raw(&mut self, c: char) {
+        self.inner.write_char(c).unwrap();
+    }
+    pub fn write_raw(&mut self, s: &str) {
+        self.inner.write_str(s).unwrap();
+    }
+    pub fn get_inner_writer(&self) -> &W {
+        &self.inner
+    }
+    pub fn to_inner_writer(self) -> W {
+        self.inner
+    }
+}
+
+pub struct WriteWriteAdapter<W: std::io::Write> (pub W);
+
+impl<W: std::io::Write> Write for WriteWriteAdapter<W> {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        match self.0.write(s.as_bytes()) {
+            Ok(_) => Ok(()),
+            Err(_) => Err(std::fmt::Error),
+        }
+    }    
+}
+
+#[macro_export]
+macro_rules! code2 {
+    ($buf:expr, $($code:literal)+ @ $($tail:tt)*) => {
+        {
+            let result = std::fmt::Write::write_fmt(
+                &mut $buf,
+                format_args!(
+                    concat!($($code, "\n"),+),
+                    $(
+                        $tail
+                    )*
+                )
+            );
+            if result.is_ok() {
+                $buf.flush_newline();
+            }
+            result
+        }
+    }
+}
 
 pub struct Separated<
+    'a,
     T: Iterator + Clone,
     F: Fn(<T as Iterator>::Item, &mut Formatter<'_>) -> std::fmt::Result,
 > {
     iter: T,
     fun: F,
-    // the string before writing the content of the iterator
-    pad: &'static str,
-    // the string after writing the content of the iterator
-    end: &'static str,
-    // whether to write the end string even for the last element, this is useful for separated but not actually delimited elements
-    // such as function arguments
-    end_last: bool,
-    // whether to separate elements with a newline along with the 'end' string padding
-    // the difference here is that we want to emit newlines for every but the last element
-    // but if end_last is set we want to write the end string for every single one
-    newline: bool,
+    sep: &'a str,
+    // whether to add a separator after the last element
+    sep_last: bool,
 }
 
-impl<T: Iterator + Clone, F: Fn(<T as Iterator>::Item, &mut Formatter<'_>) -> std::fmt::Result>
-    Separated<T, F>
-{
+
+impl<
+        'a,
+        T: Iterator + Clone,
+        F: Fn(<T as Iterator>::Item, &mut Formatter<'_>) -> std::fmt::Result,
+    > Separated<'a, T, F>
+{ 
     pub fn new(
         iter: T,
         fun: F,
-        pad: &'static str,
-        end: &'static str,
-        newline: bool,
-        end_last: bool,
+        separator: &'a str,
+        separator_last: bool        
     ) -> Self {
-        Self {
-            iter,
-            fun,
-            pad,
-            end,
-            end_last,
-            newline,
-        }
+        Self { iter, fun, sep: separator, sep_last: separator_last }
     }
-    pub fn args(iter: T, fun: F) -> Self {
-        Self::new(iter, fun, ", ", "", false, false)
+    pub fn args(
+        iter: T,
+        fun: F        
+    ) -> Self {
+        Self::new(iter, fun, ", ", false)
     }
-    pub fn members(iter: T, fun: F) -> Self {
-        Self::new(iter, fun, "    ", ",", true, false)
+    pub fn members(
+        iter: T,
+        fun: F        
+    ) -> Self {
+        Self::new(iter, fun, ",\n", false)
     }
-    pub fn statements(iter: T, fun: F) -> Self {
-        Self::new(iter, fun, "    ", ";", true, true)
+    pub fn statements(
+        iter: T,
+        fun: F        
+    ) -> Self {
+        Self::new(iter, fun, ";\n", true)
     }
 }
 
-impl<T: Iterator + Clone, F: Fn(<T as Iterator>::Item, &mut Formatter<'_>) -> std::fmt::Result>
-    Display for Separated<T, F>
+impl<
+        'a,
+        T: Iterator + Clone,
+        F: Fn(<T as Iterator>::Item, &mut Formatter<'_>) -> std::fmt::Result,
+    > Display for Separated<'a, T, F>
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let mut iter = self.iter.clone().peekable();
-        let mut first = true;
-        while let Some(next) = iter.next() {
-            let last = iter.peek().is_none();
-            if !first {
-                f.write_str(self.pad)?;
-            }
 
-            first = false;
+        while let Some(next) = iter.next() {
             (self.fun)(next, f)?;
 
-            if !last || self.end_last {
-                f.write_str(self.end)?;
-            }
-            if !last && self.newline {
-                f.write_char('\n')?;
+            if iter.peek().is_some() || self.sep_last {
+                f.write_str(self.sep)?;
             }
         }
         Ok(())
     }
 }
 
-pub struct WithRegistry<'a, T: ?Sized>(&'a Registry, T);
+#[test]
+fn test_format_writer() {
+    #[rustfmt::skip]
+    let raw = 
+r#"
+struct {
+            a;
+a;
 
-pub trait RegistryWrap {
-    fn reg(self, reg: &Registry) -> WithRegistry<Self>;
 }
-
-impl<T> RegistryWrap for T {
-    fn reg(self, reg: &Registry) -> WithRegistry<Self> {
-        WithRegistry(reg, self)
-    }
+fn test(a: usize) {
+    // comment
 }
+"#;
 
-pub trait RegistryDisplay {
-    fn format(&self, reg: &Registry, f: &mut Formatter<'_>) -> std::fmt::Result;
+    #[rustfmt::skip]
+    let expect = 
+r#"struct {
+    a;
+    a;
 }
-
-impl<'a, T: RegistryDisplay> Display for WithRegistry<'a, T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        RegistryDisplay::format(&self.1, self.0, f)
-    }
+fn test(a: usize) {
+    // comment
 }
+"#;
 
-#[macro_export]
-macro_rules! code {
-    ($buf:expr, $($code:literal)+ @ $($tail:tt)*) => {
-        write!(
-            &mut $buf,
-            concat!($($code, "\n"),+),
-            $(
-                $tail
-            )*
-        )
-    }
-}
+    let mut writer = FormatWriter::new(String::new());
+    writer.write_str(raw).unwrap();
 
-impl RegistryDisplay for Arguments<'_> {
-    fn format(&self, _: &Registry, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(*self)
-    }
-}
-
-impl RegistryDisplay for &str {
-    fn format(&self, _: &Registry, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self)
-    }
-}
-
-impl RegistryDisplay for String {
-    fn format(&self, _: &Registry, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl RegistryDisplay for u32 {
-    fn format(&self, _: &Registry, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("{}", self))
-    }
-}
-
-impl RegistryDisplay for bool {
-    fn format(&self, _: &Registry, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let str = match self {
-            true => "true",
-            false => "false",
-        };
-        f.write_str(str)
-    }
-}
-
-impl<T: RegistryDisplay> RegistryDisplay for Option<T> {
-    fn format(&self, reg: &Registry, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Some(some) => {
-                f.write_str("Some(")?;
-                some.format(reg, f)?;
-                f.write_char(')')
-            }
-            None => f.write_str("None"),
-        }
-    }
-}
-
-impl RegistryDisplay for Spur {
-    fn format(&self, reg: &Registry, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&*reg.resolve(self))
-    }
-}
-
-impl RegistryDisplay for TypeDecl {
-    fn format(&self, reg: &Registry, f: &mut Formatter<'_>) -> std::fmt::Result {
-        TypeDecl::fmt(self, f, reg)
-    }
-}
-
-// impl<'a, I: RegistryDisplay, T: Iterator<Item = I> + Clone> RegistryDisplay for Separated<T> {
-//     fn format(&self, reg: &Registry, f: &mut Formatter<'_>) -> std::fmt::Result {
-//         let mut iter = self.iter.clone().peekable();
-//         let mut first = true;
-//         while let Some(next) = iter.next() {
-//             let last = iter.peek().is_none();
-//             if !first {
-//                 f.write_str(self.pad)?;
-//             }
-//             first = false;
-//             RegistryDisplay::format(&next, reg, f)?;
-//             if !last {
-//                 f.write_str(self.end)?;
-//                 if self.newline {
-//                     f.write_char('\n')?;
-//                 }
-//             }
-//         }
-//         Ok(())
-//     }
-// }
-
-impl<T: RegistryDisplay> RegistryDisplay for &T {
-    fn format(&self, reg: &Registry, f: &mut Formatter<'_>) -> std::fmt::Result {
-        T::format(self, reg, f)
-    }
+    assert_eq!(writer.get_inner_writer(), expect);
 }
