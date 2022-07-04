@@ -16,6 +16,7 @@ use std::{
 use crate::workarounds::apply_workarounds;
 
 mod format_utils;
+mod format_utils2;
 mod workarounds;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -533,7 +534,7 @@ impl<'a> Iterator for CamelCaseSplit<'a> {
 
         for (i, c) in chars.enumerate() {
             // just match all the different situations where we want to end a "chunk"
-            // Hah|A, Hah|42, 42|Aha
+            // Aa|A, Aa|42, 42|Aa       * Aa is just an example of identifier starting with a capital letter
             if (prev.is_ascii_lowercase() && c.is_ascii_uppercase())
                 || (prev.is_ascii_lowercase() && c.is_ascii_digit())
                 || (prev.is_ascii_digit() && c.is_ascii_uppercase())
@@ -564,15 +565,15 @@ fn make_enum_member_rusty(
     //     ..
     // }
 
-    // we also have this beauty, so we will have to skip any "Flags":
+    // the enum names contain "Flags" while the member does not, this needs to be filtered nevertheless:
     //  impl VkDebugReportFlagsEXT {
     //      const VK_DEBUG_REPORT_INFORMATION_BIT_EXT: VkFlags = 1 << 0;
     //      ..
     //  }
-
+    //
     //  VkVideoEncodeH265CapabilityFlagsEXT
     //  VK_VIDEO_ENCODE_H265_CAPABILITY_SEPARATE_COLOUR_PLANE_BIT_EXT
-
+    //
     //  VkFormatFeatureFlags2
     //  VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT
 
@@ -581,7 +582,7 @@ fn make_enum_member_rusty(
     // current solution will be to keep track of the starting character of the previous chunk and use that
     //  VkShadingRatePaletteEntryNV
     //  VK_SHADING_RATE_PALETTE_ENTRY_16_INVOCATIONS_PER_PIXEL_NV
-    // => E16InvocationsPerPixel
+    //  => E16InvocationsPerPixel
 
     let mut out = String::new();
 
