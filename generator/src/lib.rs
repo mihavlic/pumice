@@ -635,7 +635,7 @@ pub fn process_registry(xml: &str) -> Registry {
                             let name = t.child_text("name").intern(&reg);
                             let ty = t.try_child_text("type").map(|s| s.intern(&reg));
 
-                            let mut buf = String::new();
+                            buf.clear();
                             collect_node_text(t, &mut buf);
 
                             let typ = ToplevelBody::Basetype {
@@ -738,10 +738,10 @@ pub fn process_registry(xml: &str) -> Registry {
                             // since the incredible way that the xml is structured, pointer syntax and const decorations are not specially marked
                             // thus it actually becomes easier to collect all the text into a String and parse it manually
 
-                            let mut text = String::new();
-                            collect_node_text(t, &mut text);
+                            buf.clear();
+                            collect_node_text(t, &mut buf);
 
-                            let mut brackets = text.split('(');
+                            let mut brackets = buf.split('(');
 
                             // println!(
                             //     "\n {} \n{:#?}\n",
@@ -764,13 +764,8 @@ pub fn process_registry(xml: &str) -> Registry {
                                 .trim_end()
                                 .trim_end_matches(&[')', ';']);
 
-                            // println!("  '{}'", &args_text);
-
                             let mut args = Vec::new();
                             for arg in args_text.split(',') {
-                                // println!("  wee");
-                                // println!("  // {} //", &arg);
-
                                 let (name, ty) = parse_type(&arg, true, &reg);
                                 args.push((name.unwrap(), ty));
                             }
@@ -848,15 +843,16 @@ pub fn process_registry(xml: &str) -> Registry {
 
                             // <enum type="uint32_t" value="256" name="VK_MAX_PHYSICAL_DEVICE_NAME_SIZE"/>
                             let ty = e.intern("type", &reg);
-                            let mut value = e.get("value").to_owned(); // owned due to needing to mutate
+                            buf.clear();
+                            buf.push_str(e.get("value")); // owned due to needing to mutate
 
                             // junk like '(~0ULL)' (ie. unsigned long long ie. u64) is not valid rust
                             // the NOT operator is ! instead of ~ and specifying bit width is not neccessary (I hope)
 
                             // replace ~ with !
-                            assert!(value.is_ascii()); // operating on bytes like this is safe only for ascii
+                            assert!(buf.is_ascii()); // operating on bytes like this is safe only for ascii
                             unsafe {
-                                for b in value.as_bytes_mut() {
+                                for b in buf.as_bytes_mut() {
                                     if *b == '~' as u8 {
                                         *b = '!' as u8;
                                     }
@@ -864,18 +860,18 @@ pub fn process_registry(xml: &str) -> Registry {
                             }
 
                             // if the expression is wrapped in parentheses, remove them
-                            if value.chars().next().unwrap() == '(' {
-                                value.pop();
-                                value.remove(0);
+                            if buf.chars().next().unwrap() == '(' {
+                                buf.pop();
+                                buf.remove(0);
                             }
 
                             // remove the bit width specifiers - I assume this is valid since rust doesn't allow integers
                             // to be implicitly cast implying that the literal must start at the target bitwidth
-                            value.retain(|c| c != 'L' && c != 'L' && c != 'F');
+                            buf.retain(|c| c != 'L' && c != 'L' && c != 'F');
 
                             let typ = ToplevelBody::Constant {
                                 ty,
-                                val: value.intern(&reg),
+                                val: buf.intern(&reg),
                             };
 
                             add_item(
