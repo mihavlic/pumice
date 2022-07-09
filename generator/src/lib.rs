@@ -4,6 +4,7 @@
 use std::{
     cell::{Ref, RefCell},
     collections::HashMap,
+    ops::Deref,
 };
 
 use lasso::{Rodeo, Spur};
@@ -15,24 +16,24 @@ pub mod type_declaration;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ToplevelKind {
-    Handle,
-    Constant,
-    Enum,
-    Bitmask,
-    Command,
-    // the folowing kinds cannot? be aliases
     Alias,
     Included,
+    Define,
     Basetype,
+    Bitmask,
+    Handle,
     Funcpointer,
     Struct,
+    Constant,
+    Enum,
     BitmaskBits,
+    Command,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Toplevel(pub Spur, pub ToplevelBody);
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum ToplevelBody {
     Alias {
         alias_of: Spur,
@@ -40,6 +41,9 @@ pub enum ToplevelBody {
     },
     Included {
         header: Spur,
+    },
+    Define {
+        body: String,
     },
     Basetype {
         /// if the type is created by a preprocessor macro the type is not available
@@ -81,7 +85,7 @@ pub enum ToplevelBody {
     },
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum EnumValue {
     Bitpos(u32),
     Value(i64),
@@ -172,7 +176,7 @@ pub struct Format {
     pub spirvimageformats: Vec<Spur>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct CommandParameter {
     pub name: Spur,
     pub len: Option<String>,
@@ -180,12 +184,6 @@ pub struct CommandParameter {
     pub optional: bool,
     pub externsync: Option<String>,
     pub ty: TypeDecl,
-}
-
-#[derive(Debug)]
-pub struct Define {
-    pub name: Spur,
-    pub body: String,
 }
 
 #[derive(Debug)]
@@ -295,20 +293,10 @@ pub enum ItemKind {
     SpirvExtension,
 }
 
-pub struct Registry {
-    pub platforms: Vec<Platform>,
-    pub tags: Vec<Tag>,
-    pub headers: Vec<Spur>,
-    pub defines: Vec<Define>,
+pub type ItemIdx = u32;
 
-    pub toplevel: Vec<Toplevel>,
-    pub features: Vec<Feature>,
-    pub extensions: Vec<Extension>,
-    pub formats: Vec<Format>,
-    pub spirv_capabilities: Vec<SpirvExtCap>,
-    pub spirv_extensions: Vec<SpirvExtCap>,
-    pub item_map: HashMap<Spur, (u32, ItemKind)>,
-    pub interner: RefCell<Rodeo>,
+struct InnerInterner {
+    rodeo: Rodeo,
     // a map for substituting certain Spurs with Different spurs
     // this is used at code generation to consistently rename different identifiers
     // to make them match rust naming conventions better
@@ -317,42 +305,35 @@ pub struct Registry {
     // another option was preparing all the renames beforehand and then iterating through everything here
     // and replacing the renamed spurs but that would be quite tiring to maintain and would break any spurs
     // that the user may have kept in variables for comparison
-    pub renames: RefCell<HashMap<Spur, Spur>>,
+    renames: HashMap<Spur, Spur>,
 }
 
-impl Registry {
-    pub fn new() -> Self {
-        Self {
-            platforms: Default::default(),
-            tags: Default::default(),
-            headers: Default::default(),
-            defines: Default::default(),
+pub struct Interner(RefCell<InnerInterner>);
 
-            toplevel: Default::default(),
-            features: Default::default(),
-            extensions: Default::default(),
-            formats: Default::default(),
-            spirv_capabilities: Default::default(),
-            spirv_extensions: Default::default(),
-            item_map: Default::default(),
-            interner: RefCell::new(Rodeo::new()),
-            renames: RefCell::new(Default::default()),
-        }
+impl Interner {
+    pub fn new() -> Self {
+        Self(RefCell::new(InnerInterner {
+            rodeo: Rodeo::new(),
+            renames: HashMap::new(),
+        }))
     }
     pub fn add_rename_with(&self, original: Spur, with: impl FnOnce() -> Spur) {
-        // we need to drop the Ref here because the closure may try to borrow the RefCell inside the registry,
-        // this is non-ideal because we can't use the entry api, it would be neccessary to give the cloure
-        // an already borrowed reference but that would require some lines of code to keep the api consistent
-        let get = self.renames.borrow().get(&original).map(|s| *s);
+        // we need to ensure that the RefCell guard is imediatelly dropped because the `with` closure may itself try to borrow the RefCell,
+        // this is non-ideal because we can't use the entry api, it would be neccessary to give the cloure an already borrowed reference but
+        // that would require some lines of code to keep the api consistent
+        let get = {
+            let s = self.0.borrow();
+            s.renames.get(&original).map(|s| *s)
+        };
+
+        let rename = with();
 
         if let Some(existing) = get {
-            let rename = with();
             if existing != rename {
                 panic!("Attempt to rename Spur multiple times.")
             }
         } else {
-            let rename = with();
-            let mut renames_ref = self.renames.borrow_mut();
+            let mut s = self.0.borrow_mut();
 
             // currently we're using renames to do simple substitutions, this is unnecessary and we may want to preserve the original rename
             // // if we are renaming a spur that is already renamed we directly replace the spur with that rename
@@ -361,8 +342,7 @@ impl Registry {
             //     rename = *next;
             // }
 
-            let none = renames_ref.insert(original, rename);
-            assert!(none.is_none());
+            s.renames.insert(original, rename);
         }
     }
     // renaming changes the string that a spur will resolve to, however it keeps all spurs the same
@@ -373,35 +353,75 @@ impl Registry {
         self.add_rename_with(original, || spur);
     }
     pub fn resolve<'a>(&'a self, spur: &Spur) -> Ref<'a, str> {
-        let renames = self.renames.borrow();
-        let spur = renames.get(spur).unwrap_or(spur);
-        Ref::map(self.interner.borrow(), |a| a.resolve(spur))
-    }
-    pub fn get(&self, str: &str) -> Option<Spur> {
-        self.interner.borrow().get(str)
+        let s = self.0.borrow();
+        Ref::map(s, |a| a.rodeo.resolve(a.renames.get(spur).unwrap_or(spur)))
     }
     pub fn intern(&self, str: &str) -> Spur {
-        self.interner.borrow_mut().get_or_intern(str)
+        self.0.borrow_mut().rodeo.get_or_intern(str)
+    }
+}
+
+// the following set of traits allow calling `spur.intern(reg)` rather than `reg.interner.intern(&spur)`
+
+impl<'a> Deref for Registry<'a> {
+    type Target = Interner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.interner
     }
 }
 
 pub trait Intern {
-    fn intern(&self, reg: &Registry) -> Spur;
+    fn intern(&self, with: &Interner) -> Spur;
 }
 
 impl<T: AsRef<str>> Intern for T {
-    fn intern(&self, reg: &Registry) -> Spur {
-        reg.intern(self.as_ref())
+    fn intern(&self, with: &Interner) -> Spur {
+        with.intern(self.as_ref())
     }
 }
 
 pub trait Resolve {
-    fn resolve<'a>(&self, reg: &'a Registry) -> Ref<'a, str>;
+    fn resolve<'a>(&self, with: &'a Interner) -> Ref<'a, str>;
 }
 
 impl Resolve for Spur {
-    fn resolve<'a>(&self, reg: &'a Registry) -> Ref<'a, str> {
-        reg.resolve(self)
+    fn resolve<'a>(&self, with: &'a Interner) -> Ref<'a, str> {
+        with.resolve(self)
+    }
+}
+
+pub struct Registry<'a> {
+    pub platforms: Vec<Platform>,
+    pub tags: Vec<Tag>,
+    pub headers: Vec<Spur>,
+
+    pub toplevel: Vec<Toplevel>,
+    pub features: Vec<Feature>,
+    pub extensions: Vec<Extension>,
+    pub formats: Vec<Format>,
+    pub spirv_capabilities: Vec<SpirvExtCap>,
+    pub spirv_extensions: Vec<SpirvExtCap>,
+    pub item_map: HashMap<Spur, (ItemIdx, ItemKind)>,
+    pub interner: &'a Interner,
+}
+
+impl<'a> Registry<'a> {
+    pub fn new(interner: &'a Interner) -> Self {
+        Self {
+            platforms: Default::default(),
+            tags: Default::default(),
+            headers: Default::default(),
+
+            toplevel: Default::default(),
+            features: Default::default(),
+            extensions: Default::default(),
+            formats: Default::default(),
+            spirv_capabilities: Default::default(),
+            spirv_extensions: Default::default(),
+            item_map: Default::default(),
+            interner,
+        }
     }
 }
 
@@ -422,7 +442,7 @@ fn add_item<T>(
 }
 
 trait NodeUtils<'a> {
-    fn intern(&self, attribute: &str, reg: &Registry) -> Spur;
+    fn intern(&self, attribute: &str, reg: &Interner) -> Spur;
     fn owned(&self, attribute: &str) -> String;
     fn get(&'a self, attribute: &str) -> &'a str;
     fn child_text(&'a self, child: &str) -> &'a str;
@@ -430,7 +450,7 @@ trait NodeUtils<'a> {
 }
 
 impl<'a, 'b> NodeUtils<'b> for Node<'a, 'b> {
-    fn intern(&self, attribute: &str, reg: &Registry) -> Spur {
+    fn intern(&self, attribute: &str, reg: &Interner) -> Spur {
         self.attribute(attribute).unwrap().intern(reg)
     }
     fn owned(&self, attribute: &str) -> String {
@@ -465,7 +485,7 @@ fn try_alias(t: Node, kind: &dyn Fn() -> ToplevelKind, reg: &mut Registry) -> bo
             kind: kind(),
         };
 
-        let name = t.intern("name", &*reg);
+        let name = t.intern("name", reg);
 
         add_item(
             &mut reg.toplevel,
@@ -509,8 +529,8 @@ fn collect_node_text(n: Node, buf: &mut String) {
     }
 }
 
-pub fn process_registry(xml: &str) -> Registry {
-    let mut reg = Registry::new();
+pub fn process_registry<'a>(xml: &str, interner: &'a Interner) -> Registry<'a> {
+    let mut reg = Registry::new(interner);
 
     let doc = roxmltree::Document::parse(xml).unwrap();
 
@@ -617,17 +637,25 @@ pub fn process_registry(xml: &str) -> Registry {
                         // </type>
                         Some("define") => {
                             // wow, the name is either specified as an attribute or delimited with an element within the contained text
-                            let name = t.attribute("name").unwrap_or_else(|| t.child_text("name"));
+                            let name = t
+                                .attribute("name")
+                                .unwrap_or_else(|| t.child_text("name"))
+                                .intern(&reg);
 
                             buf.clear();
                             collect_node_text(t, &mut buf);
 
-                            let define = Define {
-                                name: name.intern(&reg),
+                            let typ = ToplevelBody::Define {
                                 body: buf.trim().to_owned(),
                             };
 
-                            reg.defines.push(define);
+                            add_item(
+                                &mut reg.toplevel,
+                                &mut reg.item_map,
+                                Toplevel(name, typ),
+                                name,
+                                ItemKind::Toplevel,
+                            );
                         }
                         // <type category="basetype">struct <name>ANativeWindow</name>;</type>
                         // <type category="basetype">typedef <type>uint32_t</type> <name>VkSampleMask</name>;</type>
@@ -766,7 +794,7 @@ pub fn process_registry(xml: &str) -> Registry {
 
                             let mut args = Vec::new();
                             for arg in args_text.split(',') {
-                                let (name, ty) = parse_type(&arg, true, &reg);
+                                let (name, ty) = parse_type(&arg, true, &&reg);
                                 args.push((name.unwrap(), ty));
                             }
 
@@ -1010,7 +1038,7 @@ pub fn process_registry(xml: &str) -> Registry {
             "feature" => {
                 let name = n.intern("name", &reg);
 
-                let children = convert_extension_children(n, None, &mut reg);
+                let children = convert_section_children(n, None, &mut reg);
 
                 let typ = Feature {
                     name,
@@ -1046,7 +1074,7 @@ pub fn process_registry(xml: &str) -> Registry {
 
                     // this is in fact an extension, it needs to have a number
                     let extnumber = e.get("number").parse().unwrap();
-                    let children = convert_extension_children(e, Some(extnumber), &reg);
+                    let children = convert_section_children(e, Some(extnumber), &reg);
                     let deprecatedby = e.attribute("deprecatedby").and_then(|s| {
                         // thanks VK_NV_glsl_shader
                         if s.is_empty() {
@@ -1181,7 +1209,7 @@ pub fn process_registry(xml: &str) -> Registry {
             tag @ ("spirvextensions" | "spirvcapabilities") => {
                 for c in iter_children(n) {
                     let name = c.intern("name", &reg);
-                    let enables = convert_spirv_enable(c, &mut reg);
+                    let enables = convert_spirv_enable(c, &reg);
 
                     let typ = SpirvExtCap(name, enables);
 
@@ -1202,7 +1230,7 @@ pub fn process_registry(xml: &str) -> Registry {
     reg
 }
 
-fn convert_spirv_enable(n: Node, reg: &Registry) -> Vec<SpirvEnable> {
+fn convert_spirv_enable(n: Node, int: &Interner) -> Vec<SpirvEnable> {
     let mut converted = Vec::new();
     for enable in iter_children(n) {
         assert!(enable.tag_name().name() == "enable");
@@ -1210,7 +1238,7 @@ fn convert_spirv_enable(n: Node, reg: &Registry) -> Vec<SpirvEnable> {
         let attrs = enable.attributes();
         assert!(attrs.len() > 0);
 
-        let val = attrs[0].value().intern(&reg);
+        let val = attrs[0].value().intern(int);
         // there are four variants of the enable tag, here we discriminate by the first attribute
         // FIXME this is rather fragile
         let out = match attrs[0].name() {
@@ -1218,17 +1246,17 @@ fn convert_spirv_enable(n: Node, reg: &Registry) -> Vec<SpirvEnable> {
             "extension" => SpirvEnable::Extension(val),
             "struct" => SpirvEnable::Feature {
                 structure: val,
-                feature: enable.intern("feature", &reg),
-                requires: parse_comma_separated(enable.attribute("requires"), &reg),
-                alias: enable.attribute("alias").map(|s| s.intern(&reg)),
+                feature: enable.intern("feature", int),
+                requires: parse_comma_separated(enable.attribute("requires"), int),
+                alias: enable.attribute("alias").map(|s| s.intern(int)),
             },
             "property" => SpirvEnable::Property {
                 property: val,
-                member: enable.intern("member", &reg),
-                value: enable.intern("value", &reg),
-                requires: parse_comma_separated(enable.attribute("requires"), &reg),
+                member: enable.intern("member", int),
+                value: enable.intern("value", int),
+                requires: parse_comma_separated(enable.attribute("requires"), int),
             },
-            _ => unreachable!(),
+            _ => panic!("This is likely a result of bad code and fragile assumptions."),
         };
 
         converted.push(out);
@@ -1236,7 +1264,7 @@ fn convert_spirv_enable(n: Node, reg: &Registry) -> Vec<SpirvEnable> {
     converted
 }
 
-fn convert_extension_children(
+fn convert_section_children(
     n: Node,
     ext_number: Option<u32>,
     reg: &Registry,
@@ -1257,9 +1285,18 @@ fn convert_extension_children(
                         continue;
                     }
 
-                    let name = item.intern("name", &reg);
+                    let name = item.intern("name", reg);
                     let iitem = match tag_name {
-                        "type" | "command" => InterfaceItem::Simple { name, api: None },
+                        "type" | "command" => {
+                            if let Some(value) = item.attribute("alias") {
+                                InterfaceItem::AddConstant {
+                                    name,
+                                    value: ConstantValue::Alias(value.intern(reg)),
+                                }
+                            } else {
+                                InterfaceItem::Simple { name, api: None }
+                            }
+                        }
                         "enum" => {
                             // I don't think this is applicable here as it is already in a <require> which has its own api property
                             // however the spec says "used to address subtle incompatibilities"
@@ -1287,14 +1324,14 @@ fn convert_extension_children(
                                 } else if let Some(value) = item.attribute("value") {
                                     ExtendMethod::Value(value.to_owned())
                                 } else if let Some(value) = item.attribute("alias") {
-                                    ExtendMethod::Alias(value.intern(&reg))
+                                    ExtendMethod::Alias(value.intern(reg))
                                 } else {
                                     unreachable!()
                                 };
 
                                 InterfaceItem::Extend {
                                     name,
-                                    extends: extends.intern(&reg),
+                                    extends: extends.intern(reg),
                                     api: None,
                                     method,
                                 }
@@ -1303,6 +1340,11 @@ fn convert_extension_children(
                                     InterfaceItem::AddConstant {
                                         name,
                                         value: ConstantValue::Value(value.to_owned()),
+                                    }
+                                } else if let Some(value) = item.attribute("alias") {
+                                    InterfaceItem::AddConstant {
+                                        name,
+                                        value: ConstantValue::Alias(value.intern(reg)),
                                     }
                                 } else {
                                     InterfaceItem::Simple { name, api: None }
@@ -1314,10 +1356,10 @@ fn convert_extension_children(
                     items.push(iitem);
                 }
 
-                let profile = child.attribute("profile").map(|s| s.intern(&reg));
+                let profile = child.attribute("profile").map(|s| s.intern(reg));
                 let api = parse_comma_separated(child.attribute("api"), reg);
-                let extension = child.attribute("extension").map(|s| s.intern(&reg));
-                let feature = child.attribute("feature").map(|s| s.intern(&reg));
+                let extension = child.attribute("extension").map(|s| s.intern(reg));
+                let feature = child.attribute("feature").map(|s| s.intern(reg));
 
                 converted.push(FeatureExtensionItem::Require {
                     profile,
@@ -1335,11 +1377,11 @@ fn convert_extension_children(
                 for item in iter_children(child) {
                     // if you're going to be removing something, obbviously only the name
                     // is neccessary and no other information is given
-                    let name = item.intern("name", &reg);
+                    let name = item.intern("name", reg);
                     items.push(name);
                 }
 
-                let profile = child.attribute("profile").map(|s| s.intern(&reg));
+                let profile = child.attribute("profile").map(|s| s.intern(reg));
                 let api = parse_comma_separated(child.attribute("api"), reg);
 
                 converted.push(FeatureExtensionItem::Remove {
@@ -1354,9 +1396,9 @@ fn convert_extension_children(
     converted
 }
 
-fn parse_comma_separated(what: Option<&str>, reg: &Registry) -> Vec<Spur> {
-    match what {
-        Some(s) => s.split_terminator(',').map(|s| s.intern(&reg)).collect(),
+fn parse_comma_separated(str: Option<&str>, int: &Interner) -> Vec<Spur> {
+    match str {
+        Some(s) => s.split_terminator(',').map(|s| s.intern(int)).collect(),
         None => Vec::new(),
     }
 }

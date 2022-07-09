@@ -1,40 +1,107 @@
 use crate::{
     format_utils::{FormatWriter, Separated, WriteWriteAdapter},
+    ownership::resolve_ownership,
     workarounds::apply_workarounds,
 };
 use generator_lib::{
     process_registry,
     type_declaration::{TypeDecl, TypeToken},
-    EnumValue, Intern, ItemKind, Registry, Toplevel, ToplevelBody, ToplevelKind,
+    EnumValue, FeatureExtensionItem, InterfaceItem, Intern, Interner, ItemIdx, ItemKind, Registry,
+    Resolve, Toplevel, ToplevelBody, ToplevelKind,
 };
-use lasso::Spur;
-use registry_format::RegistryWrap;
+use lasso::{Rodeo, Spur};
+use registry_format::InternerWrap;
 use std::{
-    collections::HashMap,
+    cell::RefCell,
+    collections::{HashMap, HashSet},
     error::Error,
     fmt::{Display, Write},
     fs::File,
     io::BufWriter,
+    ops::Deref,
+    path::{Path, PathBuf},
 };
 
 mod format_utils;
+mod ownership;
 mod registry_format;
 mod workarounds;
 
+pub enum SectionKind {
+    // this makes for redundant information as the header path is also used for the name, however this doesn't increase the size of the enum and makes the design more consistent
+    Header(Spur),
+    Feature(u32),
+    Extension(u32),
+}
+
+pub const INVALID_SECTION: u32 = u32::MAX;
+
+pub struct Section {
+    pub name: Spur,
+    pub kind: SectionKind,
+}
+
+pub struct Context<'a> {
+    pub(crate) reg: Registry<'a>,
+    pub(crate) item_ownership: Vec<u32>,
+    pub(crate) sections: Vec<Section>,
+}
+
+impl<'a> Context<'a> {
+    fn new(vk_xml: Registry, video_xml: Registry) -> Self {
+        // assert!(video_xml.)
+        todo!()
+    }
+    fn get_section(&self, index: u32) -> Option<&Section> {
+        if index == INVALID_SECTION {
+            None
+        } else {
+            Some(&self.sections[index as usize])
+        }
+    }
+    fn get_section_idx(&self, name: Spur) -> u32 {
+        self.sections
+            .binary_search_by_key(&name, |s| s.name)
+            .unwrap() as u32
+    }
+}
+
+impl<'a> Deref for Context<'a> {
+    type Target = Interner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.reg.interner
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
-    let bindgen_file = File::create(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../generated/bindgen.c"
-    ))
-    .unwrap();
+    let interner = Interner::new();
+    let mut vk_xml = process_registry(
+        &std::fs::read_to_string("/home/eg/Downloads/vk.xml")?,
+        &interner,
+    );
+    apply_workarounds(&mut vk_xml);
 
-    let rust_file = File::create(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../generated/generated.rs"
-    ))
-    .unwrap();
+    let mut selected_sections = vec![
+        "VK_VERSION_1_0".intern(&vk_xml),
+        "VK_KHR_swapchain".intern(&vk_xml),
+    ];
 
-    let mut reg = process_registry(&std::fs::read_to_string("/home/eg/Downloads/vk.xml")?);
+    // let mut i = 0;
+    // while i < selected_sections.len() {
+    //     let section_name = selected_sections[i];
+    //     let section = sections.iter().find(|s| s.name == section_name).unwrap();
+    //     foreach_dependency(
+    //         section,
+    //         |s| {
+    //             if !selected_sections.contains(&s.name) {
+    //                 selected_sections.push(s.name);
+    //             }
+    //         },
+    //         reg,
+    //     );
+    //     i += 1;
+    // }
 
     // todo filter items by maximum api version, extensions, and all the other <requires> stuff
     // esentially crawl through all the possible definition places and reject those that don't match the hard limits
@@ -43,58 +110,323 @@ fn main() -> Result<(), Box<dyn Error>> {
     // this should be reconsidered though as it would be nice to keep these in different files and would allow us to reject
     // api definitions at a rough granuality first without shoving it all into the compiler
 
-    let mut include_headers = Vec::new();
-    let mut rust = FormatWriter::new(WriteWriteAdapter(BufWriter::new(rust_file)));
-    let mut c = FormatWriter::new(WriteWriteAdapter(BufWriter::new(bindgen_file)));
+    // let own = resolve_ownership(&vk_xml, &mut selected_sections);
+    apply_renames(&vk_xml);
 
-    apply_workarounds(&mut reg);
+    // for (i, section) in own.items.iter().enumerate() {
+    //     let name = vk_xml.toplevel[i].0;
+    //     let section = match *section {
+    //         INVALID_SECTION => "INVALID".intern(&vk_xml),
+    //         other => own.sections[other as usize].name,
+    //     };
 
-    fn batch_rename(reg: &Registry, renames: &[(&str, &str)]) {
-        for (original, rename) in renames {
-            reg.add_rename_with(original.intern(&reg), || rename.intern(&reg));
-        }
-    }
+    //     println!("{}: {}", name.resolve(&vk_xml), section.resolve(&vk_xml))
+    // }
 
-    // keyword conflict renames
-    batch_rename(&reg, &[("type", "kind")]);
-
-    // FIXME this is perhaps not ideal
-    // integral types renames
-    batch_rename(
-        &reg,
-        &[
-            ("uint8_t", "u8"),
-            ("uint16_t", "u16"),
-            ("uint32_t", "u32"),
-            ("uint64_t", "u64"),
-            ("int8_t", "i8"),
-            ("int16_t", "i16"),
-            ("int32_t", "i32"),
-            ("int64_t", "i64"),
-        ],
+    println!(
+        "{:?}",
+        selected_sections
+            .iter()
+            .map(|s| s.resolve(&vk_xml))
+            .collect::<Vec<_>>()
     );
-
-    code2!(
-        rust,
-        "pub type void = std::ffi::c_void;"
-        "pub type size_t = std::ffi::c_size_t;"
-        "pub type int = std::ffi::c_int;"
-        "pub type uint = std::ffi::c_uint;"
-        "pub type float = std::ffi::c_float;"
-        "pub type double = std::ffi::c_double;"
-        @
-    )?;
 
     // in vulkan bitmasks are implemented as a typedef of an integer that serves as the actual object of the bitmask
     // and a distinct enum that hold the various bitflags, with rust we want to have only the integer with the flags as associated values
     // this needs to know which Bitmask a BitmaskBits specifies the bits for
     let mut bitmask_pairing = HashMap::new();
-    for item in &reg.toplevel {
+
+    for item in &vk_xml.toplevel {
         let name = item.0;
         match item.1 {
             ToplevelBody::Bitmask { bits_enum, .. } => {
                 if let Some(bits_enum) = bits_enum {
                     bitmask_pairing.insert(bits_enum, name);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    selected_sections.sort_unstable();
+
+    // (item index, section index)
+    let mut items = Vec::with_capacity(vk_xml.toplevel.len());
+    for (i, item) in vk_xml.toplevel.iter().enumerate() {
+        if let Some(section) = own.get_ownership(&item.0, &vk_xml) {
+            let name = own.get_section(section).name;
+            if selected_sections.binary_search(&name).is_ok() {
+                items.push((i, section));
+            }
+        }
+    }
+
+    // we rely on this sort being stable, ie preserves the relative order of equal elements
+    items.sort_by_key(|i| i.1);
+
+    let out_dir = PathBuf::from(std::env::args_os().nth(1).unwrap());
+    let mut prev_section = INVALID_SECTION;
+    let mut section_writer = None;
+
+    for &(item, section) in &items {
+        if section != prev_section {
+            // TODO process the names to be more rusty since right now they are literally the names of vulkan extensions
+            let file_name = own.get_section(section).name.resolve(&vk_xml);
+            let file = File::create(out_dir.join(&*file_name))?;
+            section_writer = Some(FormatWriter::new(WriteWriteAdapter(BufWriter::new(file))));
+        }
+        prev_section = section;
+
+        let writer = section_writer.as_mut().unwrap();
+
+        let item = &vk_xml.toplevel[item];
+        let name = item.0.int(&vk_xml);
+        match &item.1 {
+            ToplevelBody::Alias { alias_of, kind } => match kind {
+                ToplevelKind::Command => {
+                    code2!(
+                        writer,
+                        "// TODO alias of command '{}'"
+                        @ name
+                    )?;
+                }
+                ToplevelKind::Constant => {
+                    let item = resolve_alias(*alias_of, ToplevelKind::Constant, &vk_xml);
+                    let (ty, _val) = match item.1 {
+                        ToplevelBody::Constant { ty, val } => (ty, val),
+                        _ => unreachable!(),
+                    };
+
+                    code2!(
+                        writer,
+                        "pub const {}: {} = {};"
+                        @ name, ty.int(&vk_xml), alias_of.int(&vk_xml)
+                    )?;
+                }
+                _ => {
+                    code2!(
+                        writer,
+                        "pub type {} = {};"
+                        @ name, alias_of.int(&vk_xml)
+                    )?;
+                }
+            },
+            ToplevelBody::Included { header } => {}
+            // there is nothing to do with defines in rust, just skip them
+            ToplevelBody::Define { .. } => {}
+            // this is most often just a typedef
+            // TODO parse the typedef (and replace it with an alias) so that we have more complete information
+            ToplevelBody::Basetype { ty, code } => {
+                // let ty = ty.expect(
+                //     "Previous passes should correct all basetype definitions with missing type.",
+                // );
+                let ty = ty.unwrap_or_else(|| "TODO".intern(&vk_xml));
+                code2!(
+                    writer,
+                    "pub type {} = {};"
+                    @ name, ty.int(&vk_xml)
+                )?;
+            }
+            ToplevelBody::Bitmask { ty, .. } => {
+                // TODO when we're actually generating semantically valid rust code add #repr(transparent)
+                code2!(
+                    writer,
+                    "pub struct {}(pub {});"
+                    @ name, ty.int(&vk_xml)
+                )?;
+            }
+            ToplevelBody::Handle {
+                object_type,
+                dispatchable,
+            } => {
+                let dispatchable = match dispatchable {
+                    true => "dispatchable, ",
+                    false => "",
+                };
+                code2!(
+                    writer,
+                    "/// {}{}"
+                    "#[repr(transparent)]"
+                    "pub struct {}(u64);"
+                    @ dispatchable, object_type.int(&vk_xml), name
+                )?;
+            }
+            ToplevelBody::Funcpointer { return_type, args } => {
+                let ret = return_type.as_rust_order(&vk_xml);
+                let args = Separated::args(args.iter(), |(_, ty), f| {
+                    ty.as_rust_order(&vk_xml).int(&vk_xml).fmt(f)
+                });
+                code2!(
+                    writer,
+                    "pub type {} = fn({}) -> {};"
+                    @ name, args, ret.int(&vk_xml)
+                )?;
+            }
+            ToplevelBody::Struct { union, members } => {
+                let keyword = match union {
+                    true => "union",
+                    false => "struct",
+                };
+                let members = merge_bitfield_members(&members, &vk_xml);
+                let members = Separated::members(members.iter(), |(name, ty), f| {
+                    let ty = ty.as_rust_order(&vk_xml);
+                    format_args!("{}: {}", name.int(&vk_xml), ty.int(&vk_xml)).fmt(f)
+                });
+                code2!(
+                    writer,
+                    "pub {} {} {{"
+                    "    {}"
+                    "}}"
+                    @ keyword, name, members
+                )?;
+            }
+            ToplevelBody::Constant { ty, val } => {
+                code2!(
+                    writer,
+                    "pub const {}: {} = {};"
+                    @ name, ty.int(&vk_xml), val.int(&vk_xml)
+                )?;
+            }
+            ToplevelBody::Enum { members } => {
+                let members = Separated::members(members.iter(), |(name, val), f| {
+                    let name = name.int(&vk_xml);
+                    match val {
+                        EnumValue::Bitpos(pos) => format_args!("{} = 1 << {}", name, *pos).fmt(f),
+                        EnumValue::Value(val) => format_args!("{} = {}", name, *val).fmt(f),
+                        EnumValue::Alias(alias) => {
+                            format_args!("{} = Self::{}", name, (*alias).int(&vk_xml)).fmt(f)
+                        }
+                    }
+                });
+                code2!(
+                    writer,
+                    "pub enum {} {{"
+                    "    {}"
+                    "}}"
+                    @ name, members
+                )?;
+            }
+            ToplevelBody::BitmaskBits { members } => {
+                // skip generating empty impl blocks
+                if members.is_empty() {
+                    continue;
+                }
+
+                // when vulkan has a Bitmask that is reserved for future use and thus has no actual flag values, there are no BitmaskBits defined and the spec omits Bitmask dependency
+                // however of course there are exceptions such as VkSemaphoreCreateFlagBits which is not declared as a dependency but is actually an item :(
+                let bitmask_name = match bitmask_pairing.get(&item.0) {
+                    Some(n) => n,
+                    None => continue,
+                };
+
+                let ty = get_concrete_type(*bitmask_name, &vk_xml).int(&vk_xml);
+                let bits = Separated::statements(members.iter(), |(name, val), f| {
+                    let name = name.int(&vk_xml);
+                    match val {
+                        EnumValue::Bitpos(pos) => {
+                            format_args!("const {}: {} = 1 << {}", name, ty, pos).fmt(f)
+                        }
+                        EnumValue::Value(val) => {
+                            format_args!("const {}: {} = {}", name, ty, val).fmt(f)
+                        }
+                        EnumValue::Alias(alias) => {
+                            format_args!("const {}: {} = Self::{}", name, ty, alias.int(&vk_xml))
+                                .fmt(f)
+                        }
+                    }
+                });
+
+                code2!(
+                    writer,
+                    "impl {} {{"
+                    "    {}"
+                    "}}"
+                    @ bitmask_name.int(&vk_xml), bits
+                )?;
+            }
+            ToplevelBody::Command {
+                return_type,
+                params,
+            } => {
+                let mut return_str = None;
+                // function just returns 'void'
+                if return_type.tokens.len() == 1 {
+                    if let TypeToken::Ident(ty) = &return_type.tokens[0] {
+                        if &*vk_xml.resolve(ty) == "void" {
+                            return_str = Some("".to_string());
+                        }
+                    }
+                }
+                // the function has an actual return type
+                if return_str.is_none() {
+                    return_str = Some(format!(
+                        " -> {}",
+                        return_type.as_rust_order(&vk_xml).int(&vk_xml)
+                    ));
+                }
+
+                let args = Separated::args(params.iter(), |param, f| {
+                    format_args!(
+                        "{}: {}",
+                        param.name.int(&vk_xml),
+                        param.ty.as_rust_order(&vk_xml).int(&vk_xml)
+                    )
+                    .fmt(f)
+                });
+
+                code2!(
+                    writer,
+                    "pub fn {}({}){} {{}}"
+                    @ name, args, return_str.unwrap()
+                )?;
+            }
+        }
+    }
+
+    // code2!(
+    //     rust,
+    //     "pub type void = std::ffi::c_void;"
+    //     "pub type size_t = std::ffi::c_size_t;"
+    //     "pub type int = std::ffi::c_int;"
+    //     "pub type uint = std::ffi::c_uint;"
+    //     "pub type float = std::ffi::c_float;"
+    //     "pub type double = std::ffi::c_double;"
+    //     @
+    // )?
+
+    // for header in include_headers {
+    //     code2!(
+    //         c,
+    //         "#include \"{}\""
+    //         @ header.reg(&reg)
+    //     )?;
+    // }
+
+    Ok(())
+}
+
+fn apply_renames(reg: &Registry) {
+    let renames = &[
+        ("type", "kind"),
+        ("uint8_t", "u8"),
+        ("uint16_t", "u16"),
+        ("uint32_t", "u32"),
+        ("uint64_t", "u64"),
+        ("int8_t", "i8"),
+        ("int16_t", "i16"),
+        ("int32_t", "i32"),
+        ("int64_t", "i64"),
+    ];
+
+    for (original, rename) in renames {
+        reg.add_rename_with(original.intern(reg), || rename.intern(reg));
+    }
+
+    for item in &reg.toplevel {
+        let name = item.0;
+        match item.1 {
+            ToplevelBody::Bitmask { bits_enum, .. } => {
+                if let Some(bits_enum) = bits_enum {
                     // the rest of vulkan still refers to the *Bits structs even though we don't emit them
                     reg.add_rename(bits_enum, name);
                 }
@@ -123,242 +455,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             _ => {}
         }
     }
-
-    for item in &reg.toplevel {
-        let name = item.0;
-        match &item.1 {
-            ToplevelBody::Alias { alias_of, kind } => match kind {
-                ToplevelKind::Command => {
-                    code2!(
-                        rust,
-                        "// TODO alias of command '{}'"
-                        @ name.reg(&reg)
-                    )?;
-                }
-                ToplevelKind::Constant => {
-                    let item = resolve_alias(*alias_of, ToplevelKind::Constant, &reg);
-                    let (ty, _val) = match item.1 {
-                        ToplevelBody::Constant { ty, val } => (ty, val),
-                        _ => unreachable!(),
-                    };
-
-                    code2!(
-                        rust,
-                        "pub const {}: {} = {};"
-                        @ name.reg(&reg), ty.reg(&reg), alias_of.reg(&reg)
-                    )?;
-                }
-                _ => {
-                    code2!(
-                        rust,
-                        "pub type {} = {};"
-                        @ name.reg(&reg), alias_of.reg(&reg)
-                    )?;
-                }
-            },
-            ToplevelBody::Included { header } => {
-                // FIXME inefficient but I want to preserve definition order
-                if include_headers.iter().find(|h| **h == *header).is_none() {
-                    include_headers.push(*header);
-                }
-            }
-            // this is most often just a typedef
-            // TODO parse the typedef (and replace it with an alias) so that we have more complete information
-            ToplevelBody::Basetype { ty, code } => {
-                if let Some(ty) = ty {
-                    code2!(
-                        rust,
-                        "pub type {} = {};"
-                        @ name.reg(&reg), ty.reg(&reg)
-                    )?;
-                } else {
-                    // write the raw code to the c file and let bindgen handle it
-                    c.write_str(code)?;
-                    c.write_char('\n');
-                }
-            }
-            ToplevelBody::Bitmask { ty, .. } => {
-                // TODO when we're actually generating semantically valid rust code add #repr(transparent)
-                code2!(
-                    rust,
-                    "pub struct {}(pub {});"
-                    @ name.reg(&reg), ty.reg(&reg)
-                )?;
-            }
-            ToplevelBody::Handle {
-                object_type,
-                dispatchable,
-            } => {
-                let dispatchable = match dispatchable {
-                    true => "dispatchable, ",
-                    false => "",
-                };
-                code2!(
-                    rust,
-                    "/// {}{}"
-                    "#[repr(transparent)]"
-                    "pub struct {}(u64);"
-                    @ dispatchable, object_type.reg(&reg), name.reg(&reg)
-                )?;
-            }
-            ToplevelBody::Funcpointer { return_type, args } => {
-                let ret = return_type.as_rust_order(&reg);
-                let args = Separated::args(args.iter(), |(_, ty), f| {
-                    ty.as_rust_order(&reg).reg(&reg).fmt(f)
-                });
-                code2!(
-                    rust,
-                    "pub type {} = fn({}) -> {};"
-                    @ name.reg(&reg), args, ret.reg(&reg)
-                )?;
-            }
-            ToplevelBody::Struct { union, members } => {
-                let keyword = match union {
-                    true => "union",
-                    false => "struct",
-                };
-                let members = merge_bitfield_members(&members, &reg);
-                let members = Separated::members(members.iter(), |(name, ty), f| {
-                    let ty = ty.as_rust_order(&reg);
-                    format_args!("{}: {}", name.reg(&reg), ty.reg(&reg)).fmt(f)
-                });
-                code2!(
-                    rust,
-                    "pub {} {} {{"
-                    "    {}"
-                    "}}"
-                    @ keyword, name.reg(&reg), members
-                )?;
-            }
-            ToplevelBody::Constant { ty, val } => {
-                code2!(
-                    rust,
-                    "pub const {}: {} = {};"
-                    @ name.reg(&reg), ty.reg(&reg), val.reg(&reg)
-                )?;
-            }
-            // TODO what to do with this thing? The make_rusty.. function obviously fails at this
-            // Toplevel(
-            //     "VkColorSpaceKHR",
-            //     Enum {
-            //         members: [
-            //             (
-            //                 "VK_COLOR_SPACE_SRGB_NONLINEAR_KHR",
-            //                 Value(
-            //                     0,
-            //                 ),
-            //             ),
-            //             (
-            //                 "VK_COLORSPACE_SRGB_NONLINEAR_KHR",
-            //                 Alias(
-            //                     "VK_COLOR_SPACE_SRGB_NONLINEAR_KHR",
-            //                 ),
-            //             ),
-            //         ],
-            //     },
-            // )
-            ToplevelBody::Enum { members } => {
-                let members = Separated::members(members.iter(), |(name, val), f| {
-                    let name = name.reg(&reg);
-                    match val {
-                        EnumValue::Bitpos(pos) => format_args!("{} = 1 << {}", name, *pos).fmt(f),
-                        EnumValue::Value(val) => format_args!("{} = {}", name, *val).fmt(f),
-                        EnumValue::Alias(alias) => {
-                            format_args!("{} = Self::{}", name, (*alias).reg(&reg)).fmt(f)
-                        }
-                    }
-                });
-                code2!(
-                    rust,
-                    "pub enum {} {{"
-                    "    {}"
-                    "}}"
-                    @ name.reg(&reg), members
-                )?;
-            }
-            ToplevelBody::BitmaskBits { members } => {
-                // skip generating empty impl blocks
-                if members.is_empty() {
-                    continue;
-                }
-
-                // when vulkan has a Bitmask that is reserved for future use and thus has no actual flag values, there are no BitmaskBits defined and the spec omits Bitmask dependency
-                // however of course there are exceptions such as VkSemaphoreCreateFlagBits which is not declared as a dependency but is actually an item :(
-                let bitmask_name = match bitmask_pairing.get(&name) {
-                    Some(n) => n,
-                    None => continue,
-                };
-
-                let ty = get_concrete_type(*bitmask_name, &reg).reg(&reg);
-                let bits = Separated::statements(members.iter(), |(name, val), f| {
-                    let name = name.reg(&reg);
-                    match val {
-                        EnumValue::Bitpos(pos) => {
-                            format_args!("const {}: {} = 1 << {}", name, ty, pos).fmt(f)
-                        }
-                        EnumValue::Value(val) => {
-                            format_args!("const {}: {} = {}", name, ty, val).fmt(f)
-                        }
-                        EnumValue::Alias(alias) => {
-                            format_args!("const {}: {} = Self::{}", name, ty, alias.reg(&reg))
-                                .fmt(f)
-                        }
-                    }
-                });
-                code2!(
-                    rust,
-                    "impl {} {{"
-                    "    {}"
-                    "}}"
-                    @ bitmask_name.reg(&reg), bits
-                )?;
-            }
-            ToplevelBody::Command {
-                return_type,
-                params,
-            } => {
-                let mut return_str = None;
-                // function just returns 'void'
-                if return_type.tokens.len() == 1 {
-                    if let TypeToken::Ident(ty) = &return_type.tokens[0] {
-                        if &*reg.resolve(ty) == "void" {
-                            return_str = Some("".to_string());
-                        }
-                    }
-                }
-                // the function has an actual return type
-                if return_str.is_none() {
-                    return_str = Some(format!(" -> {}", return_type.as_rust_order(&reg).reg(&reg)));
-                }
-
-                let args = Separated::args(params.iter(), |param, f| {
-                    format_args!(
-                        "{}: {}",
-                        param.name.reg(&reg),
-                        param.ty.as_rust_order(&reg).reg(&reg)
-                    )
-                    .fmt(f)
-                });
-
-                code2!(
-                    rust,
-                    "pub fn {}({}){} {{}}"
-                    @ name.reg(&reg), args, return_str.unwrap()
-                )?;
-            }
-        }
-    }
-
-    for header in include_headers {
-        code2!(
-            c,
-            "#include \"{}\""
-            @ header.reg(&reg)
-        )?;
-    }
-
-    Ok(())
 }
+
+// fn write_item<W: std::fmt::Write>(item: &Toplevel, writer: &mut FormatWriter<W>, bitmask_pairing: &HashMap<Spur, Spur>, included_headers: &mut Vec<Spur>, reg: &Registry) -> std::fmt::Result {
+
+//     Ok(())
+// }
 
 fn merge_bitfield_members(members: &[(Spur, TypeDecl)], reg: &Registry) -> Vec<(Spur, TypeDecl)> {
     let mut resolved = Vec::new();
@@ -443,18 +545,18 @@ fn merge_bitfield_members(members: &[(Spur, TypeDecl)], reg: &Registry) -> Vec<(
 
 // jumps through as many aliases (Toplevel::Alias) is needed and returns the concrete toplevel item,
 // in cases where the provided identifier is not an alias it is simply returned back
-fn resolve_alias(alias: Spur, kind: ToplevelKind, registry: &Registry) -> &Toplevel {
+fn resolve_alias<'a>(alias: Spur, kind: ToplevelKind, reg: &'a Registry<'_>) -> &'a Toplevel {
     let mut alias = alias;
     loop {
         // FIXME what if the alias is to something that is added by bindgen and is never in our registry?
-        let &(index, ty) = registry
+        let &(index, ty) = reg
             .item_map
             .get(&alias)
             .expect("Alias is dangling, see comment.");
         // assert that no weird things are going on as other interface items can't alias this way
         assert!(ty == ItemKind::Toplevel);
 
-        let top = &registry.toplevel[index as usize];
+        let top = &reg.toplevel[index as usize];
         match top.1 {
             ToplevelBody::Alias {
                 alias_of,
@@ -489,7 +591,7 @@ fn get_concrete_type(toplevel: Spur, reg: &Registry) -> Spur {
         match &top.1 {
             ToplevelBody::Alias { alias_of, .. } => toplevel = *alias_of,
             ToplevelBody::Bitmask { ty, .. } => toplevel = *ty,
-            ToplevelBody::Handle { .. } => toplevel = reg.get("uint64_t").unwrap(), // the underlying type of all handles is this 
+            ToplevelBody::Handle { .. } => toplevel = "uint64_t".intern(&reg), // the underlying type of all handles is this 
             ToplevelBody::Constant { ty, .. } => toplevel = *ty,
             ToplevelBody::Basetype { ty, .. } => {
                 // TODO is this what we want? It was introduced to change the types in bitset members from 'VkFlags' to 'u32'
@@ -503,7 +605,7 @@ fn get_concrete_type(toplevel: Spur, reg: &Registry) -> Spur {
             ToplevelBody::Included { .. } |
             ToplevelBody::Struct { .. } |
             ToplevelBody::Funcpointer { .. } => return toplevel,
-            ToplevelBody::Command { .. } => unreachable!(),
+            ToplevelBody::Command { .. } | ToplevelBody::Define { .. } => unreachable!(),
             // even though it's called bits, it's just an enum with different semantics
             ToplevelBody::BitmaskBits { .. } |
             ToplevelBody::Enum { .. } => unreachable!("This doesn't really make sense as in vulkan 'enum's only have integer values but no types."),
@@ -558,7 +660,7 @@ fn make_enum_member_rusty(
     enum_name: Spur,
     member_name: Spur,
     constant_syntax: bool,
-    reg: &Registry,
+    int: &Interner,
 ) -> String {
     // enum VkPresentModeKHR {
     //     VK_PRESENT_MODE_IMMEDIATE_KHR = 0, -> Immediate = 0,
@@ -589,8 +691,8 @@ fn make_enum_member_rusty(
     // workaround for identifiers starting with a digit, see above
     let mut prev_char = None;
 
-    let enum_str = &*reg.resolve(&enum_name);
-    let member_str = &*reg.resolve(&member_name);
+    let enum_str = &*int.resolve(&enum_name);
+    let member_str = &*int.resolve(&member_name);
 
     // we skip "Flags" as they are part of the enum boilerplate but don't occur in the member, see above
     let mut enum_chunks = CamelCaseSplit::new(enum_str)
@@ -651,7 +753,7 @@ fn make_enum_member_rusty(
 
 #[test]
 fn test_enum_rustify() {
-    let reg = Registry::new();
+    let reg = Interner::new();
 
     let data = &[
         (

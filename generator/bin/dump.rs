@@ -3,9 +3,8 @@ use std::{
     io::{BufWriter, Write},
 };
 
-use generator_lib::process_registry;
+use generator_lib::{process_registry, Interner};
 
-#[rustfmt::skip]
 fn main() {
     let file = File::create(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -13,7 +12,11 @@ fn main() {
     ))
     .unwrap();
 
-    let registry = process_registry(&std::fs::read_to_string("/home/eg/Downloads/vk.xml").unwrap());
-    
+    let interner = Interner::new();
+    let registry = process_registry(
+        &std::fs::read_to_string("/home/eg/Downloads/vk.xml").unwrap(),
+        &interner,
+    );
+
     write!(BufWriter::new(file), "{:#?}", registry).unwrap();
 }

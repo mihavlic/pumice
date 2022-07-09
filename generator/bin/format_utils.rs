@@ -104,7 +104,7 @@ impl<W: Write> FormatWriter<W> {
     }
 }
 
-pub struct WriteWriteAdapter<W: std::io::Write> (pub W);
+pub struct WriteWriteAdapter<W: std::io::Write>(pub W);
 
 impl<W: std::io::Write> Write for WriteWriteAdapter<W> {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
@@ -112,7 +112,7 @@ impl<W: std::io::Write> Write for WriteWriteAdapter<W> {
             Ok(_) => Ok(()),
             Err(_) => Err(std::fmt::Error),
         }
-    }    
+    }
 }
 
 #[macro_export]
@@ -120,7 +120,7 @@ macro_rules! code2 {
     ($buf:expr, $($code:literal)+ @ $($tail:tt)*) => {
         {
             let result = std::fmt::Write::write_fmt(
-                &mut $buf,
+                $buf,
                 format_args!(
                     concat!($($code, "\n"),+),
                     $(
@@ -148,37 +148,27 @@ pub struct Separated<
     sep_last: bool,
 }
 
-
 impl<
         'a,
         T: Iterator + Clone,
         F: Fn(<T as Iterator>::Item, &mut Formatter<'_>) -> std::fmt::Result,
     > Separated<'a, T, F>
-{ 
-    pub fn new(
-        iter: T,
-        fun: F,
-        separator: &'a str,
-        separator_last: bool        
-    ) -> Self {
-        Self { iter, fun, sep: separator, sep_last: separator_last }
+{
+    pub fn new(iter: T, fun: F, separator: &'a str, separator_last: bool) -> Self {
+        Self {
+            iter,
+            fun,
+            sep: separator,
+            sep_last: separator_last,
+        }
     }
-    pub fn args(
-        iter: T,
-        fun: F        
-    ) -> Self {
+    pub fn args(iter: T, fun: F) -> Self {
         Self::new(iter, fun, ", ", false)
     }
-    pub fn members(
-        iter: T,
-        fun: F        
-    ) -> Self {
+    pub fn members(iter: T, fun: F) -> Self {
         Self::new(iter, fun, ",\n", false)
     }
-    pub fn statements(
-        iter: T,
-        fun: F        
-    ) -> Self {
+    pub fn statements(iter: T, fun: F) -> Self {
         Self::new(iter, fun, ";\n", true)
     }
 }
@@ -206,7 +196,7 @@ impl<
 #[test]
 fn test_format_writer() {
     #[rustfmt::skip]
-    let raw = 
+    let raw =
 r#"
 struct {
             a;
@@ -219,7 +209,7 @@ fn test(a: usize) {
 "#;
 
     #[rustfmt::skip]
-    let expect = 
+    let expect =
 r#"struct {
     a;
     a;

@@ -1,8 +1,11 @@
-use std::{fmt::Write, ops::Deref};
+use std::{
+    fmt::{Debug, Write},
+    ops::Deref,
+};
 
 use lasso::Spur;
 
-use crate::{Intern, Registry};
+use crate::{Intern, Interner, Resolve};
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum TypeToken {
@@ -18,25 +21,24 @@ pub struct TypeDecl {
     pub tokens: Vec<TypeToken>,
     // only one of these should be possible at a time
     pub array_len: Option<Spur>,
-    // fucking https://docs.microsoft.com/en-us/cpp/c-language/c-bit-fields?view=msvc-170
-    // of course vulkan would use that
+    // bitfield! yay! https://docs.microsoft.com/en-us/cpp/c-language/c-bit-fields?view=msvc-170
     pub bitfield_len: Option<u32>,
 }
 
 impl TypeDecl {
     // helper function to convert immutable decls
-    pub fn as_rust_order(&self, reg: &Registry) -> TypeDecl {
+    pub fn as_rust_order(&self, int: &Interner) -> TypeDecl {
         let mut decl = self.clone();
-        decl.make_rust_order(reg);
+        decl.make_rust_order(int);
         decl
     }
     // reorder and modify to match rust syntax inplace
-    pub fn make_rust_order(&mut self, reg: &Registry) {
+    pub fn make_rust_order(&mut self, int: &Interner) {
         // given that the input is C, non primitive types are prefixed with "struct"
         // rust doesn't care, we need to do this here rather in the main loop as the const
         // swapping part would need to check for this and such
         self.tokens.retain(|t| match t {
-            TypeToken::Ident(ident) => reg.resolve(ident).deref() != "struct",
+            TypeToken::Ident(ident) => int.resolve(ident).deref() != "struct",
             _ => true,
         });
 
@@ -71,31 +73,40 @@ impl TypeDecl {
         // 'char' Const* Mut* => *Mut *Const char
         self.tokens.reverse();
     }
-    pub fn fmt(&self, f: &mut std::fmt::Formatter<'_>, reg: &Registry) -> std::fmt::Result {
+    pub fn fmt(&self, f: &mut std::fmt::Formatter<'_>, int: &Interner) -> std::fmt::Result {
         // rust cannot represent bitfields; they need to be resolved higher up, currently we store in this
         // field the total amount of bits used after merging the bitfields together, so for now this check is disabled
         // assert!(self.bitfield_len.is_none());
-        for (i, token) in self.tokens.iter().enumerate() {
+        let mut tokens = self.tokens.as_slice();
+        // remove the outer pointer decoration in the type as we'll be replacing it with an array
+        if self.array_len.is_some() {
+            tokens = &tokens[..tokens.len() - 1];
+        }
+
+        for (i, token) in tokens.iter().enumerate() {
             let temp;
             let str = match token {
                 TypeToken::Const => "const",
                 TypeToken::Mut => "mut",
                 TypeToken::Ptr => "*",
                 TypeToken::Ident(ty) => {
-                    temp = Some(reg.resolve(ty));
+                    temp = Some(int.resolve(ty));
                     temp.as_deref().unwrap()
                 }
             };
             f.write_str(str)?;
-            if i != self.tokens.len() - 1 && *token != TypeToken::Ptr {
+            if i != tokens.len() - 1 && *token != TypeToken::Ptr {
                 f.write_char(' ')?;
             }
+        }
+        if let Some(size) = self.array_len {
+            f.write_fmt(format_args!("[{}]", size.resolve(int)))?;
         }
         Ok(())
     }
 }
 
-pub fn parse_type(str: &str, has_name: bool, reg: &Registry) -> (Option<Spur>, TypeDecl) {
+pub fn parse_type(str: &str, has_name: bool, int: &Interner) -> (Option<Spur>, TypeDecl) {
     let mut out = TypeDecl {
         tokens: Vec::new(),
         array_len: None,
@@ -125,8 +136,10 @@ pub fn parse_type(str: &str, has_name: bool, reg: &Registry) -> (Option<Spur>, T
 
                 let ident = &str[s..i];
                 match ident {
+                    // archaic C declaration like "struct Type something" are read as "Type something"
+                    "struct" => {}
                     "const" => out.tokens.push(TypeToken::Const),
-                    _ => out.tokens.push(TypeToken::Ident(ident.intern(&reg))),
+                    _ => out.tokens.push(TypeToken::Ident(ident.intern(int))),
                 }
                 start = None;
             }
@@ -155,7 +168,7 @@ pub fn parse_type(str: &str, has_name: bool, reg: &Registry) -> (Option<Spur>, T
     if bitfield {
         assert!(out.array_len.is_none());
         let size = match out.tokens.pop() {
-            Some(TypeToken::Ident(str)) => reg.resolve(&str).parse::<u32>().unwrap(),
+            Some(TypeToken::Ident(str)) => int.resolve(&str).parse::<u32>().unwrap(),
             _ => unreachable!(),
         };
         out.bitfield_len = Some(size);
@@ -175,29 +188,29 @@ pub fn parse_type(str: &str, has_name: bool, reg: &Registry) -> (Option<Spur>, T
 
 #[test]
 fn test_parse_type() {
-    let reg = Registry::new();
+    let int = Interner::new();
 
     let expected = (
-        Some("deviceName".intern(&reg)),
+        Some("deviceName".intern(&int)),
         TypeDecl {
-            tokens: vec![TypeToken::Ident("char".intern(&reg)), TypeToken::Ptr],
-            array_len: Some("VK_MAX_PHYSICAL_DEVICE_NAME_SIZE".intern(&reg)),
+            tokens: vec![TypeToken::Ident("char".intern(&int)), TypeToken::Ptr],
+            array_len: Some("VK_MAX_PHYSICAL_DEVICE_NAME_SIZE".intern(&int)),
             bitfield_len: None,
         },
     );
     let test = parse_type(
         "char deviceName[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE]",
         true,
-        &reg,
+        &int,
     );
     assert_eq!(expected, test);
 
     let expected = (
-        Some("pTest".intern(&reg)),
+        Some("pTest".intern(&int)),
         TypeDecl {
             tokens: vec![
                 TypeToken::Const,
-                TypeToken::Ident("char".intern(&reg)),
+                TypeToken::Ident("char".intern(&int)),
                 TypeToken::Ptr,
                 TypeToken::Const,
             ],
@@ -205,17 +218,17 @@ fn test_parse_type() {
             bitfield_len: None,
         },
     );
-    let test = parse_type("const char* const pTest", true, &reg);
+    let test = parse_type("const char* const pTest", true, &int);
     assert_eq!(expected, test);
 }
 
 #[test]
 fn test_type_parse_convert() {
-    let reg = Registry::new();
+    let int = Interner::new();
 
     let c = vec![
         TypeToken::Const,
-        TypeToken::Ident("VkAccelerationStructureBuildRangeInfoKHR".intern(&reg)),
+        TypeToken::Ident("VkAccelerationStructureBuildRangeInfoKHR".intern(&int)),
         TypeToken::Ptr,
         TypeToken::Const,
         TypeToken::Ptr,
@@ -228,14 +241,14 @@ fn test_type_parse_convert() {
         TypeToken::Const,
         TypeToken::Ptr,
         TypeToken::Const,
-        TypeToken::Ident("VkAccelerationStructureBuildRangeInfoKHR".intern(&reg)),
+        TypeToken::Ident("VkAccelerationStructureBuildRangeInfoKHR".intern(&int)),
     ];
 
     let c_src = "const VkAccelerationStructureBuildRangeInfoKHR *const**";
-    let (_, mut decl) = parse_type(c_src, false, &reg);
+    let (_, mut decl) = parse_type(c_src, false, &int);
 
     assert_eq!(decl.tokens, c);
 
-    decl.make_rust_order(&reg);
+    decl.make_rust_order(&int);
     assert_eq!(decl.tokens, r);
 }
