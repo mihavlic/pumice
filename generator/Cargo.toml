@@ -1,18 +1,15 @@
 [package]
-name = "generator-lib"
+name = "generator"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [[bin]]
-name = "generator"
-path = "./bin/generator.rs"
+name = "generate"
+path = "./bin/generate.rs"
 
 [[bin]]
 name = "dump"
 path = "./bin/dump.rs"
 
 [dependencies]
-lasso = "0.6.0"
-roxmltree = "0.14.1"
+generator-lib = { path = "../generator-lib" }

@@ -1,5 +1,4 @@
-use generator_lib::{Intern, Toplevel, ToplevelBody};
-use lasso::Spur;
+use generator_lib::{lasso::Spur, type_declaration::parse_type, Intern, Toplevel, ToplevelBody};
 
 use crate::Context;
 
@@ -34,15 +33,19 @@ fn sorted_get_all(name: Spur, buf: &[(Spur, Workaround)]) -> Option<&[(Spur, Wor
 }
 
 pub fn apply_workarounds(ctx: &mut Context) {
-    let Context {
-        reg,
-        item_ownership,
-        sections,
-    } = ctx;
+    let alias =
+        |from: &str| -> Workaround { Workaround::Replace(ToplevelBody::Alias(from.intern(ctx))) };
+
+    let redeclare = |ty: &str| -> Workaround {
+        Workaround::Replace(ToplevelBody::Redeclaration(parse_type(ty, false, ctx).1))
+    };
+
+    let ownership =
+        |to: &str| -> Workaround { Workaround::SetOwnership(ctx.find_section_idx(to.intern(ctx))) };
 
     #[rustfmt::skip]
     let mut workarounds = [
-        // all the different identifiers commented as typos in vk.xml 
+        // symbols commented as typos in vk.xml, they are messy and at worst break our renaming schemes 
         (Workaround::Remove, "VK_STENCIL_FRONT_AND_BACK"),
         (Workaround::Remove, "VK_COLORSPACE_SRGB_NONLINEAR_KHR"),
         (Workaround::Remove, "VK_DEBUG_REPORT_OBJECT_TYPE_DEBUG_REPORT_EXT"),
@@ -68,10 +71,78 @@ pub fn apply_workarounds(ctx: &mut Context) {
         (Workaround::Remove, "VK_KHR_MAINTENANCE3_EXTENSION_NAME"),
         (Workaround::Remove, "VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO_INTEL"),
         (Workaround::Remove, "VK_GOOGLE_HLSL_FUNCTIONALITY1_SPEC_VERSION"),
-        (Workaround::Remove, "VK_GOOGLE_HLSL_FUNCTIONALITY1_EXTENSION_NAME"),
-    ].into_iter().map(|(method, name)| (name.intern(reg), method)).collect::<Vec<_>>();
+        // base types that are incluided from the cursed `vk_platform`, they are removed and then have a special case in the path resolution function
+        (Workaround::Remove, "void"),
+        (Workaround::Remove, "char"),
+        (Workaround::Remove, "float"),
+        (Workaround::Remove, "double"),
+        (Workaround::Remove, "int8_t"),
+        (Workaround::Remove, "uint8_t"),
+        (Workaround::Remove, "int16_t"),
+        (Workaround::Remove, "uint16_t"),
+        (Workaround::Remove, "uint32_t"),
+        (Workaround::Remove, "uint64_t"),
+        (Workaround::Remove, "int32_t"),
+        (Workaround::Remove, "int64_t"),
+        (Workaround::Remove, "size_t"),
+        // hardcoded types that are normally included from headers
+        // from https://github.com/Friz64/erupt/blob/9bce30f1a1239d0198258abc60473e3c9f1d6f8a/generator/src/declaration.rs#L100
+        (alias("void"),             "Display"),
+        (alias("u64"),              "VisualID"),
+        (alias("u64"),              "Window"),
+        (alias("u64"),              "RROutput"),
+        (alias("void"),             "xcb_connection_t"),
+        (alias("u32"),              "xcb_visualid_t"),
+        (alias("u32"),              "xcb_window_t"),
+        (alias("void"),             "wl_display"),
+        (alias("void"),             "wl_surface"),
+        (alias("void"),             "SECURITY_ATTRIBUTES"),
+        (alias("u32"),              "DWORD"),
+        (redeclare("void *"),       "HINSTANCE"),
+        (redeclare("void *"),       "HWND"),
+        (redeclare("void *"),       "HMONITOR"),
+        (redeclare("void *"),       "HANDLE"),
+        (redeclare("const u16 *"),  "LPCWSTR"),
+        (redeclare("void *"),       "zx_handle_t"),
+        (alias("u32"),              "GgpStreamDescriptor"),
+        (alias("u64"),              "GgpFrameToken"),
+        (alias("void"),             "IDirectFB"),
+        (alias("void"),             "IDirectFBSurface"),
+        (alias("void"),             "_screen_context"),
+        (alias("void"),             "_screen_window"),
+        // manually add ownership that is missing
+        (ownership("VK_KHR_xcb_surface"), "Display"),
+        (ownership("VK_KHR_xcb_surface"), "VisualID"),
+        (ownership("VK_KHR_xcb_surface"), "Window"),
+        (ownership("VK_KHR_xcb_surface"), "RROutput"),
+        (ownership("VK_KHR_xcb_surface"), "xcb_connection_t"),
+        (ownership("VK_KHR_xcb_surface"), "xcb_visualid_t"),
+        (ownership("VK_KHR_xcb_surface"), "xcb_window_t"),
+        (ownership("VK_KHR_wayland_surface"), "wl_display"),
+        (ownership("VK_KHR_wayland_surface"), "wl_surface"),
+        (ownership("VK_KHR_win32_surface"), "HINSTANCE"),
+        (ownership("VK_KHR_win32_surface"), "HWND"),
+        (ownership("VK_KHR_win32_surface"), "HMONITOR"),
+        (ownership("VK_KHR_win32_surface"), "HANDLE"),
+        (ownership("VK_KHR_win32_surface"), "SECURITY_ATTRIBUTES"),
+        (ownership("VK_KHR_win32_surface"), "DWORD"),
+        (ownership("VK_KHR_win32_surface"), "LPCWSTR"),
+        (ownership("VK_EXT_directfb_surface"), "IDirectFB"),
+        (ownership("VK_EXT_directfb_surface"), "IDirectFBSurface"),
+        (ownership("VK_FUCHSIA_imagepipe_surface"), "zx_handle_t"),
+        (ownership("VK_GGP_stream_descriptor_surface"), "GgpStreamDescriptor"),
+        (ownership("VK_GGP_stream_descriptor_surface"), "GgpFrameToken"),
+        (ownership("VK_QNX_screen_surface"), "_screen_context"),
+        (ownership("VK_QNX_screen_surface"), "_screen_window"),
+    ].into_iter().map(|(method, name)| (name.intern(ctx), method)).collect::<Vec<_>>();
 
     workarounds.sort_by_key(|s| s.0);
+
+    let Context {
+        reg,
+        item_ownership,
+        ..
+    } = ctx;
 
     let mut i = 0;
     'outer: while i < reg.toplevel.len() {
