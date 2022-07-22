@@ -9,11 +9,13 @@ fn main() {
     let video_xml = &args[1];
     let out = &args[2];
 
-    let selected_sections = vec!["VK_VERSION_1_0", "VK_KHR_swapchain", "VK_KHR_video_queue"];
+    let selected_sections = vec!["@all", "VK_KHR_swapchain", "VK_KHR_video_queue"];
 
     write_bindings(
-        &read_to_string(vk_xml).unwrap(),
-        &read_to_string(video_xml).unwrap(),
+        &read_to_string(vk_xml)
+            .unwrap_or_else(|_| panic!("Failed to read {}", vk_xml.to_string_lossy())),
+        &read_to_string(video_xml)
+            .unwrap_or_else(|_| panic!("Failed to read {}", video_xml.to_string_lossy())),
         &out,
         &selected_sections,
     )

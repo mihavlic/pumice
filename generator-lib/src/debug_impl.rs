@@ -6,7 +6,7 @@ use std::{
 use lasso::Spur;
 
 use crate::{
-    type_declaration::{CDecl, Decl},
+    type_declaration::{CDecl},
     CommandParameter, Component, ConstantValue, EnumValue, ExtendMethod, Extension, Feature,
     FeatureExtensionItem, Format, InterfaceItem, Interner, NumericFormat, Plane, Platform,
     Registry, SpirvEnable, SpirvExtCap, Tag, Toplevel, ToplevelBody, YCBREncoding,

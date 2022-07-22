@@ -34,14 +34,15 @@ fn sorted_get_all(name: Spur, buf: &[(Spur, Workaround)]) -> Option<&[(Spur, Wor
 
 pub fn apply_workarounds(ctx: &mut Context) {
     let alias =
-        |from: &str| -> Workaround { Workaround::Replace(ToplevelBody::Alias(from.intern(ctx))) };
+        |arg: &str| -> Workaround { Workaround::Replace(ToplevelBody::Alias(arg.intern(ctx))) };
 
-    let redeclare = |ty: &str| -> Workaround {
-        Workaround::Replace(ToplevelBody::Redeclaration(parse_type(ty, false, ctx).1))
+    let redeclare = |arg: &str| -> Workaround {
+        Workaround::Replace(ToplevelBody::Redeclaration(parse_type(arg, false, ctx).1))
     };
 
-    let ownership =
-        |to: &str| -> Workaround { Workaround::SetOwnership(ctx.find_section_idx(to.intern(ctx))) };
+    let ownership = |arg: &str| -> Workaround {
+        Workaround::SetOwnership(ctx.find_section_idx(arg.intern(ctx)))
+    };
 
     #[rustfmt::skip]
     let mut workarounds = [
@@ -134,6 +135,16 @@ pub fn apply_workarounds(ctx: &mut Context) {
         (ownership("VK_GGP_stream_descriptor_surface"), "GgpFrameToken"),
         (ownership("VK_QNX_screen_surface"), "_screen_context"),
         (ownership("VK_QNX_screen_surface"), "_screen_window"),
+        // Objective C stuff?
+        (alias("void"),             "ANativeWindow"),
+        (alias("void"),             "AHardwareBuffer"),
+        (alias("void"),             "CAMetalLayer"),
+        (redeclare("void *"),       "MTLDevice_id"),
+        (redeclare("void *"),       "MTLCommandQueue_id"),
+        (redeclare("void *"),       "MTLBuffer_id"),
+        (redeclare("void *"),       "MTLTexture_id"),
+        (redeclare("void *"),       "MTLSharedEvent_id"),
+        (redeclare("void *"),       "IOSurfaceRef"),
     ].into_iter().map(|(method, name)| (name.intern(ctx), method)).collect::<Vec<_>>();
 
     workarounds.sort_by_key(|s| s.0);

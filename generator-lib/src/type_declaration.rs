@@ -95,12 +95,13 @@ impl CDecl {
         // field the total amount of bits used after merging the bitfields together, so for now this check is disabled
         // assert!(self.bitfield_len.is_none());
         let mut tokens = tokens.as_slice();
+
         // remove the outer pointer decoration in the type as we'll be replacing it with an array
         if array_len.is_some() {
             tokens = &tokens[..tokens.len() - 1];
         }
 
-        format_tokens(tokens, int, f)?;
+        fmt_tokens(tokens, &|ident, f| f.write_str(&ident.resolve(int)), f)?;
 
         if let Some(size) = array_len {
             f.write_fmt(format_args!("[{}]", size.resolve(int)))?;
@@ -110,45 +111,28 @@ impl CDecl {
     }
 }
 
-impl RustDecl {
-    pub fn fmt(&self, f: &mut std::fmt::Formatter<'_>, int: &Interner) -> std::fmt::Result {
-        let Decl {
-            tokens, array_len, ..
-        } = &self.0;
-
-        let mut tokens = tokens.as_slice();
-        if array_len.is_some() {
-            tokens = &tokens[2..tokens.len()];
-            f.write_char('[')?;
-        }
-
-        format_tokens(tokens, int, f)?;
-
-        if let Some(size) = array_len {
-            f.write_fmt(format_args!("; {}]", size.resolve(int)))?;
-        }
-
-        Ok(())
-    }
-}
-
-fn format_tokens(
+pub fn fmt_tokens(
     tokens: &[TypeToken],
-    int: &Interner,
+    // this function is used in two places, in one we want a readable text that simply specifies all the type structure in C syntax
+    // the other is actually rust type syntax and needs identifiers to contain paths to their respective modules, as such you get this:
+    fmt_ident: &dyn Fn(Spur, &mut std::fmt::Formatter) -> std::fmt::Result,
     f: &mut std::fmt::Formatter,
 ) -> std::fmt::Result {
     for (i, token) in tokens.iter().enumerate() {
-        let temp;
-        let str = match token {
-            TypeToken::Const => "const",
-            TypeToken::Mut => "mut",
-            TypeToken::Ptr => "*",
-            TypeToken::Ident(ty) => {
-                temp = Some(int.resolve(ty));
-                temp.as_deref().unwrap()
-            }
-        };
-        f.write_str(str)?;
+        // control flow tricks
+        loop {
+            let str = match token {
+                TypeToken::Const => "const",
+                TypeToken::Mut => "mut",
+                TypeToken::Ptr => "*",
+                TypeToken::Ident(ty) => {
+                    fmt_ident(*ty, f)?;
+                    break;
+                }
+            };
+            f.write_str(str)?;
+            break;
+        }
         if i != tokens.len() - 1 && *token != TypeToken::Ptr {
             f.write_char(' ')?;
         }

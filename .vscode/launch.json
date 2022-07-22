@@ -7,16 +7,16 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug unit tests in library 'generator-lib'",
+            "name": "Debug unit tests in library 'generator'",
             "cargo": {
                 "args": [
                     "test",
                     "--no-run",
                     "--lib",
-                    "--package=generator-lib"
+                    "--package=generator"
                 ],
                 "filter": {
-                    "name": "generator-lib",
+                    "name": "generator",
                     "kind": "lib"
                 }
             },
@@ -26,34 +26,38 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'generator'",
+            "name": "Debug executable 'generate'",
             "cargo": {
                 "args": [
                     "build",
-                    "--bin=generator",
-                    "--package=generator-lib"
+                    "--bin=generate",
+                    "--package=generator"
                 ],
                 "filter": {
-                    "name": "generator",
+                    "name": "generate",
                     "kind": "bin"
                 }
             },
-            "args": [],
-            "cwd": "${workspaceFolder}"
+            "args": [
+                "${workspaceRoot}/vk.xml",
+                "${workspaceRoot}/video.xml",
+                "${workspaceRoot}/generated/bindings"
+            ],
+            "cwd": "${workspaceFolder}",
         },
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug unit tests in executable 'generator'",
+            "name": "Debug unit tests in executable 'generate'",
             "cargo": {
                 "args": [
                     "test",
                     "--no-run",
-                    "--bin=generator",
-                    "--package=generator-lib"
+                    "--bin=generate",
+                    "--package=generator"
                 ],
                 "filter": {
-                    "name": "generator",
+                    "name": "generate",
                     "kind": "bin"
                 }
             },
@@ -68,7 +72,7 @@
                 "args": [
                     "build",
                     "--bin=dump",
-                    "--package=generator-lib"
+                    "--package=generator"
                 ],
                 "filter": {
                     "name": "dump",
@@ -87,11 +91,30 @@
                     "test",
                     "--no-run",
                     "--bin=dump",
-                    "--package=generator-lib"
+                    "--package=generator"
                 ],
                 "filter": {
                     "name": "dump",
                     "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in library 'generator-lib'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib",
+                    "--package=generator-lib"
+                ],
+                "filter": {
+                    "name": "generator-lib",
+                    "kind": "lib"
                 }
             },
             "args": [],

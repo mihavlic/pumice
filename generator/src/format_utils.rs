@@ -96,9 +96,11 @@ impl<W: Write> FormatWriter<W> {
     pub fn write_raw(&mut self, s: &str) {
         self.inner.write_str(s).unwrap();
     }
+    #[allow(dead_code)]
     pub fn get_inner_writer(&self) -> &W {
         &self.inner
     }
+    #[allow(dead_code)]
     pub fn to_inner_writer(self) -> W {
         self.inner
     }

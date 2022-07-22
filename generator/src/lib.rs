@@ -4,22 +4,22 @@ use crate::{
     workarounds::apply_workarounds,
 };
 use generator_lib::{
-    lasso::{Rodeo, Spur},
+    lasso::{Spur},
     process_registry_xml,
     type_declaration::{CDecl, Decl, TypeToken},
-    EnumValue, FeatureExtensionItem, InterfaceItem, Intern, Interner, ItemIdx, ItemKind, Registry,
-    Resolve, Toplevel, ToplevelBody, ToplevelKind,
+    EnumValue, Intern, Interner, ItemKind, Registry,
+    Resolve, Toplevel, ToplevelBody,
 };
-use registry_format::CtxWrap;
+use registry_format::{CtxWrap, GlobalContext, Symbol};
 use std::{
-    cell::RefCell,
-    collections::{HashMap, HashSet},
+    cell::{Cell},
+    collections::{HashMap},
     error::Error,
     fmt::{Display, Write},
     fs::File,
     io::BufWriter,
     ops::Deref,
-    path::{Path, PathBuf},
+    path::{Path},
 };
 
 mod format_utils;
@@ -125,7 +125,7 @@ pub fn write_bindings(
     vk_xml: &str,
     video_xml: &str,
     out: &dyn AsRef<Path>,
-    selected_sections: &[&str],
+    sections: &[&str],
 ) -> Result<(), Box<dyn Error>> {
     let mut reg = Registry::new();
 
@@ -136,12 +136,20 @@ pub fn write_bindings(
 
     apply_renames(&ctx);
 
-    let mut selected_sections = selected_sections
-        .iter()
-        .map(|str| str.intern(&ctx))
-        .collect();
-
-    add_dependent_sections(&mut selected_sections, &ctx);
+    let mut selected_sections = Vec::new();
+    if sections.contains(&"@all") {
+        let disabled = "disabled".intern(&ctx);
+        selected_sections.extend(ctx.features.iter().map(|a| a.name));
+        selected_sections.extend(
+            ctx.extensions
+                .iter()
+                .filter(|a| a.supported.get(0) != Some(&disabled))
+                .map(|a| a.name),
+        );
+    } else {
+        selected_sections.extend(sections.iter().map(|str| str.intern(&ctx)));
+        add_dependent_sections(&mut selected_sections, &ctx);
+    }
 
     // in vulkan bitmasks are implemented as a typedef of an integer that serves as the actual object of the bitmask
     // and a distinct enum that hold the various bitflags, with rust we want to have only the integer with the flags as associated values
@@ -180,23 +188,53 @@ pub fn write_bindings(
     let mut prev_section = INVALID_SECTION;
     let mut section_writer = None;
 
+    {
+        let file = File::create(out_dir.join("platform.rs"))?;
+        let mut write = FormatWriter::new(WriteWriteAdapter(BufWriter::new(file)));
+        code2!(
+            &mut write,
+            "// aliases providing definitions for some types from vk_platform.h"
+            "pub type void = std::ffi::c_void;"
+            "pub type char = std::ffi::c_char;"
+            "pub type float = std::ffi::c_float;"
+            "pub type double = std::ffi::c_double;"
+            "pub type size_t = std::ffi::c_size_t;"
+            "pub type int = std::ffi::c_int;"
+            @
+        )?;
+    }
+
+    let formatting_context = GlobalContext {
+        ctx: &ctx,
+        cur_section: Cell::new(0),
+    };
+    let g = &formatting_context;
+
     for &(item, section) in &items {
         if section != prev_section {
             // TODO process the names to be more rusty since right now they are literally the names of vulkan extensions
             let file_name = ctx.get_section(section).unwrap().name.resolve(&ctx);
-            let file = File::create(out_dir.join(&*file_name))?;
-            section_writer = Some(FormatWriter::new(WriteWriteAdapter(BufWriter::new(file))));
+            let file = File::create(out_dir.join(&*file_name).with_extension("rs"))?;
+            let writer = FormatWriter::new(WriteWriteAdapter(BufWriter::new(file)));
+
+            section_writer = Some(writer);
+            section_writer
+                .as_mut()
+                .unwrap()
+                .write_str("use crate::platform::*;\n")?;
+
+            g.cur_section.set(section);
         }
         prev_section = section;
 
         let writer = section_writer.as_mut().unwrap();
 
         let item = &ctx.reg.toplevel[item];
-        let name = item.0.ctx(&ctx);
+        let name = item.0.wrp(g);
         match &item.1 {
-            ToplevelBody::Alias(of) => {
-                if !is_std_type(*of, &ctx) {
-                    let target = resolve_alias(*of, &ctx.reg);
+            &ToplevelBody::Alias(of) => {
+                if !is_std_type(of, &ctx) {
+                    let target = resolve_alias(of, &ctx.reg);
                     match target.1 {
                         ToplevelBody::BitmaskBits { .. } => continue,
                         ToplevelBody::Alias { .. } | ToplevelBody::Define { .. } => {
@@ -211,7 +249,7 @@ pub fn write_bindings(
                             code2!(
                                 writer,
                                 "pub const {}: {} = {};"
-                                @ name, ty.ctx(&ctx), target.0.ctx(&ctx)
+                                @ name, Symbol(ty).wrp(g), Symbol(target.0).wrp(g)
                             )?;
                             continue;
                         }
@@ -230,31 +268,31 @@ pub fn write_bindings(
                 code2!(
                     writer,
                     "pub type {} = {};"
-                    @ name, of.ctx(&ctx)
+                    @ name, Symbol(of).wrp(g)
                 )?;
             }
             ToplevelBody::Redeclaration(ty) => {
                 code2!(
                     writer,
                     "pub type {} = {};"
-                    @ name, ty.as_rust_order(&ctx).ctx(&ctx)
+                    @ name, ty.as_rust_order(&ctx).wrp(g)
                 )?;
             }
             // there is nothing to do with defines in rust, just skip them
             ToplevelBody::Define { .. } => {}
             ToplevelBody::Included { .. } => {
                 // verbose error is unnecessary as this is caught in ownership.rs
-                unreachable!();
+                unreachable!("[{}]", name);
             }
             ToplevelBody::Basetype { .. } => {
-                unreachable!("Cannot process C preprocessor code, this type should be manually replaced in a workaround.");
+                unreachable!("[{}] Cannot process C preprocessor code, this type should be manually replaced in a workaround.", name);
             }
             ToplevelBody::Bitmask { ty, .. } => {
                 // TODO when we're actually generating semantically valid rust code add #repr(transparent)
                 code2!(
                     writer,
                     "pub struct {}(pub {});"
-                    @ name, ty.ctx(&ctx)
+                    @ name, ty.wrp(g)
                 )?;
             }
             ToplevelBody::Handle {
@@ -270,18 +308,18 @@ pub fn write_bindings(
                     "/// {}{}"
                     "#[repr(transparent)]"
                     "pub struct {}(u64);"
-                    @ dispatchable, object_type.ctx(&ctx), name
+                    @ dispatchable, object_type.wrp(g), name
                 )?;
             }
             ToplevelBody::Funcpointer { return_type, args } => {
                 let ret = return_type.as_rust_order(&ctx);
                 let args = Separated::args(args.iter(), |(_, ty), f| {
-                    ty.as_rust_order(&ctx).ctx(&ctx).fmt(f)
+                    ty.as_rust_order(&ctx).wrp(g).fmt(f)
                 });
                 code2!(
                     writer,
                     "pub type {} = fn({}) -> {};"
-                    @ name, args, ret.ctx(&ctx)
+                    @ name, args, ret.wrp(g)
                 )?;
             }
             ToplevelBody::Struct { union, members } => {
@@ -292,7 +330,7 @@ pub fn write_bindings(
                 let members = merge_bitfield_members(&members, &ctx);
                 let members = Separated::members(members.iter(), |(name, ty), f| {
                     let ty = ty.as_rust_order(&ctx);
-                    format_args!("{}: {}", name.ctx(&ctx), ty.ctx(&ctx)).fmt(f)
+                    format_args!("{}: {}", name.wrp(g), ty.wrp(g)).fmt(f)
                 });
                 code2!(
                     writer,
@@ -302,21 +340,21 @@ pub fn write_bindings(
                     @ keyword, name, members
                 )?;
             }
-            ToplevelBody::Constant { ty, val } => {
+            &ToplevelBody::Constant { ty, val } => {
                 code2!(
                     writer,
                     "pub const {}: {} = {};"
-                    @ name, ty.ctx(&ctx), val.ctx(&ctx)
+                    @ name, Symbol(ty).wrp(g), val.wrp(g)
                 )?;
             }
             ToplevelBody::Enum { members } => {
                 let members = Separated::members(members.iter(), |(name, val), f| {
-                    let name = name.ctx(&ctx);
+                    let name = name.wrp(g);
                     match val {
                         EnumValue::Bitpos(pos) => format_args!("{} = 1 << {}", name, *pos).fmt(f),
-                        EnumValue::Value(val) => format_args!("{} = {}", name, *val).fmt(f),
+                        EnumValue::Value(val) => format_args!("{} = {}", name, val).fmt(f),
                         EnumValue::Alias(alias) => {
-                            format_args!("{} = Self::{}", name, (*alias).ctx(&ctx)).fmt(f)
+                            format_args!("{} = Self::{}", name, alias.wrp(g)).fmt(f)
                         }
                     }
                 });
@@ -337,13 +375,13 @@ pub fn write_bindings(
                 // when vulkan has a Bitmask that is reserved for future use and thus has no actual flag values, there are no BitmaskBits defined and the spec omits Bitmask dependency
                 // however of course there are exceptions such as VkSemaphoreCreateFlagBits which is not Cdeclared as a dependency but is actually an item :(
                 let bitmask_name = match bitmask_pairing.get(&item.0) {
-                    Some(n) => n,
+                    Some(n) => *n,
                     None => continue,
                 };
 
-                let ty = get_concrete_type(*bitmask_name, &ctx.reg).ctx(&ctx);
+                let ty = Symbol(get_concrete_type(bitmask_name, &ctx.reg)).wrp(g);
                 let bits = Separated::statements(members.iter(), |(name, val), f| {
-                    let name = name.ctx(&ctx);
+                    let name = name.wrp(g);
                     match val {
                         EnumValue::Bitpos(pos) => {
                             format_args!("const {}: {} = 1 << {}", name, ty, pos).fmt(f)
@@ -352,8 +390,7 @@ pub fn write_bindings(
                             format_args!("const {}: {} = {}", name, ty, val).fmt(f)
                         }
                         EnumValue::Alias(alias) => {
-                            format_args!("const {}: {} = Self::{}", name, ty, alias.ctx(&ctx))
-                                .fmt(f)
+                            format_args!("const {}: {} = Self::{}", name, ty, alias.wrp(g)).fmt(f)
                         }
                     }
                 });
@@ -363,32 +400,33 @@ pub fn write_bindings(
                     "impl {} {{"
                     "    {}"
                     "}}"
-                    @ bitmask_name.ctx(&ctx), bits
+                    @ bitmask_name.wrp(g), bits
                 )?;
             }
             ToplevelBody::Command {
                 return_type,
                 params,
             } => {
-                let mut return_str = None;
-                // function just returns 'void'
-                if return_type.0.tokens.len() == 1 {
-                    if let TypeToken::Ident(ty) = &return_type.0.tokens[0] {
-                        if &*ctx.resolve(ty) == "void" {
-                            return_str = Some("".to_string());
+                let mut return_str = String::new();
+
+                loop {
+                    // function just returns 'void'
+                    if return_type.0.tokens.len() == 1 {
+                        if let TypeToken::Ident(ty) = &return_type.0.tokens[0] {
+                            if &*ctx.resolve(ty) == "void" {
+                                break;
+                            }
                         }
                     }
-                }
-                // the function has an actual return type
-                if return_str.is_none() {
-                    return_str = Some(format!(" -> {}", return_type.as_rust_order(&ctx).ctx(&ctx)));
+                    return_str = format!(" -> {}", return_type.as_rust_order(&ctx).wrp(g));
+                    break;
                 }
 
                 let args = Separated::args(params.iter(), |param, f| {
                     format_args!(
                         "{}: {}",
-                        param.name.ctx(&ctx),
-                        param.ty.as_rust_order(&ctx).ctx(&ctx)
+                        param.name.wrp(g),
+                        param.ty.as_rust_order(&ctx).wrp(g)
                     )
                     .fmt(f)
                 });
@@ -396,7 +434,7 @@ pub fn write_bindings(
                 code2!(
                     writer,
                     "pub fn {}({}){} {{}}"
-                    @ name, args, return_str.unwrap()
+                    @ name, args, return_str
                 )?;
             }
         }
@@ -409,7 +447,7 @@ pub fn write_bindings(
 pub fn is_std_type(ty: Spur, int: &Interner) -> bool {
     match &*ty.resolve(int) {
         "void" | "char" | "float" | "double" | "int8_t" | "uint8_t" | "int16_t" | "uint16_t"
-        | "uint32_t" | "uint64_t" | "int32_t" | "int64_t" | "size_t" | "u8" | "u16" | "u32"
+        | "uint32_t" | "int32_t" | "uint64_t" | "int64_t" | "size_t" | "u8" | "u16" | "u32"
         | "u64" | "u128" | "i8" | "i16" | "i32" | "i64" | "i128" => true,
         _ => false,
     }
@@ -467,7 +505,7 @@ fn apply_renames(ctx: &Context) {
     }
 }
 
-fn merge_bitfield_members(members: &[(Spur, CDecl)], int: &Interner) -> Vec<(Spur, CDecl)> {
+fn merge_bitfield_members(members: &[(Spur, CDecl)], reg: &Registry) -> Vec<(Spur, CDecl)> {
     let mut resolved = Vec::new();
     let mut last_ty: Option<Vec<TypeToken>> = None;
     let mut current_bits = 0;
@@ -499,12 +537,12 @@ fn merge_bitfield_members(members: &[(Spur, CDecl)], int: &Interner) -> Vec<(Spu
             let name = if merged_members.len() == 1 {
                 merged_members[0]
             } else {
-                let mut concat = int.resolve(&merged_members[0]).to_owned();
+                let mut concat = reg.resolve(&merged_members[0]).to_owned();
                 for member in &merged_members[1..] {
                     concat += "_";
-                    concat += &*int.resolve(&member);
+                    concat += &*reg.resolve(&member);
                 }
-                concat.intern(&int)
+                concat.intern(&reg)
             };
             resolved.push((
                 name,
@@ -523,15 +561,13 @@ fn merge_bitfield_members(members: &[(Spur, CDecl)], int: &Interner) -> Vec<(Spu
         if let Some(bits) = ty.bitfield_len {
             let type_bits = match ty.tokens[0] {
                 // TODO match against spurs made from &'static str
-                TypeToken::Ident(ty) => {
-                    match ty.resolve(&int) /* &*int.resolve(&get_concrete_type(ty, int)) */ {
-                    // "uint8_t" | "int8_t" | "u8" | "i8" => 8,
-                    // "uint16_t" | "int16_t" | "u16" | "i16" => 16,
-                    // "uint32_t" | "int32_t" | "VkFlags" | "u32" | "i32" => 32,
-                    // "uint64_t" | "int64_t" | "VkFlags64" | "u64" | "i64" => 64,
+                TypeToken::Ident(ty) => match &*reg.resolve(&get_concrete_type(ty, reg)) {
+                    "uint8_t" | "int8_t" | "u8" | "i8" => 8,
+                    "uint16_t" | "int16_t" | "u16" | "i16" => 16,
+                    "uint32_t" | "int32_t" | "VkFlags" | "u32" | "i32" => 32,
+                    "uint64_t" | "int64_t" | "VkFlags64" | "u64" | "i64" => 64,
                     other => todo!("Add another type ('{}') to this match", other),
-                 }
-                }
+                },
                 // microsoft (https://docs.microsoft.com/en-us/cpp/c-language/c-bit-fields?view=msvc-170) says that only primitive types
                 // can be bitfields, in practice this means that the type tokens will be just an ident, also in the spec only one?
                 // type is ever used for bitfield so here will be a little hardcoded lookup from type name to bit width,

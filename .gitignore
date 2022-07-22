@@ -1,5 +1,6 @@
-**/target/
+target/
+generated/
 Cargo.lock
 vk.xml
+video.xml
 debug
-generated

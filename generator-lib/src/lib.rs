@@ -442,14 +442,11 @@ fn add_item<T>(
     kind: ItemKind,
     is_video: bool,
 ) {
-    if let Some(&(_, old_kind)) = map.get(&name) {
+    if let Some(&(index, old_kind)) = map.get(&name) {
         assert_eq!(kind, old_kind);
         assert_eq!(old_kind, ItemKind::Toplevel);
-        assert!(
-            is_video,
-            "Only the video xml can have collisions between items."
-        );
-        // drop the override as it's just some trash
+        assert!(is_video, "Only the video xml can override items.");
+        vec[index as usize] = what;
     } else {
         let index = TryInto::<u32>::try_into(vec.len()).unwrap();
         vec.push(what);
@@ -584,17 +581,6 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                     }
 
                     let category = t.attribute("category");
-
-                    // handle all aliases here, all of them have the same form
-                    let kind = || match category {
-                        Some("bitmask") => ToplevelKind::Bitmask,
-                        Some("handle") => ToplevelKind::Handle,
-                        Some("enum") => ToplevelKind::Enum,
-                        // struct and union representation is the same
-                        // a bool flag discriminates between the two
-                        Some("struct" | "union") => ToplevelKind::Struct,
-                        _ => todo!(),
-                    };
 
                     if try_alias(t, reg, is_video) {
                         continue;
@@ -938,7 +924,7 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
 
                             // remove the bit width specifiers - I assume this is valid since rust doesn't allow integers
                             // to be implicitly cast implying that the literal must start at the target bitwidth
-                            buf.retain(|c| c != 'L' && c != 'U' && c != 'F');
+                            buf.retain(|c| (c != 'L') && (c != 'U') && (c != 'F'));
 
                             let typ = ToplevelBody::Constant {
                                 ty,
@@ -1020,10 +1006,10 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                     //     <param optional="true">const <type>VkAllocationCallbacks</type>* <name>pAllocator</name></param>
                     //     <param><type>VkInstance</type>* <name>pInstance</name></param>
                     // </command>
-                    let mut Cdeclaration = iter_children(c);
+                    let mut children = iter_children(c);
 
                     let (name, return_type) = {
-                        let proto = Cdeclaration.next().unwrap();
+                        let proto = children.next().unwrap();
 
                         buf.clear();
                         collect_node_text(proto, &mut buf);
@@ -1033,7 +1019,7 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                     };
 
                     let mut params = Vec::new();
-                    for p in Cdeclaration {
+                    for p in children {
                         match p.tag_name().name() {
                             "param" => {}
                             "implicitexternsyncparams" => continue,
