@@ -1,6 +1,6 @@
 use generator_lib::{
     lasso::Spur, FeatureExtensionItem, InterfaceItem, Intern, ItemKind, Registry, Resolve,
-    ToplevelBody,
+    SymbolBody,
 };
 
 use crate::{is_std_type, resolve_alias, Context, Section, SectionKind, INVALID_SECTION};
@@ -12,44 +12,47 @@ use crate::{is_std_type, resolve_alias, Context, Section, SectionKind, INVALID_S
 pub fn resolve_ownership(ctx: &mut Context) {
     let Context {
         reg,
-        item_ownership,
+        symbol_ownership,
         sections,
     } = ctx;
 
     // iterate through the sections and the items in their `require` tags
     // if the item doesn't have ownership, set it to the current section
     for (i, section) in sections.iter().enumerate() {
-        for item in section_used_items(section, reg) {
-            if let Some(index) = reg.get_toplevel_idx(item) {
-                let entry = &mut item_ownership[index as usize];
+        for symbol in section_used_symbols(section, reg) {
+            if let Some(index) = reg.get_symbol_index(symbol) {
+                let entry = &mut symbol_ownership[index as usize];
                 if *entry == INVALID_SECTION {
                     *entry = i as u32;
                 }
             } else {
-                // QUIRK types like uint8_t and such are removed from the registry as they are always replaced by references into the standard library
+                // QUIRK
+                //   types like uint8_t and such are removed from the registry as they are always replaced by references into the standard library
+                //   video.xml puts the name of its header which obviously is not a symbol in the <require> tag of its extension
             }
         }
     }
 
-    // go through one last time and validate ownerships
-    for (i, item) in reg.toplevel.iter().enumerate() {
-        // aliases to BitmaskBits are allowed to be unowned due
-        if let ToplevelBody::Alias(of) = item.1 {
+    // validate ownerships
+    for (i, item) in reg.symbols.iter().enumerate() {
+        if let SymbolBody::Alias(of) = item.1 {
+            // std types are not in the registry, see workarounds.rs
             if is_std_type(of, reg) {
                 break;
             }
-            if let ToplevelBody::BitmaskBits { .. } = resolve_alias(of, reg).1 {
+            // aliases to BitmaskBits are allowed to be unowned
+            if let SymbolBody::BitmaskBits { .. } = resolve_alias(of, reg).1 {
                 continue;
             }
         }
 
         match item.1 {
             // some BitmaskBits are left unowned if they contain no members :(
-            ToplevelBody::BitmaskBits { .. } => {}
-            ToplevelBody::Included { .. } => unreachable!("[{}] Types included from headers are opaque and as such must be resolved by other means before this stage.", item.0.resolve(reg)),
+            SymbolBody::BitmaskBits { .. } => {}
+            SymbolBody::Included { .. } => unreachable!("[{}] Types included from headers are opaque and as such must be resolved by other means before this stage.", item.0.resolve(reg)),
             _ => {
                 assert!(
-                    item_ownership[i] != INVALID_SECTION,
+                    symbol_ownership[i] != INVALID_SECTION,
                     "[{}] Concrete types should have valid ownership assigned at this point.", item.0.resolve(reg)
                 )
             }
@@ -57,7 +60,7 @@ pub fn resolve_ownership(ctx: &mut Context) {
     }
 }
 
-fn section_used_items<'a>(
+fn section_used_symbols<'a>(
     section: &'a Section,
     reg: &'a Registry,
 ) -> impl Iterator<Item = Spur> + 'a {
@@ -84,9 +87,6 @@ fn section_used_items<'a>(
                     }
                 }
                 InterfaceItem::Extend { extends, .. } => Some(*extends),
-                // this will always introduce a new local item, as such it is never in the toplevel items
-                // furthermore this seem to only ever be extension versions and names which aren't required by anything else
-                InterfaceItem::AddConstant { .. } => None,
             })
         })
 }
@@ -117,17 +117,14 @@ fn foreach_dependency<F: FnMut(Section)>(section: &Section, mut f: F, reg: &Regi
                     kind: SectionKind::Feature(index as u32),
                 });
             }
-            for require in &extension.requires {
-                let &(next_idx, kind) = reg.item_map.get(require).unwrap();
+            for &name in &extension.requires {
+                let &(index, kind) = reg.get_item_entry(name).unwrap();
                 let kind = match kind {
-                    ItemKind::Feature => SectionKind::Feature(next_idx),
-                    ItemKind::Extension => SectionKind::Extension(next_idx),
+                    ItemKind::Feature => SectionKind::Feature(index),
+                    ItemKind::Extension => SectionKind::Extension(index),
                     _ => unreachable!(),
                 };
-                f(Section {
-                    name: *require,
-                    kind,
-                });
+                f(Section { name, kind });
             }
         }
     }

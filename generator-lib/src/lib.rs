@@ -3,7 +3,7 @@
 
 use std::{
     cell::{Ref, RefCell},
-    collections::HashMap,
+    collections::{hash_map::Entry, HashMap},
     fmt::Debug,
     ops::Deref,
 };
@@ -18,7 +18,7 @@ pub mod debug_impl;
 pub mod type_declaration;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum ToplevelKind {
+pub enum SymbolKind {
     Alias,
     Included,
     Define,
@@ -34,10 +34,7 @@ pub enum ToplevelKind {
 }
 
 #[derive(Clone)]
-pub struct Toplevel(pub Spur, pub ToplevelBody);
-
-#[derive(Clone)]
-pub enum ToplevelBody {
+pub enum SymbolBody {
     Alias(Spur),
     Redeclaration(CDecl),
     Included {
@@ -67,8 +64,8 @@ pub enum ToplevelBody {
         members: Vec<(Spur, CDecl)>,
     },
     Constant {
-        ty: Spur,
-        val: Spur,
+        ty: CDecl,
+        val: String,
     },
     // FIXME merge Enum and Bitmaskbits just like we've done to Struct and Union
     Enum {
@@ -126,16 +123,6 @@ pub enum YCBREncoding {
     E422,
     E444,
 }
-
-// impl Debug for YCBREncoding {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         match self {
-//             Self::E420 => write!(f, "E420"),
-//             Self::E422 => write!(f, "E422"),
-//             Self::E444 => write!(f, "E444"),
-//         }
-//     }
-// }
 
 pub enum NumericFormat {
     SFLOAT,
@@ -245,10 +232,10 @@ pub enum InterfaceItem {
         api: Option<Spur>,
         method: ExtendMethod,
     },
-    AddConstant {
-        name: Spur,
-        value: ConstantValue,
-    },
+    // AddConstant {
+    //     name: Spur,
+    //     value: ConstantValue,
+    // },
 }
 
 // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html#tag-spirvenable
@@ -269,7 +256,10 @@ pub enum SpirvEnable {
     },
 }
 
-pub struct SpirvExtCap(pub Spur, pub Vec<SpirvEnable>);
+pub struct SpirvExtCap {
+    pub name: Spur,
+    pub enables: Vec<SpirvEnable>,
+}
 
 pub struct Platform {
     pub name: Spur,
@@ -285,7 +275,7 @@ pub struct Tag {
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ItemKind {
-    Toplevel,
+    Symbol,
     Feature,
     Extension,
     Format,
@@ -396,13 +386,14 @@ pub struct Registry {
     pub tags: Vec<Tag>,
     pub headers: Vec<Spur>,
 
-    pub toplevel: Vec<Toplevel>,
+    pub symbols: Vec<(Spur, SymbolBody)>,
     pub features: Vec<Feature>,
     pub extensions: Vec<Extension>,
     pub formats: Vec<Format>,
     pub spirv_capabilities: Vec<SpirvExtCap>,
     pub spirv_extensions: Vec<SpirvExtCap>,
-    pub item_map: HashMap<Spur, (ItemIdx, ItemKind)>,
+
+    pub item_map: HashMap<Spur, (u32, ItemKind)>,
     pub interner: Interner,
 }
 
@@ -413,46 +404,156 @@ impl Registry {
             tags: Default::default(),
             headers: Default::default(),
 
-            toplevel: Default::default(),
+            symbols: Default::default(),
             features: Default::default(),
             extensions: Default::default(),
             formats: Default::default(),
             spirv_capabilities: Default::default(),
             spirv_extensions: Default::default(),
+
             item_map: Default::default(),
             interner: Interner::new(),
         }
     }
-    pub fn get_toplevel_idx(&self, name: Spur) -> Option<u32> {
+    pub fn get_symbol_index(&self, name: Spur) -> Option<u32> {
         let &(index, ty) = self.item_map.get(&name)?;
-        assert!(ty == ItemKind::Toplevel);
+        assert!(ty == ItemKind::Symbol);
         Some(index)
     }
-    pub fn get_toplevel(&self, name: Spur) -> Option<&Toplevel> {
-        let index = self.get_toplevel_idx(name)?;
-        Some(&self.toplevel[index as usize])
+    pub fn find_symbol(&self, name: Spur) -> Option<&SymbolBody> {
+        let item = self.get_symbol_index(name)?;
+        Some(&self.symbols[item as usize].1)
+    }
+    pub fn add_symbol(&mut self, name: Spur, body: SymbolBody) {
+        let entry = self.item_map.entry(name);
+        match entry {
+            Entry::Occupied(o) => {
+                let &(index, kind) = o.get();
+                if kind == ItemKind::Symbol {
+                    match self.symbols[index as usize].1 {
+                        // QUIRK we allow overwriting `Included` items because those contained in video.xml are declared as such in vk.xml
+                        // and their actual definition occurs later in video.xml
+                        SymbolBody::Included { .. } => {
+                            self.symbols[index as usize].1 = body;
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+                panic!(
+                    "Attempt to insert duplicate item '{}' into registry.",
+                    name.resolve(&self)
+                )
+            }
+            Entry::Vacant(v) => {
+                let index = u32::try_from(self.symbols.len()).unwrap();
+                v.insert((index, ItemKind::Symbol));
+                self.symbols.push((name, body));
+            }
+        }
+    }
+    pub fn add_feature(&mut self, add: Feature) {
+        add_impl(
+            &mut self.features,
+            add.name,
+            add,
+            ItemKind::Feature,
+            &mut self.item_map,
+            &self.interner,
+        );
+    }
+    pub fn add_extension(&mut self, add: Extension) {
+        add_impl(
+            &mut self.extensions,
+            add.name,
+            add,
+            ItemKind::Extension,
+            &mut self.item_map,
+            &self.interner,
+        );
+    }
+    pub fn add_format(&mut self, add: Format) {
+        add_impl(
+            &mut self.formats,
+            add.name,
+            add,
+            ItemKind::Format,
+            &mut self.item_map,
+            &self.interner,
+        );
+    }
+    pub fn add_spirv_capability(&mut self, add: SpirvExtCap) {
+        add_impl(
+            &mut self.spirv_capabilities,
+            add.name,
+            add,
+            ItemKind::SpirvCapability,
+            &mut self.item_map,
+            &self.interner,
+        );
+    }
+    pub fn add_spirv_extension(&mut self, add: SpirvExtCap) {
+        add_impl(
+            &mut self.spirv_extensions,
+            add.name,
+            add,
+            ItemKind::SpirvExtension,
+            &mut self.item_map,
+            &self.interner,
+        );
+    }
+    pub fn remove_symbol(&mut self, idx: u32) {
+        let i = idx as usize;
+        let name = self.symbols[i].0;
+
+        self.symbols.remove(i);
+        self.item_map.remove(&name).unwrap();
+
+        // need to adjust all the following indexes in the item_map because we've just deleted an element
+        for (name, ..) in &self.symbols[i..] {
+            self.item_map.get_mut(name).unwrap().0 -= 1;
+        }
+    }
+    pub fn get_item_entry(&self, name: Spur) -> Option<&(u32, ItemKind)> {
+        self.item_map.get(&name)
     }
 }
 
-fn add_item<T>(
+fn add_impl<T>(
     vec: &mut Vec<T>,
-    map: &mut HashMap<Spur, (u32, ItemKind)>,
-    what: T,
     name: Spur,
+    what: T,
     kind: ItemKind,
-    is_video: bool,
+    item_map: &mut HashMap<Spur, (u32, ItemKind)>,
+    int: &Interner,
 ) {
-    if let Some(&(index, old_kind)) = map.get(&name) {
-        assert_eq!(kind, old_kind);
-        assert_eq!(old_kind, ItemKind::Toplevel);
-        assert!(is_video, "Only the video xml can override items.");
-        vec[index as usize] = what;
-    } else {
-        let index = TryInto::<u32>::try_into(vec.len()).unwrap();
-        vec.push(what);
-        map.insert(name, (index, kind));
-    }
+    let index = u32::try_from(vec.len()).unwrap();
+    let none = item_map.insert(name, (index, kind));
+    assert!(
+        none.is_none(),
+        "Attempt to insert duplicate item '{}' into registry.",
+        name.resolve(int)
+    );
+    vec.push(what);
 }
+
+macro_rules! typed_index {
+    ($name:ident) => {
+        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        pub struct $name(u32);
+
+        impl $name {
+            pub fn new(index: usize) -> Self {
+                Self(u32::try_from(index).unwrap())
+            }
+            pub fn idx(&self) -> usize {
+                self.0 as usize
+            }
+        }
+    };
+}
+
+typed_index!(Symbol);
 
 trait NodeUtils<'a> {
     fn intern(&self, attribute: &str, reg: &Interner) -> Spur;
@@ -473,7 +574,7 @@ impl<'a, 'b> NodeUtils<'b> for Node<'a, 'b> {
         self.attribute(attribute).unwrap()
     }
     fn child_text(&'a self, child: &str) -> &'a str {
-        iter_children(*self)
+        node_iter_children(*self)
             .find(|n| n.tag_name().name() == child)
             .unwrap()
             .text()
@@ -481,7 +582,7 @@ impl<'a, 'b> NodeUtils<'b> for Node<'a, 'b> {
     }
     fn try_child_text(&'a self, child: &str) -> Option<&'a str> {
         Some(
-            iter_children(*self)
+            node_iter_children(*self)
                 .find(|n| n.tag_name().name() == child)?
                 .text()
                 .unwrap(),
@@ -491,20 +592,9 @@ impl<'a, 'b> NodeUtils<'b> for Node<'a, 'b> {
 
 // the kind must be a closure so that it may be lazily evaluated as in some cases it needs to
 //  do some computation that would be invalid if the node is not an alias in the first place
-fn try_alias(t: Node, reg: &mut Registry, is_video: bool) -> bool {
+fn try_alias(t: Node, reg: &mut Registry) -> bool {
     if let Some(alias) = t.attribute("alias") {
-        let typ = ToplevelBody::Alias(alias.intern(&*reg));
-
-        let name = t.intern("name", reg);
-
-        add_item(
-            &mut reg.toplevel,
-            &mut reg.item_map,
-            Toplevel(name, typ),
-            name,
-            ItemKind::Toplevel,
-            is_video,
-        );
+        reg.add_symbol(t.intern("name", reg), SymbolBody::Alias(alias.intern(reg)));
 
         return true;
     }
@@ -512,7 +602,7 @@ fn try_alias(t: Node, reg: &mut Registry, is_video: bool) -> bool {
     return false;
 }
 
-fn iter_children<'a, 'b: 'a>(node: Node<'a, 'b>) -> impl Iterator<Item = Node<'a, 'b>> {
+fn node_iter_children<'a, 'b: 'a>(node: Node<'a, 'b>) -> impl Iterator<Item = Node<'a, 'b>> {
     // nice and readable
     node.first_child().into_iter().flat_map(|c| {
         c.next_siblings()
@@ -520,7 +610,7 @@ fn iter_children<'a, 'b: 'a>(node: Node<'a, 'b>) -> impl Iterator<Item = Node<'a
     })
 }
 
-fn collect_node_text(n: Node, buf: &mut String) {
+fn node_collect_text(n: Node, buf: &mut String) {
     for d in n.children() {
         // struct member definitions contain comments, we don't want these
         if d.tag_name().name() != "comment" {
@@ -540,7 +630,7 @@ fn collect_node_text(n: Node, buf: &mut String) {
     }
 }
 
-pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
+pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
     let doc = roxmltree::Document::parse(xml).unwrap();
 
     let r = doc
@@ -551,11 +641,11 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
     // quite a few places require a string to collect some text into and then further process it
     let mut buf = String::new();
 
-    for n in iter_children(r) {
+    for n in node_iter_children(r) {
         match n.tag_name().name() {
             "comment" => {} // TODO propagate this information
             "platforms" => {
-                for c in iter_children(n) {
+                for c in node_iter_children(n) {
                     let p = Platform {
                         name: c.intern("name", reg),
                         protect: c.intern("protect", reg),
@@ -565,7 +655,7 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                 }
             }
             "tags" => {
-                for c in iter_children(n) {
+                for c in node_iter_children(n) {
                     let t = Tag {
                         name: c.intern("name", reg),
                         author: c.owned("author"),
@@ -575,14 +665,14 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                 }
             }
             "types" => {
-                for t in iter_children(n) {
+                for t in node_iter_children(n) {
                     if t.tag_name().name() == "comment" {
                         continue;
                     }
 
                     let category = t.attribute("category");
 
-                    if try_alias(t, reg, is_video) {
+                    if try_alias(t, reg) {
                         continue;
                     }
 
@@ -612,24 +702,17 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                         None => {
                             let name = t.get("name");
 
-                            // there is just an 'int' - Why? - Just skip it and hardcode an alias to std::ffi::c_int later
+                            // QUIRK there a plain '<type name="int"/>' in the registry
+                            // this doesn't really map to any item declaration, just skip it
                             if name == "int" {
                                 continue;
                             }
 
-                            let name = name.intern(reg);
-
-                            let typ = ToplevelBody::Included {
-                                header: t.intern("requires", reg),
-                            };
-
-                            add_item(
-                                &mut reg.toplevel,
-                                &mut reg.item_map,
-                                Toplevel(name, typ),
-                                name,
-                                ItemKind::Toplevel,
-                                is_video,
+                            reg.add_symbol(
+                                name.intern(reg),
+                                SymbolBody::Included {
+                                    header: t.intern("requires", reg),
+                                },
                             );
                         }
                         // <type category="define">
@@ -641,27 +724,19 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                         //   #ifndef VK_DEFINE_NON_DISPATCHABLE_HANDLE #if (VK_USE_64_BIT_PTR_DEFINES==1) #define VK_DEFINE_NON_DISPATCHABLE_HANDLE(object) typedef pub struct object##_T *object; #else #define VK_DEFINE_NON_DISPATCHABLE_HANDLE(object) typedef uint64_t object; #endif #endif
                         // </type>
                         Some("define") => {
-                            // wow, the name is either specified as an attribute or delimited with an element within the contained text
+                            // the name is either specified as an attribute or delimited with an element within the contained text
                             let name = t
                                 .attribute("name")
                                 .unwrap_or_else(|| t.child_text("name"))
                                 .intern(reg);
 
-                            buf.clear();
-                            collect_node_text(t, &mut buf);
-
-                            let typ = ToplevelBody::Define {
-                                body: buf.trim().to_owned(),
+                            let body = {
+                                buf.clear();
+                                node_collect_text(t, &mut buf);
+                                buf.trim().to_owned()
                             };
 
-                            add_item(
-                                &mut reg.toplevel,
-                                &mut reg.item_map,
-                                Toplevel(name, typ),
-                                name,
-                                ItemKind::Toplevel,
-                                is_video,
-                            );
+                            reg.add_symbol(name, SymbolBody::Define { body });
                         }
                         // <type category="basetype">struct <name>ANativeWindow</name>;</type>
                         // <type category="basetype">typedef <type>uint32_t</type> <name>VkSampleMask</name>;</type>
@@ -672,37 +747,21 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                             // QUIRK
                             // the `basetype` tag may contain a:
                             //   typedef
-                            //   struct predeclaration when the type is only ever an opaque pointer
+                            //   struct pre declaration
                             //   preprocessor code
-                            // currently the first two options are mapped to an alias, while the third is preserved as a basetype
-                            if let Some(ty) = ty {
-                                let typ = ToplevelBody::Alias(ty.intern(reg));
-
-                                add_item(
-                                    &mut reg.toplevel,
-                                    &mut reg.item_map,
-                                    Toplevel(name, typ),
-                                    name,
-                                    ItemKind::Toplevel,
-                                    is_video,
-                                );
+                            // currently the first option is mapped to an alias, while the third is preserved as a basetype
+                            let body = if let Some(ty) = ty {
+                                SymbolBody::Alias(ty.intern(reg))
                             } else {
                                 buf.clear();
-                                collect_node_text(t, &mut buf);
+                                node_collect_text(t, &mut buf);
 
-                                let typ = ToplevelBody::Basetype {
+                                SymbolBody::Basetype {
                                     code: buf.trim().to_owned(),
-                                };
-
-                                add_item(
-                                    &mut reg.toplevel,
-                                    &mut reg.item_map,
-                                    Toplevel(name, typ),
-                                    name,
-                                    ItemKind::Toplevel,
-                                    is_video,
-                                );
+                                }
                             };
+
+                            reg.add_symbol(name, body);
                         }
                         // <type requires="VkFramebufferCreateFlagBits" category="bitmask">
                         //   typedef
@@ -712,7 +771,6 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                         // </type>
                         // <type category="bitmask" name="VkGeometryFlagsNV" alias="VkGeometryFlagsKHR"/>
                         Some("bitmask") => {
-                            let name = t.child_text("name").intern(reg);
                             let ty = t.child_text("type").intern(reg);
 
                             // due to vk.xml being a horror produced from C headers
@@ -728,45 +786,32 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                                 None
                             };
 
-                            let typ = ToplevelBody::Bitmask {
-                                ty,
-                                bits_enum: bits.map(|b| b.intern(reg)),
-                            };
-
-                            add_item(
-                                &mut reg.toplevel,
-                                &mut reg.item_map,
-                                Toplevel(name, typ),
-                                name,
-                                ItemKind::Toplevel,
-                                is_video,
+                            reg.add_symbol(
+                                t.child_text("name").intern(reg),
+                                SymbolBody::Bitmask {
+                                    ty,
+                                    bits_enum: bits.map(|b| b.intern(reg)),
+                                },
                             );
                         }
                         // <type category="handle" objtypeenum="VK_OBJECT_TYPE_INSTANCE"><type>VK_DEFINE_HANDLE</type>(<name>VkInstance</name>)</type>
                         // <type category="handle" name="VkDescriptorUpdateTemplateKHR" alias="VkDescriptorUpdateTemplate"/>
                         Some("handle") => {
-                            let name = t.child_text("name").intern(reg);
                             let object_type = t.intern("objtypeenum", reg);
 
-                            let ty = t.child_text("type"); // type as in kind
-                            let dispatchable = match ty {
+                            let kind = t.child_text("type");
+                            let dispatchable = match kind {
                                 "VK_DEFINE_HANDLE" => true,
                                 "VK_DEFINE_NON_DISPATCHABLE_HANDLE" => false,
                                 _ => unreachable!(),
                             };
 
-                            let typ = ToplevelBody::Handle {
-                                object_type,
-                                dispatchable,
-                            };
-
-                            add_item(
-                                &mut reg.toplevel,
-                                &mut reg.item_map,
-                                Toplevel(name, typ),
-                                name,
-                                ItemKind::Toplevel,
-                                is_video,
+                            reg.add_symbol(
+                                t.child_text("name").intern(reg),
+                                SymbolBody::Handle {
+                                    object_type,
+                                    dispatchable,
+                                },
                             );
                         }
                         // <type name="VkAttachmentLoadOp" category="enum"/>
@@ -788,21 +833,14 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                             // all 9 instances of this follow this structure:
                             // typedef 'return type' (VKAPI_PTR *'ptr type')($('argument type'),*)
 
-                            let name = t.child_text("name").intern(reg);
-
                             // since the incredible way that the xml is structured, pointer syntax and const decorations are not specially marked
                             // thus it actually becomes easier to collect all the text into a String and parse it manually
 
-                            buf.clear();
-                            collect_node_text(t, &mut buf);
-
-                            let mut brackets = buf.split('(');
-
-                            // println!(
-                            //     "\n {} \n{:#?}\n",
-                            //     text,
-                            //     brackets.clone().collect::<Vec<_>>()
-                            // );
+                            let mut brackets = {
+                                buf.clear();
+                                node_collect_text(t, &mut buf);
+                                buf.split('(')
+                            };
 
                             let return_type = {
                                 let first = brackets.next().unwrap();
@@ -825,15 +863,9 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                                 args.push((name.unwrap(), ty));
                             }
 
-                            let typ = ToplevelBody::Funcpointer { return_type, args };
-
-                            add_item(
-                                &mut reg.toplevel,
-                                &mut reg.item_map,
-                                Toplevel(name, typ),
-                                name,
-                                ItemKind::Toplevel,
-                                is_video,
+                            reg.add_symbol(
+                                t.child_text("name").intern(reg),
+                                SymbolBody::Funcpointer { return_type, args },
                             );
                         }
                         // <type category="struct" name="VkBaseOutStructure">
@@ -850,10 +882,9 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                         // </type>
                         // <type category="struct" name="VkImageStencilUsageCreateInfoEXT" alias="VkImageStencilUsageCreateInfo"/>
                         category @ Some("struct" | "union") => {
-                            let name = t.intern("name", reg);
                             let mut members = Vec::new();
 
-                            for member in iter_children(t) {
+                            for member in node_iter_children(t) {
                                 match member.tag_name().name() {
                                     "member" => {}
                                     "comment" => continue,
@@ -861,24 +892,18 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                                 }
 
                                 buf.clear();
-                                collect_node_text(member, &mut buf);
+                                node_collect_text(member, &mut buf);
                                 let (name, ty) = parse_type(&buf, true, reg);
 
                                 members.push((name.unwrap(), ty));
                             }
 
-                            let typ = ToplevelBody::Struct {
-                                union: category == Some("union"),
-                                members,
-                            };
-
-                            add_item(
-                                &mut reg.toplevel,
-                                &mut reg.item_map,
-                                Toplevel(name, typ),
-                                name,
-                                ItemKind::Toplevel,
-                                is_video,
+                            reg.add_symbol(
+                                t.intern("name", reg),
+                                SymbolBody::Struct {
+                                    union: category == Some("union"),
+                                    members,
+                                },
                             );
                         }
                         _ => {}
@@ -889,65 +914,38 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                 match n.attribute("type") {
                     // <enums name="API Constants" comment="Vulkan hardcoded constants - not an enumerated type, part of the header boilerplate">
                     None => {
-                        for e in iter_children(n) {
+                        for e in node_iter_children(n) {
                             assert_eq!(e.tag_name().name(), "enum");
-                            let name = e.intern("name", reg);
-
                             // <enum name="VK_LUID_SIZE_KHR" alias="VK_LUID_SIZE"/>
-                            if try_alias(e, reg, is_video) {
+                            if try_alias(e, reg) {
                                 continue;
                             }
 
                             // <enum type="uint32_t" value="256" name="VK_MAX_PHYSICAL_DEVICE_NAME_SIZE"/>
-                            let ty = e.intern("type", reg);
-                            buf.clear();
-                            buf.push_str(e.get("value")); // owned due to needing to mutate
-
-                            // junk like '(~0ULL)' (ie. unsigned long long ie. u64) is not valid rust
-                            // the NOT operator is ! instead of ~ and specifying bit width is not neccessary (I hope)
-
-                            // replace ~ with !
-                            assert!(buf.is_ascii()); // operating on bytes like this is safe only for ascii
-                            unsafe {
-                                for b in buf.as_bytes_mut() {
-                                    if *b == '~' as u8 {
-                                        *b = '!' as u8;
-                                    }
-                                }
-                            }
-
-                            // if the expression is wrapped in parentheses, remove them
-                            if buf.chars().next().unwrap() == '(' {
-                                buf.pop();
-                                buf.remove(0);
-                            }
-
-                            // remove the bit width specifiers - I assume this is valid since rust doesn't allow integers
-                            // to be implicitly cast implying that the literal must start at the target bitwidth
-                            buf.retain(|c| (c != 'L') && (c != 'U') && (c != 'F'));
-
-                            let typ = ToplevelBody::Constant {
-                                ty,
-                                val: buf.intern(reg),
+                            let ty = {
+                                let code = e.get("type");
+                                // FIXME this is usually just an integer, it seems wasteful to be calling this allocating function just for that
+                                parse_type(code, false, reg).1
                             };
 
-                            add_item(
-                                &mut reg.toplevel,
-                                &mut reg.item_map,
-                                Toplevel(name, typ),
-                                name,
-                                ItemKind::Toplevel,
-                                is_video,
+                            buf.clear();
+                            buf.push_str(e.get("value"));
+                            numeric_expression_rustify(&mut buf);
+
+                            reg.add_symbol(
+                                e.intern("name", reg),
+                                SymbolBody::Constant {
+                                    ty,
+                                    val: buf.clone(),
+                                },
                             );
                         }
                     }
                     // <enums name="VkImageLayout" type="enum">
                     category @ Some("enum" | "bitmask") => {
                         assert_eq!(n.tag_name().name(), "enums");
-                        let name = n.intern("name", reg);
-
                         let mut members = Vec::new();
-                        for e in iter_children(n) {
+                        for e in node_iter_children(n) {
                             match e.tag_name().name() {
                                 "enum" => {}
                                 "comment" | "unused" => continue, // I don't think tracking unused values is ever useful
@@ -973,30 +971,24 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                         }
 
                         // FIXME merge the enum variants for more straightforward code
-                        let typ = match category {
-                            Some("enum") => ToplevelBody::Enum { members },
-                            Some("bitmask") => ToplevelBody::BitmaskBits { members },
-                            _ => unreachable!(),
-                        };
-
-                        add_item(
-                            &mut reg.toplevel,
-                            &mut reg.item_map,
-                            Toplevel(name, typ),
-                            name,
-                            ItemKind::Toplevel,
-                            is_video,
+                        reg.add_symbol(
+                            n.intern("name", reg),
+                            match category {
+                                Some("enum") => SymbolBody::Enum { members },
+                                Some("bitmask") => SymbolBody::BitmaskBits { members },
+                                _ => unreachable!(),
+                            },
                         );
                     }
                     _ => unimplemented!(),
                 }
             }
             "commands" => {
-                for c in iter_children(n) {
+                for c in node_iter_children(n) {
                     assert_eq!(c.tag_name().name(), "command");
 
                     // <command name="vkResetQueryPoolEXT" alias="vkResetQueryPool"/>
-                    if try_alias(c, reg, is_video) {
+                    if try_alias(c, reg) {
                         continue;
                     }
 
@@ -1006,13 +998,13 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                     //     <param optional="true">const <type>VkAllocationCallbacks</type>* <name>pAllocator</name></param>
                     //     <param><type>VkInstance</type>* <name>pInstance</name></param>
                     // </command>
-                    let mut children = iter_children(c);
+                    let mut children = node_iter_children(c);
 
                     let (name, return_type) = {
                         let proto = children.next().unwrap();
 
                         buf.clear();
-                        collect_node_text(proto, &mut buf);
+                        node_collect_text(proto, &mut buf);
 
                         let (name, ty) = parse_type(&buf, true, reg);
                         (name.unwrap(), ty)
@@ -1027,7 +1019,7 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                         }
 
                         buf.clear();
-                        collect_node_text(p, &mut buf);
+                        node_collect_text(p, &mut buf);
                         let (name, ty) = parse_type(&buf, true, reg);
 
                         params.push(CommandParameter {
@@ -1044,18 +1036,12 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                         })
                     }
 
-                    let typ = ToplevelBody::Command {
-                        return_type,
-                        params,
-                    };
-
-                    add_item(
-                        &mut reg.toplevel,
-                        &mut reg.item_map,
-                        Toplevel(name, typ),
+                    reg.add_symbol(
                         name,
-                        ItemKind::Toplevel,
-                        is_video,
+                        SymbolBody::Command {
+                            return_type,
+                            params,
+                        },
                     );
                 }
             }
@@ -1068,26 +1054,14 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
             //         <type name="VK_NULL_HANDLE"/>
             //     </require>
             "feature" => {
-                let name = n.intern("name", reg);
-
                 let children = convert_section_children(n, None, reg);
-
-                let typ = Feature {
-                    name,
+                reg.add_feature(Feature {
+                    name: n.intern("name", reg),
                     api: n.intern("api", reg),
                     number: n.intern("number", reg),
                     protect: n.attribute("protect").map(|s| s.intern(reg)),
                     children,
-                };
-
-                add_item(
-                    &mut reg.features,
-                    &mut reg.item_map,
-                    typ,
-                    name,
-                    ItemKind::Feature,
-                    is_video,
-                );
+                });
             }
             // <extensions comment="Vulkan extension interface definitions">
             //     <extension name="VK_KHR_surface" number="1" type="instance" author="KHR" contact="James Jones @cubanismo,Ian Elliott @ianelliottus" supported="vulkan">
@@ -1102,19 +1076,13 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
             //             <type name="VkPresentModeKHR"/>
             //             <typ
             "extensions" => {
-                for e in iter_children(n) {
+                for e in node_iter_children(n) {
                     let name = e.intern("name", reg);
 
                     // this is in fact an extension, it needs to have a number
                     // video.xml does not have this number yay!
-                    let extnumber = e
-                        .attribute("number")
-                        .map(|s| s.parse().unwrap())
-                        .unwrap_or_else(|| {
-                            assert!(is_video, "vk.xml must have number attribute");
-                            0
-                        });
-                    let children = convert_section_children(e, Some(extnumber), reg);
+                    let extnumber = e.attribute("number").map(|s| s.parse().unwrap());
+
                     let deprecatedby = e.attribute("deprecatedby").and_then(|s| {
                         // thanks VK_NV_glsl_shader
                         if s.is_empty() {
@@ -1124,9 +1092,10 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                         }
                     });
 
-                    let typ = Extension {
+                    let children = convert_section_children(e, extnumber, reg);
+                    reg.add_extension(Extension {
                         name,
-                        number: extnumber,
+                        number: extnumber.unwrap_or(0),
                         sortorder: e.attribute("sortorder").map(|s| s.parse().unwrap()),
                         author: e.attribute("author").map(|s| s.to_owned()),
                         contact: e.attribute("contact").map(|s| s.to_owned()),
@@ -1142,16 +1111,7 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                         provisional: e.attribute("provisional") == Some("true"),
                         specialuse: parse_comma_separated(e.attribute("specialuse"), reg),
                         children,
-                    };
-
-                    add_item(
-                        &mut reg.extensions,
-                        &mut reg.item_map,
-                        typ,
-                        name,
-                        ItemKind::Extension,
-                        is_video,
-                    );
+                    });
                 }
             }
             // <formats>
@@ -1160,7 +1120,7 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
             //         <component name="G" bits="4" numericFormat="UNORM"/>
             //     </format>
             "formats" => {
-                for format in iter_children(n) {
+                for format in node_iter_children(n) {
                     let block_extent = format.attribute("blockExtent").map(|s| {
                         let mut split = s.split_terminator(',').map(|s| s.parse::<u8>().unwrap());
                         [
@@ -1169,6 +1129,7 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                             split.next().unwrap(),
                         ]
                     });
+
                     let chroma = format.attribute("chroma").map(|s| match s {
                         "420" => YCBREncoding::E420,
                         "422" => YCBREncoding::E422,
@@ -1180,7 +1141,7 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                     let mut planes = Vec::new();
                     let mut spirvimageformats = Vec::new();
 
-                    for child in iter_children(format) {
+                    for child in node_iter_children(format) {
                         match child.tag_name().name() {
                             "component" => {
                                 let numeric_format = match child.get("numericFormat") {
@@ -1223,9 +1184,8 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                         }
                     }
 
-                    let name = format.intern("name", reg);
-                    let typ = Format {
-                        name,
+                    reg.add_format(Format {
+                        name: format.intern("name", reg),
                         class: format.intern("class", reg),
                         blocksize: format.get("blockSize").parse().unwrap(),
                         texels_per_block: format.get("texelsPerBlock").parse().unwrap(),
@@ -1236,34 +1196,21 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
                         components,
                         planes,
                         spirvimageformats,
-                    };
-
-                    add_item(
-                        &mut reg.formats,
-                        &mut reg.item_map,
-                        typ,
-                        name,
-                        ItemKind::Format,
-                        is_video,
-                    );
+                    });
                 }
             }
             tag @ ("spirvextensions" | "spirvcapabilities") => {
-                for c in iter_children(n) {
-                    let name = c.intern("name", reg);
-                    let enables = convert_spirv_enable(c, reg);
-
-                    let typ = SpirvExtCap(name, enables);
-
-                    let (kind, vec) = match tag {
-                        "spirvextensions" => (ItemKind::SpirvExtension, &mut reg.spirv_extensions),
-                        "spirvcapabilities" => {
-                            (ItemKind::SpirvCapability, &mut reg.spirv_capabilities)
-                        }
-                        _ => unreachable!(),
+                for c in node_iter_children(n) {
+                    let ext_cap = SpirvExtCap {
+                        name: c.intern("name", reg),
+                        enables: convert_spirv_enable(c, reg),
                     };
 
-                    add_item(vec, &mut reg.item_map, typ, name, kind, is_video);
+                    match tag {
+                        "spirvextensions" => reg.add_spirv_extension(ext_cap),
+                        "spirvcapabilities" => reg.add_spirv_capability(ext_cap),
+                        _ => unreachable!(),
+                    };
                 }
             }
             other => unimplemented!("Aaaaa {} aaa", other),
@@ -1271,9 +1218,33 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, is_video: bool) {
     }
 }
 
+// tranforms C numeric expressions into those accepted by rust
+fn numeric_expression_rustify(buf: &mut String) {
+    // junk like '(~0ULL)' (ie. unsigned long long ie. u64) is not valid rust
+    // the NOT operator is ! instead of ~ and specifying bit width is not neccessary (I hope)
+    // replace ~ with !
+    assert!(buf.is_ascii());
+    // operating on bytes like this is safe only for ascii
+    unsafe {
+        for b in buf.as_bytes_mut() {
+            if *b == '~' as u8 {
+                *b = '!' as u8;
+            }
+        }
+    }
+    // if the expression is wrapped in parentheses, remove them
+    if buf.chars().next().unwrap() == '(' {
+        buf.pop();
+        buf.remove(0);
+    }
+    // remove the bit width specifiers - I assume this is valid since rust doesn't allow integers
+    // to be implicitly cast implying that the literal must start at the target bitwidth
+    buf.retain(|c| (c != 'L') && (c != 'U') && (c != 'F'));
+}
+
 fn convert_spirv_enable(n: Node, int: &Interner) -> Vec<SpirvEnable> {
     let mut converted = Vec::new();
-    for enable in iter_children(n) {
+    for enable in node_iter_children(n) {
         assert!(enable.tag_name().name() == "enable");
 
         let attrs = enable.attributes();
@@ -1308,10 +1279,10 @@ fn convert_spirv_enable(n: Node, int: &Interner) -> Vec<SpirvEnable> {
 fn convert_section_children(
     n: Node,
     ext_number: Option<u32>,
-    reg: &Registry,
+    reg: &mut Registry,
 ) -> Vec<FeatureExtensionItem> {
     let mut converted = Vec::new();
-    for child in iter_children(n) {
+    for child in node_iter_children(n) {
         if let Some(comment) = child.attribute("comment") {
             converted.push(FeatureExtensionItem::Comment(comment.to_owned()));
         }
@@ -1319,7 +1290,7 @@ fn convert_section_children(
         match child.tag_name().name() {
             "require" => {
                 let mut items = Vec::new();
-                for item in iter_children(child) {
+                for item in node_iter_children(child) {
                     let tag_name = item.tag_name().name();
 
                     if tag_name == "comment" {
@@ -1329,14 +1300,13 @@ fn convert_section_children(
                     let name = item.intern("name", reg);
                     let iitem = match tag_name {
                         "type" | "command" => {
+                            // QUIRK extensions can introduce aliases, in pursuit of consistency we add them to "the soup"
+                            // though this doesn't seem to be excersized in the registry
                             if let Some(value) = item.attribute("alias") {
-                                InterfaceItem::AddConstant {
-                                    name,
-                                    value: ConstantValue::Alias(value.intern(reg)),
-                                }
-                            } else {
-                                InterfaceItem::Simple { name, api: None }
+                                reg.add_symbol(name, SymbolBody::Alias(value.intern(reg)));
                             }
+
+                            InterfaceItem::Simple { name, api: None }
                         }
                         "enum" => {
                             // I don't think this is applicable here as it is already in a <require> which has its own api property
@@ -1378,18 +1348,21 @@ fn convert_section_children(
                                 }
                             } else {
                                 if let Some(value) = item.attribute("value") {
-                                    InterfaceItem::AddConstant {
-                                        name,
-                                        value: ConstantValue::Value(value.to_owned()),
-                                    }
+                                    let mut val = value.to_owned();
+                                    // QUIRK we have to guess the type of the constant
+                                    let ty = if val.starts_with('"') {
+                                        parse_type("const char *", false, reg).1
+                                    } else {
+                                        // erupt uses u32 for these constants so we will too
+                                        numeric_expression_rustify(&mut val);
+                                        parse_type("uint32_t", false, reg).1
+                                    };
+                                    reg.add_symbol(name, SymbolBody::Constant { ty, val });
                                 } else if let Some(value) = item.attribute("alias") {
-                                    InterfaceItem::AddConstant {
-                                        name,
-                                        value: ConstantValue::Alias(value.intern(reg)),
-                                    }
-                                } else {
-                                    InterfaceItem::Simple { name, api: None }
+                                    reg.add_symbol(name, SymbolBody::Alias(value.intern(reg)));
                                 }
+
+                                InterfaceItem::Simple { name, api: None }
                             }
                         }
                         _ => unimplemented!(),
@@ -1415,7 +1388,7 @@ fn convert_section_children(
                 // "It is unlikely that a type would ever be removed, although this usage is allowed by the schema."
 
                 let mut items = Vec::new();
-                for item in iter_children(child) {
+                for item in node_iter_children(child) {
                     // if you're going to be removing something, obbviously only the name
                     // is neccessary and no other information is given
                     let name = item.intern("name", reg);

@@ -4,22 +4,21 @@ use crate::{
     workarounds::apply_workarounds,
 };
 use generator_lib::{
-    lasso::{Spur},
+    lasso::Spur,
     process_registry_xml,
     type_declaration::{CDecl, Decl, TypeToken},
-    EnumValue, Intern, Interner, ItemKind, Registry,
-    Resolve, Toplevel, ToplevelBody,
+    EnumValue, Intern, Interner, Registry, Resolve, SymbolBody,
 };
-use registry_format::{CtxWrap, GlobalContext, Symbol};
+use registry_format::{CtxWrap, GlobalContext, Pathed};
 use std::{
-    cell::{Cell},
-    collections::{HashMap},
+    cell::Cell,
+    collections::HashMap,
     error::Error,
     fmt::{Display, Write},
     fs::File,
     io::BufWriter,
     ops::Deref,
-    path::{Path},
+    path::Path,
 };
 
 mod format_utils;
@@ -43,14 +42,14 @@ pub struct Section {
 
 pub struct Context {
     pub(crate) reg: Registry,
-    pub(crate) item_ownership: Vec<u32>,
+    pub(crate) symbol_ownership: Vec<u32>,
     pub(crate) sections: Vec<Section>,
 }
 
 impl Context {
     pub fn new(reg: Registry) -> Self {
         let mut s = Self {
-            item_ownership: vec![INVALID_SECTION; reg.toplevel.len()],
+            symbol_ownership: vec![INVALID_SECTION; reg.symbols.len()],
             reg,
             sections: Vec::new(),
         };
@@ -81,14 +80,14 @@ impl Context {
         &self.reg
     }
     pub fn item_ownership(&self) -> &[u32] {
-        &self.item_ownership
+        &self.symbol_ownership
     }
     pub fn sections(&self) -> &[Section] {
         &self.sections
     }
     pub fn get_item_section_idx(&self, name: Spur) -> Option<u32> {
-        let index = self.get_toplevel_idx(name)?;
-        let section = self.item_ownership[index as usize];
+        let index = self.get_symbol_index(name)?;
+        let section = self.symbol_ownership[index as usize];
 
         if section == INVALID_SECTION {
             None
@@ -111,6 +110,10 @@ impl Context {
     fn find_section(&self, name: Spur) -> &Section {
         &self.sections[self.find_section_idx(name) as usize]
     }
+    fn remove_symbol(&mut self, index: u32) {
+        self.reg.remove_symbol(index);
+        self.symbol_ownership.remove(index as usize);
+    }
 }
 
 impl Deref for Context {
@@ -129,8 +132,8 @@ pub fn write_bindings(
 ) -> Result<(), Box<dyn Error>> {
     let mut reg = Registry::new();
 
-    process_registry_xml(&mut reg, vk_xml, false);
-    process_registry_xml(&mut reg, video_xml, true);
+    process_registry_xml(&mut reg, vk_xml);
+    process_registry_xml(&mut reg, video_xml);
 
     let ctx = Context::new(reg);
 
@@ -139,9 +142,10 @@ pub fn write_bindings(
     let mut selected_sections = Vec::new();
     if sections.contains(&"@all") {
         let disabled = "disabled".intern(&ctx);
-        selected_sections.extend(ctx.features.iter().map(|a| a.name));
+        selected_sections.extend(ctx.reg.features.iter().map(|a| a.name));
         selected_sections.extend(
-            ctx.extensions
+            ctx.reg
+                .extensions
                 .iter()
                 .filter(|a| a.supported.get(0) != Some(&disabled))
                 .map(|a| a.name),
@@ -156,12 +160,11 @@ pub fn write_bindings(
     // this needs to know which Bitmask a BitmaskBits specifies the bits for
     let mut bitmask_pairing = HashMap::new();
 
-    for item in &ctx.reg.toplevel {
-        let name = item.0;
-        match item.1 {
-            ToplevelBody::Bitmask { bits_enum, .. } => {
+    for (name, body) in &ctx.reg.symbols {
+        match body {
+            SymbolBody::Bitmask { bits_enum, .. } => {
                 if let Some(bits_enum) = bits_enum {
-                    bitmask_pairing.insert(bits_enum, name);
+                    bitmask_pairing.insert(*bits_enum, *name);
                 }
             }
             _ => {}
@@ -171,9 +174,9 @@ pub fn write_bindings(
     selected_sections.sort_unstable();
 
     // (item index, section index)
-    let mut items = Vec::with_capacity(ctx.reg.toplevel.len());
-    for (i, item) in ctx.reg.toplevel.iter().enumerate() {
-        if let Some(section) = ctx.get_item_section_idx(item.0) {
+    let mut items = Vec::new();
+    for (i, &(name, _)) in ctx.reg.symbols.iter().enumerate() {
+        if let Some(section) = ctx.get_item_section_idx(name) {
             let name = ctx.get_section(section).unwrap().name;
             if selected_sections.binary_search(&name).is_ok() {
                 items.push((i, section));
@@ -229,31 +232,26 @@ pub fn write_bindings(
 
         let writer = section_writer.as_mut().unwrap();
 
-        let item = &ctx.reg.toplevel[item];
-        let name = item.0.wrp(g);
-        match &item.1 {
-            &ToplevelBody::Alias(of) => {
+        let (spur_name, body) = &ctx.reg.symbols[item];
+        let name = spur_name.wrp(g);
+        match body {
+            &SymbolBody::Alias(of) => {
                 if !is_std_type(of, &ctx) {
                     let target = resolve_alias(of, &ctx.reg);
                     match target.1 {
-                        ToplevelBody::BitmaskBits { .. } => continue,
-                        ToplevelBody::Alias { .. } | ToplevelBody::Define { .. } => {
-                            unreachable!("{}", name)
+                        SymbolBody::BitmaskBits { .. } => continue,
+                        SymbolBody::Alias { .. } | SymbolBody::Define { .. } => {
+                            unreachable!();
                         }
-                        ToplevelBody::Constant { .. } => {
-                            let (ty, _) = match target.1 {
-                                ToplevelBody::Constant { ty, val } => (ty, val),
-                                _ => unreachable!(),
-                            };
-
+                        SymbolBody::Constant { ty, .. } => {
                             code2!(
                                 writer,
                                 "pub const {}: {} = {};"
-                                @ name, Symbol(ty).wrp(g), Symbol(target.0).wrp(g)
+                                @ name, ty.as_rust_order(g).wrp(g), Pathed(target.0).wrp(g)
                             )?;
                             continue;
                         }
-                        ToplevelBody::Command { .. } => {
+                        SymbolBody::Command { .. } => {
                             code2!(
                                 writer,
                                 "// TODO alias of command '{}'"
@@ -268,10 +266,10 @@ pub fn write_bindings(
                 code2!(
                     writer,
                     "pub type {} = {};"
-                    @ name, Symbol(of).wrp(g)
+                    @ name, Pathed(of).wrp(g)
                 )?;
             }
-            ToplevelBody::Redeclaration(ty) => {
+            SymbolBody::Redeclaration(ty) => {
                 code2!(
                     writer,
                     "pub type {} = {};"
@@ -279,15 +277,15 @@ pub fn write_bindings(
                 )?;
             }
             // there is nothing to do with defines in rust, just skip them
-            ToplevelBody::Define { .. } => {}
-            ToplevelBody::Included { .. } => {
+            SymbolBody::Define { .. } => {}
+            SymbolBody::Included { .. } => {
                 // verbose error is unnecessary as this is caught in ownership.rs
                 unreachable!("[{}]", name);
             }
-            ToplevelBody::Basetype { .. } => {
+            SymbolBody::Basetype { .. } => {
                 unreachable!("[{}] Cannot process C preprocessor code, this type should be manually replaced in a workaround.", name);
             }
-            ToplevelBody::Bitmask { ty, .. } => {
+            SymbolBody::Bitmask { ty, .. } => {
                 // TODO when we're actually generating semantically valid rust code add #repr(transparent)
                 code2!(
                     writer,
@@ -295,7 +293,7 @@ pub fn write_bindings(
                     @ name, ty.wrp(g)
                 )?;
             }
-            ToplevelBody::Handle {
+            SymbolBody::Handle {
                 object_type,
                 dispatchable,
             } => {
@@ -311,7 +309,7 @@ pub fn write_bindings(
                     @ dispatchable, object_type.wrp(g), name
                 )?;
             }
-            ToplevelBody::Funcpointer { return_type, args } => {
+            SymbolBody::Funcpointer { return_type, args } => {
                 let ret = return_type.as_rust_order(&ctx);
                 let args = Separated::args(args.iter(), |(_, ty), f| {
                     ty.as_rust_order(&ctx).wrp(g).fmt(f)
@@ -322,7 +320,7 @@ pub fn write_bindings(
                     @ name, args, ret.wrp(g)
                 )?;
             }
-            ToplevelBody::Struct { union, members } => {
+            SymbolBody::Struct { union, members } => {
                 let keyword = match union {
                     true => "union",
                     false => "struct",
@@ -340,14 +338,14 @@ pub fn write_bindings(
                     @ keyword, name, members
                 )?;
             }
-            &ToplevelBody::Constant { ty, val } => {
+            SymbolBody::Constant { ty, val } => {
                 code2!(
                     writer,
                     "pub const {}: {} = {};"
-                    @ name, Symbol(ty).wrp(g), val.wrp(g)
+                    @ name, ty.as_rust_order(g).wrp(g), val
                 )?;
             }
-            ToplevelBody::Enum { members } => {
+            SymbolBody::Enum { members } => {
                 let members = Separated::members(members.iter(), |(name, val), f| {
                     let name = name.wrp(g);
                     match val {
@@ -366,7 +364,7 @@ pub fn write_bindings(
                     @ name, members
                 )?;
             }
-            ToplevelBody::BitmaskBits { members } => {
+            SymbolBody::BitmaskBits { members } => {
                 // skip generating empty impl blocks
                 if members.is_empty() {
                     continue;
@@ -374,12 +372,12 @@ pub fn write_bindings(
 
                 // when vulkan has a Bitmask that is reserved for future use and thus has no actual flag values, there are no BitmaskBits defined and the spec omits Bitmask dependency
                 // however of course there are exceptions such as VkSemaphoreCreateFlagBits which is not Cdeclared as a dependency but is actually an item :(
-                let bitmask_name = match bitmask_pairing.get(&item.0) {
+                let bitmask_name = match bitmask_pairing.get(spur_name) {
                     Some(n) => *n,
                     None => continue,
                 };
 
-                let ty = Symbol(get_concrete_type(bitmask_name, &ctx.reg)).wrp(g);
+                let ty = Pathed(get_concrete_type(bitmask_name, &ctx.reg)).wrp(g);
                 let bits = Separated::statements(members.iter(), |(name, val), f| {
                     let name = name.wrp(g);
                     match val {
@@ -403,7 +401,7 @@ pub fn write_bindings(
                     @ bitmask_name.wrp(g), bits
                 )?;
             }
-            ToplevelBody::Command {
+            SymbolBody::Command {
                 return_type,
                 params,
             } => {
@@ -454,49 +452,31 @@ pub fn is_std_type(ty: Spur, int: &Interner) -> bool {
 }
 
 fn apply_renames(ctx: &Context) {
-    // let renames = &[
-    //     ("type", "kind"),
-    //     ("uint8_t", "u8"),
-    //     ("uint16_t", "u16"),
-    //     ("uint32_t", "u32"),
-    //     ("uint64_t", "u64"),
-    //     ("int8_t", "i8"),
-    //     ("int16_t", "i16"),
-    //     ("int32_t", "i32"),
-    //     ("int64_t", "i64"),
-    // ];
-
-    // for (original, rename) in renames {
-    //     ctx.add_rename_with(original.intern(ctx), || rename.intern(ctx));
-    // }
-
-    for item in &ctx.reg.toplevel {
-        let name = item.0;
-        match item.1 {
-            ToplevelBody::Bitmask { bits_enum, .. } => {
+    for (name, body) in &ctx.reg.symbols {
+        match body {
+            SymbolBody::Bitmask { bits_enum, .. } => {
                 if let Some(bits_enum) = bits_enum {
                     // the rest of vulkan still refers to the *Bits structs even though we don't emit them
-                    ctx.add_rename(bits_enum, name);
+                    ctx.add_rename(*bits_enum, *name);
                 }
             }
             _ => {}
         }
     }
 
-    for item in &ctx.reg.toplevel {
-        let name = item.0;
-        match &item.1 {
-            ToplevelBody::Enum { members } => {
-                for (member_name, _val) in members.iter() {
-                    ctx.add_rename_with(*member_name, || {
-                        make_enum_member_rusty(name, *member_name, false, &ctx).intern(&ctx)
+    for (name, body) in &ctx.reg.symbols {
+        match body {
+            SymbolBody::Enum { members } => {
+                for &(member_name, ..) in members.iter() {
+                    ctx.add_rename_with(member_name, || {
+                        make_enum_member_rusty(*name, member_name, false, &ctx).intern(&ctx)
                     });
                 }
             }
-            ToplevelBody::BitmaskBits { members } => {
-                for (member_name, _val) in members.iter() {
-                    ctx.add_rename_with(*member_name, || {
-                        make_enum_member_rusty(name, *member_name, true, &ctx).intern(&ctx)
+            SymbolBody::BitmaskBits { members } => {
+                for &(member_name, ..) in members.iter() {
+                    ctx.add_rename_with(member_name, || {
+                        make_enum_member_rusty(*name, member_name, true, &ctx).intern(&ctx)
                     });
                 }
             }
@@ -587,53 +567,43 @@ fn merge_bitfield_members(members: &[(Spur, CDecl)], reg: &Registry) -> Vec<(Spu
     resolved
 }
 
-// jumps through as many aliases (Toplevel::Alias) as needed and returns the concrete toplevel item,
-// in cases where the provided identifier is not an alias it is returned as is
-fn resolve_alias<'a>(alias: Spur, reg: &'a Registry) -> &'a Toplevel {
+// jumps through as many aliases (Symbol::Alias) as needed and returns the resulting non-alias symbol,
+// in cases where the provided identifier is not an alias it is immediatelly returned back
+fn resolve_alias<'a>(alias: Spur, reg: &'a Registry) -> (Spur, &'a SymbolBody) {
     let mut next = alias;
     loop {
-        let top = reg.get_toplevel(next).unwrap();
-        match top.1 {
-            ToplevelBody::Alias(of) => {
+        let symbol = reg.find_symbol(next).unwrap();
+        match symbol {
+            &SymbolBody::Alias(of) => {
                 next = of;
             }
-            _ => return top,
+            _ => return (next, symbol),
         }
     }
 }
 
-// get the underlying type of a toplevel item (type is roughly synonymous with a toplevel item),
-// the difference between this and resolve_alias is that this also jumps through things preserving
-// the type layout, such as handles or constants this will stop at typedefs as those are
-// handled by bindgen and thus we don't have information about
-fn get_concrete_type(toplevel: Spur, reg: &Registry) -> Spur {
-    let mut toplevel = toplevel;
+// get the underlying type of a symbol, the difference between this and
+// resolve_alias is that this also jumps through things preserving the type
+// layout, such as handles or constants this will stop at typedefs as those
+// are handled by bindgen and thus we don't have information about
+fn get_concrete_type(name: Spur, reg: &Registry) -> Spur {
+    let mut name = name;
     loop {
-        // what if the alias is to something that is added by bindgen and is never in our registry?
-        // bindgen will result in more common types like uint32_t or VkFlags that can be matched by the caller
-        let &(index, ty) = match reg.item_map.get(&toplevel) {
-            Some(some) => some,
-            None => return toplevel,
-        };
-
-        // assert that no weird things are going on as other interface items can't alias this way
-        assert!(ty == ItemKind::Toplevel);
-
-        let top = &reg.toplevel[index as usize];
-        match &top.1 {
-            ToplevelBody::Alias (of) => toplevel = *of,
-            ToplevelBody::Bitmask { ty, .. } => toplevel = *ty,
-            ToplevelBody::Handle { .. } => toplevel = "uint64_t".intern(&reg), // the underlying type of all handles is this 
-            ToplevelBody::Constant { ty, .. } => toplevel = *ty,
-            ToplevelBody::Redeclaration(_) |
-            ToplevelBody::Basetype { .. } |
-            ToplevelBody::Included { .. } |
-            ToplevelBody::Struct { .. } |
-            ToplevelBody::Funcpointer { .. } => return toplevel,
-            ToplevelBody::Command { .. } | ToplevelBody::Define { .. } => unreachable!(),
+        let top = reg.find_symbol(name).unwrap();
+        match top {
+            SymbolBody::Alias (of) => name = *of,
+            SymbolBody::Bitmask { ty, .. } => name = *ty,
+            SymbolBody::Handle { .. } => name = "uint64_t".intern(&reg), // the underlying type of all handles is this 
+            SymbolBody::Constant { .. } => panic!("FIXME somehow unify symbols and more complex types?"),
+            SymbolBody::Redeclaration(_) |
+            SymbolBody::Basetype { .. } |
+            SymbolBody::Included { .. } |
+            SymbolBody::Struct { .. } |
+            SymbolBody::Funcpointer { .. } => return name,
+            SymbolBody::Command { .. } | SymbolBody::Define { .. } => unreachable!(),
             // even though it's called bits, it's just an enum with different semantics
-            ToplevelBody::BitmaskBits { .. } |
-            ToplevelBody::Enum { .. } => unreachable!("This doesn't really make sense as in vulkan 'enum's only have integer values but no types."),
+            SymbolBody::BitmaskBits { .. } |
+            SymbolBody::Enum { .. } => unreachable!("This doesn't really make sense as in vulkan 'enum's only have integer values but no types."),
         }
     }
 }
@@ -704,9 +674,10 @@ fn make_enum_member_rusty(
     //  VkFormatFeatureFlags2
     //  VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT
 
-    // we also can have identifiers that begin with digits when stripped of their boilerplate
-    // this is obviously invalid rust and we need to find something to put before it
-    // current solution will be to keep track of the starting character of the previous chunk and use that
+    // we also can have identifiers that begin with digits when stripped of
+    // their boilerplate this is obviously invalid rust and we need to find
+    // something to put before it current solution will be to keep track of the
+    // starting character of the previous chunk and use that
     //  VkShadingRatePaletteEntryNV
     //  VK_SHADING_RATE_PALETTE_ENTRY_16_INVOCATIONS_PER_PIXEL_NV
     //  => E16InvocationsPerPixel

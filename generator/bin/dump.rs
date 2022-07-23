@@ -21,31 +21,27 @@ fn main() {
     let mut reg = Registry::new();
 
     if vk {
-        process_registry_xml(
-            &mut reg,
-            &std::fs::read_to_string("/home/eg/Downloads/vk.xml").unwrap(),
-            false,
-        );
+        process_registry_xml(&mut reg, &std::fs::read_to_string("./vk.xml").unwrap());
     }
 
     if video {
-        process_registry_xml(
-            &mut reg,
-            &std::fs::read_to_string("/home/eg/Downloads/video.xml").unwrap(),
-            true,
-        );
+        process_registry_xml(&mut reg, &std::fs::read_to_string("./video.xml").unwrap());
     }
-    
+
     write!(reg_file, "{:#?}", &reg).unwrap();
-    
+
     let ctx = Context::new(reg);
 
     let mut own_file = BufWriter::new(
-        File::create(concat!(env!("CARGO_MANIFEST_DIR"), "/../generated/ownership.txt")).unwrap(),
+        File::create(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../generated/ownership.txt"
+        ))
+        .unwrap(),
     );
 
     for (i, section) in ctx.item_ownership().iter().enumerate() {
-        let name = ctx.reg().toplevel[i].0;
+        let name = ctx.reg().symbols[i].0;
         let section = match *section {
             INVALID_SECTION => "INVALID".intern(&ctx),
             other => ctx.sections()[other as usize].name,

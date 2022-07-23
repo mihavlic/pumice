@@ -6,10 +6,9 @@ use std::{
 use lasso::Spur;
 
 use crate::{
-    type_declaration::{CDecl},
-    CommandParameter, Component, ConstantValue, EnumValue, ExtendMethod, Extension, Feature,
-    FeatureExtensionItem, Format, InterfaceItem, Interner, NumericFormat, Plane, Platform,
-    Registry, SpirvEnable, SpirvExtCap, Tag, Toplevel, ToplevelBody, YCBREncoding,
+    type_declaration::CDecl, CommandParameter, Component, ConstantValue, EnumValue, ExtendMethod,
+    Extension, Feature, FeatureExtensionItem, Format, InterfaceItem, Interner, NumericFormat,
+    Plane, Platform, Registry, SpirvEnable, SpirvExtCap, SymbolBody, Tag, YCBREncoding,
 };
 
 // ew, cursed thing that formats owned iterators as slices
@@ -87,11 +86,11 @@ impl<'a> Debug for WithInterner<'a, &Tag> {
     }
 }
 
-impl<'a> Debug for WithInterner<'a, &Toplevel> {
+impl<'a> Debug for WithInterner<'a, &(Spur, SymbolBody)> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let reg = self.0;
         let s = self.1;
-        f.debug_tuple("Toplevel")
+        f.debug_tuple("Symbol")
             .field(&s.0.wrp(reg))
             .field(&s.1.wrp(reg))
             .finish()
@@ -203,11 +202,6 @@ impl<'a> Debug for WithInterner<'a, &InterfaceItem> {
                 .field("api", &api.wrp(reg))
                 .field("method", &method.wrp(reg))
                 .finish(),
-            InterfaceItem::AddConstant { name, value } => f
-                .debug_struct("AddConstant")
-                .field("name", &name.wrp(reg))
-                .field("value", &value.wrp(reg))
-                .finish(),
         }
     }
 }
@@ -236,28 +230,28 @@ impl<'a> Debug for WithInterner<'a, &ConstantValue> {
     }
 }
 
-impl<'a> Debug for WithInterner<'a, &ToplevelBody> {
+impl<'a> Debug for WithInterner<'a, &SymbolBody> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let reg = self.0;
         match self.1 {
-            ToplevelBody::Alias(of) => f.debug_tuple("Alias").field(&of.wrp(reg)).finish(),
-            ToplevelBody::Redeclaration(ty) => {
+            SymbolBody::Alias(of) => f.debug_tuple("Alias").field(&of.wrp(reg)).finish(),
+            SymbolBody::Redeclaration(ty) => {
                 f.debug_tuple("Redeclaration").field(&ty.wrp(reg)).finish()
             }
-            ToplevelBody::Define { body } => f.debug_struct("Define").field("body", body).finish(),
-            ToplevelBody::Included { header } => f
+            SymbolBody::Define { body } => f.debug_struct("Define").field("body", body).finish(),
+            SymbolBody::Included { header } => f
                 .debug_struct("Included")
                 .field("header", &header.wrp(reg))
                 .finish(),
-            ToplevelBody::Basetype { code } => {
+            SymbolBody::Basetype { code } => {
                 f.debug_struct("Basetype").field("code", code).finish()
             }
-            ToplevelBody::Bitmask { ty, bits_enum } => f
+            SymbolBody::Bitmask { ty, bits_enum } => f
                 .debug_struct("Bitmask")
                 .field("ty", &ty.wrp(reg))
                 .field("bits_enum", &bits_enum.wrp(reg))
                 .finish(),
-            ToplevelBody::Handle {
+            SymbolBody::Handle {
                 object_type,
                 dispatchable,
             } => f
@@ -265,7 +259,7 @@ impl<'a> Debug for WithInterner<'a, &ToplevelBody> {
                 .field("object_type", &object_type.wrp(reg))
                 .field("dispatchable", dispatchable)
                 .finish(),
-            ToplevelBody::Funcpointer { return_type, args } => f
+            SymbolBody::Funcpointer { return_type, args } => f
                 .debug_struct("Funcpointer")
                 .field("return_type", &return_type.wrp(reg))
                 .field(
@@ -273,7 +267,7 @@ impl<'a> Debug for WithInterner<'a, &ToplevelBody> {
                     &SliceDebug::new(args.iter().map(|(name, ty)| (name.wrp(reg), ty.wrp(reg)))),
                 )
                 .finish(),
-            ToplevelBody::Struct { union, members } => f
+            SymbolBody::Struct { union, members } => f
                 .debug_struct("Struct")
                 .field("union", union)
                 .field(
@@ -285,12 +279,12 @@ impl<'a> Debug for WithInterner<'a, &ToplevelBody> {
                     ),
                 )
                 .finish(),
-            ToplevelBody::Constant { ty, val } => f
+            SymbolBody::Constant { ty, val } => f
                 .debug_struct("Constant")
                 .field("ty", &ty.wrp(reg))
-                .field("val", &val.wrp(reg))
+                .field("val", &val)
                 .finish(),
-            ToplevelBody::Enum { members } => f
+            SymbolBody::Enum { members } => f
                 .debug_struct("Enum")
                 .field(
                     "members",
@@ -301,7 +295,7 @@ impl<'a> Debug for WithInterner<'a, &ToplevelBody> {
                     ),
                 )
                 .finish(),
-            ToplevelBody::BitmaskBits { members } => f
+            SymbolBody::BitmaskBits { members } => f
                 .debug_struct("BitmaskBits")
                 .field(
                     "members",
@@ -312,7 +306,7 @@ impl<'a> Debug for WithInterner<'a, &ToplevelBody> {
                     ),
                 )
                 .finish(),
-            ToplevelBody::Command {
+            SymbolBody::Command {
                 return_type,
                 params,
             } => f
@@ -442,9 +436,12 @@ impl<'a> Debug for WithInterner<'a, &SpirvExtCap> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let reg = self.0;
         let s = self.1;
-        f.debug_tuple("SpirvExtCap")
-            .field(&s.0.wrp(reg))
-            .field(&SliceDebug::new(s.1.iter().map(|a| a.wrp(reg))))
+        f.debug_struct("SpirvExtCap")
+            .field("name", &s.name.wrp(reg))
+            .field(
+                "enables",
+                &SliceDebug::new(s.enables.iter().map(|a| a.wrp(reg))),
+            )
             .finish()
     }
 }
@@ -489,7 +486,7 @@ impl Debug for Registry {
         let platforms = &SliceDebug::new(self.platforms.iter().map(|a| a.wrp(reg)));
         let tags = &SliceDebug::new(self.tags.iter().map(|a| a.wrp(reg)));
         let headers = &SliceDebug::new(self.headers.iter().map(|a| a.wrp(reg)));
-        let toplevel = &SliceDebug::new(self.toplevel.iter().map(|a| a.wrp(reg)));
+        let symbols = &SliceDebug::new(self.symbols.iter().map(|a| a.wrp(reg)));
         let features = &SliceDebug::new(self.features.iter().map(|a| a.wrp(reg)));
         let extensions = &SliceDebug::new(self.extensions.iter().map(|a| a.wrp(reg)));
         let formats = &SliceDebug::new(self.formats.iter().map(|a| a.wrp(reg)));
@@ -501,7 +498,7 @@ impl Debug for Registry {
             .field("platforms", platforms)
             .field("tags", tags)
             .field("headers", headers)
-            .field("toplevel", toplevel)
+            .field("symbols", symbols)
             .field("features", features)
             .field("extensions", extensions)
             .field("formats", formats)

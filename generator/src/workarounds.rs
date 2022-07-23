@@ -1,10 +1,10 @@
-use generator_lib::{lasso::Spur, type_declaration::parse_type, Intern, Toplevel, ToplevelBody};
+use generator_lib::{lasso::Spur, type_declaration::parse_type, Intern, SymbolBody};
 
 use crate::Context;
 
 enum Workaround {
     Remove,
-    Replace(ToplevelBody),
+    Replace(SymbolBody),
     SetOwnership(u32),
 }
 
@@ -21,12 +21,12 @@ fn sorted_get_all(name: Spur, buf: &[(Spur, Workaround)]) -> Option<&[(Spur, Wor
         }
     }
 
-    let mut end = index;
-    while index <= buf.len() {
-        end += 1;
+    let mut end = index + 1;
+    while end < buf.len() {
         if buf[end].0 != name {
             break;
         }
+        end += 1;
     }
 
     Some(&buf[start..end])
@@ -34,10 +34,10 @@ fn sorted_get_all(name: Spur, buf: &[(Spur, Workaround)]) -> Option<&[(Spur, Wor
 
 pub fn apply_workarounds(ctx: &mut Context) {
     let alias =
-        |arg: &str| -> Workaround { Workaround::Replace(ToplevelBody::Alias(arg.intern(ctx))) };
+        |arg: &str| -> Workaround { Workaround::Replace(SymbolBody::Alias(arg.intern(ctx))) };
 
     let redeclare = |arg: &str| -> Workaround {
-        Workaround::Replace(ToplevelBody::Redeclaration(parse_type(arg, false, ctx).1))
+        Workaround::Replace(SymbolBody::Redeclaration(parse_type(arg, false, ctx).1))
     };
 
     let ownership = |arg: &str| -> Workaround {
@@ -149,44 +149,29 @@ pub fn apply_workarounds(ctx: &mut Context) {
 
     workarounds.sort_by_key(|s| s.0);
 
-    let Context {
-        reg,
-        item_ownership,
-        ..
-    } = ctx;
-
     let mut i = 0;
-    'outer: while i < reg.toplevel.len() {
-        let Toplevel(name, body) = &mut reg.toplevel[i];
+    'outer: while i < ctx.reg.symbols.len() {
+        let (name, body) = &mut ctx.reg.symbols[i];
 
         for (_, method) in sorted_get_all(*name, &workarounds).unwrap_or(&[]) {
             match method {
                 Workaround::Remove => {
-                    let name = *name; // borrowchecker things
-                    reg.toplevel.remove(i);
-                    reg.item_map.remove(&name).unwrap();
-                    item_ownership.remove(i);
-
-                    // need to adjust all the following indexes in the item_map because we've just deleted an element
-                    for Toplevel(name, ..) in &reg.toplevel[i..] {
-                        reg.item_map.get_mut(name).unwrap().0 -= 1;
-                    }
-
+                    ctx.remove_symbol(i as u32);
                     continue 'outer;
                 }
                 Workaround::Replace(with) => {
-                    // technically the clone here is unneccessary as each workaround will be applied only once
+                    // FIXME technically the clone here is unneccessary as each workaround will be applied only once
                     *body = with.clone();
                 }
                 Workaround::SetOwnership(idx) => {
-                    item_ownership[i] = *idx;
+                    ctx.symbol_ownership[i] = *idx;
                 }
             }
         }
 
         match body {
-            ToplevelBody::Enum { members } => prune_vec(members, &workarounds),
-            ToplevelBody::BitmaskBits { members } => prune_vec(members, &workarounds),
+            SymbolBody::Enum { members } => prune_leaf_vec(members, &workarounds),
+            SymbolBody::BitmaskBits { members } => prune_leaf_vec(members, &workarounds),
             _ => {}
         }
 
@@ -194,7 +179,7 @@ pub fn apply_workarounds(ctx: &mut Context) {
     }
 }
 
-fn prune_vec<T>(vec: &mut Vec<(Spur, T)>, workarounds: &Vec<(Spur, Workaround)>) {
+fn prune_leaf_vec<T>(vec: &mut Vec<(Spur, T)>, workarounds: &Vec<(Spur, Workaround)>) {
     let mut i = 0;
     while i < vec.len() {
         if let Ok(j) = workarounds.binary_search_by_key(&vec[i].0, |s| s.0) {

@@ -88,9 +88,9 @@ impl<T: RegistryDisplay> RegistryDisplay for Option<T> {
     }
 }
 
-pub struct Symbol(pub Spur);
+pub struct Pathed(pub Spur);
 
-impl RegistryDisplay for Symbol {
+impl RegistryDisplay for Pathed {
     fn format(&self, ctx: &GlobalContext, f: &mut Formatter<'_>) -> std::fmt::Result {
         fmt_symbol_path(self.0, &ctx.ctx, ctx.cur_section.get(), f)
     }
