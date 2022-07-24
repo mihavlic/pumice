@@ -1,15 +1,10 @@
-use std::{
-    fmt::{Debug, Write},
-    ops::Deref,
-};
+use std::fmt::{Debug, Display, Write};
 
-use lasso::Spur;
-
-use crate::{Intern, Interner, Resolve};
+use crate::interner::{Intern, Interner, UniqueStr};
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum TypeToken {
-    Ident(Spur),
+    Ident(UniqueStr),
     Ptr,
     Const,
     // only in rust-ed type declarations
@@ -20,55 +15,9 @@ pub enum TypeToken {
 pub struct Decl {
     pub tokens: Vec<TypeToken>,
     // only one of these should be possible at a time
-    pub array_len: Option<Spur>,
+    pub array_len: Option<UniqueStr>,
     // bitfield! yay! https://docs.microsoft.com/en-us/cpp/c-language/c-bit-fields?view=msvc-170
     pub bitfield_len: Option<u32>,
-}
-
-impl Decl {
-    // reorder and modify to match rust syntax inplace
-    fn make_rust_order(&mut self, int: &Interner) {
-        let Decl { tokens, .. } = self;
-
-        // given that the input is C, non primitive types are prefixed with "struct"
-        // rust doesn't care, we need to do this here rather in the main loop as the const
-        // swapping part would need to check for this and such
-        tokens.retain(|t| match t {
-            TypeToken::Ident(ident) => int.resolve(ident).deref() != "struct",
-            _ => true,
-        });
-
-        let mut i = 0;
-        // Const 'char'** => 'char' Const* Mut*
-        while i < tokens.len() {
-            match tokens[i] {
-                TypeToken::Ident(_ident) => {}
-                // 'char'* => char Mut *
-                TypeToken::Ptr => {
-                    if let Some(prev) = i.checked_sub(1) {
-                        match tokens[prev] {
-                            TypeToken::Const => {}
-                            _ => {
-                                tokens.insert(i, TypeToken::Mut);
-                                i += 1;
-                            }
-                        }
-                    }
-                }
-                // Const 'char' => 'char' Const
-                TypeToken::Const => {
-                    if let Some(TypeToken::Ident(_)) = tokens.get(i + 1) {
-                        tokens.swap(i, i + 1);
-                        i += 1;
-                    }
-                }
-                TypeToken::Mut => unreachable!(),
-            }
-            i += 1;
-        }
-        // 'char' Const* Mut* => *Mut *Const char
-        tokens.reverse();
-    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -78,15 +27,7 @@ pub struct CDecl(pub Decl);
 pub struct RustDecl(pub Decl);
 
 impl CDecl {
-    pub fn as_rust_order(&self, int: &Interner) -> RustDecl {
-        self.clone().into_rust_order(int)
-    }
-    pub fn into_rust_order(self, int: &Interner) -> RustDecl {
-        let mut decl = self.0;
-        decl.make_rust_order(int);
-        RustDecl(decl)
-    }
-    pub fn fmt(&self, f: &mut std::fmt::Formatter<'_>, int: &Interner) -> std::fmt::Result {
+    pub fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Decl {
             tokens, array_len, ..
         } = &self.0;
@@ -101,13 +42,19 @@ impl CDecl {
             tokens = &tokens[..tokens.len() - 1];
         }
 
-        fmt_tokens(tokens, &|ident, f| f.write_str(&ident.resolve(int)), f)?;
+        fmt_tokens(tokens, &|ident, f| f.write_str(&ident.resolve()), f)?;
 
         if let Some(size) = array_len {
-            f.write_fmt(format_args!("[{}]", size.resolve(int)))?;
+            f.write_fmt(format_args!("[{}]", size.resolve()))?;
         }
 
         Ok(())
+    }
+}
+
+impl Display for CDecl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("dummy")
     }
 }
 
@@ -115,7 +62,7 @@ pub fn fmt_tokens(
     tokens: &[TypeToken],
     // this function is used in two places, in one we want a readable text that simply specifies all the type structure in C syntax
     // the other is actually rust type syntax and needs identifiers to contain paths to their respective modules, as such you get this:
-    fmt_ident: &dyn Fn(Spur, &mut std::fmt::Formatter) -> std::fmt::Result,
+    fmt_ident: &dyn Fn(&UniqueStr, &mut std::fmt::Formatter) -> std::fmt::Result,
     f: &mut std::fmt::Formatter,
 ) -> std::fmt::Result {
     for (i, token) in tokens.iter().enumerate() {
@@ -126,7 +73,7 @@ pub fn fmt_tokens(
                 TypeToken::Mut => "mut",
                 TypeToken::Ptr => "*",
                 TypeToken::Ident(ty) => {
-                    fmt_ident(*ty, f)?;
+                    fmt_ident(ty, f)?;
                     break;
                 }
             };
@@ -140,7 +87,7 @@ pub fn fmt_tokens(
     Ok(())
 }
 
-pub fn parse_type(str: &str, has_name: bool, int: &Interner) -> (Option<Spur>, CDecl) {
+pub fn parse_type(str: &str, has_name: bool, int: &Interner) -> (Option<UniqueStr>, CDecl) {
     let mut out = Decl {
         tokens: Vec::new(),
         array_len: None,
@@ -202,7 +149,7 @@ pub fn parse_type(str: &str, has_name: bool, int: &Interner) -> (Option<Spur>, C
     if bitfield {
         assert!(out.array_len.is_none());
         let size = match out.tokens.pop() {
-            Some(TypeToken::Ident(str)) => int.resolve(&str).parse::<u32>().unwrap(),
+            Some(TypeToken::Ident(str)) => str.resolve().parse::<u32>().unwrap(),
             _ => unreachable!(),
         };
         out.bitfield_len = Some(size);
@@ -268,21 +215,9 @@ fn test_type_parse_convert() {
         TypeToken::Ptr,
         TypeToken::Ptr,
     ];
-    let r = vec![
-        TypeToken::Ptr,
-        TypeToken::Mut,
-        TypeToken::Ptr,
-        TypeToken::Const,
-        TypeToken::Ptr,
-        TypeToken::Const,
-        TypeToken::Ident("VkAccelerationStructureBuildRangeInfoKHR".intern(&int)),
-    ];
 
     let c_src = "const VkAccelerationStructureBuildRangeInfoKHR *const**";
-    let (_, mut decl) = parse_type(c_src, false, &int);
+    let (_, decl) = parse_type(c_src, false, &int);
 
     assert_eq!(decl.0.tokens, c);
-
-    decl.0.make_rust_order(&int);
-    assert_eq!(decl.0.tokens, r);
 }

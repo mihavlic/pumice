@@ -4,7 +4,7 @@ use std::{
 };
 
 use generator::{Context, INVALID_SECTION};
-use generator_lib::{process_registry_xml, Intern, Registry, Resolve};
+use generator_lib::{interner::Intern, process_registry_xml, Registry};
 
 fn main() {
     let mut reg_file = BufWriter::new(
@@ -47,12 +47,6 @@ fn main() {
             other => ctx.sections()[other as usize].name,
         };
 
-        writeln!(
-            own_file,
-            "{}: {}",
-            name.resolve(&ctx),
-            section.resolve(&ctx)
-        )
-        .unwrap();
+        writeln!(own_file, "{}: {}", name.resolve(), section.resolve()).unwrap();
     }
 }

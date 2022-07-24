@@ -4,14 +4,13 @@ use crate::{
     workarounds::apply_workarounds,
 };
 use generator_lib::{
-    lasso::Spur,
+    interner::{Intern, UniqueStr},
     process_registry_xml,
     type_declaration::{CDecl, Decl, TypeToken},
-    EnumValue, Intern, Interner, Registry, Resolve, SymbolBody,
+    EnumValue, Registry, Symbol, SymbolBody,
 };
-use registry_format::{CtxWrap, GlobalContext, Pathed};
+use registry_format::Pathed;
 use std::{
-    cell::Cell,
     collections::HashMap,
     error::Error,
     fmt::{Display, Write},
@@ -27,8 +26,6 @@ mod registry_format;
 mod workarounds;
 
 pub enum SectionKind {
-    // this makes for redundant information as the header path is also used for the name, however this doesn't increase the size of the enum and makes the design more consistent
-    // Header(Spur),
     Feature(u32),
     Extension(u32),
 }
@@ -36,7 +33,7 @@ pub enum SectionKind {
 pub const INVALID_SECTION: u32 = u32::MAX;
 
 pub struct Section {
-    pub name: Spur,
+    pub name: UniqueStr,
     pub kind: SectionKind,
 }
 
@@ -85,7 +82,7 @@ impl Context {
     pub fn sections(&self) -> &[Section] {
         &self.sections
     }
-    pub fn get_item_section_idx(&self, name: Spur) -> Option<u32> {
+    pub fn get_item_section_idx(&self, name: UniqueStr) -> Option<u32> {
         let index = self.get_symbol_index(name)?;
         let section = self.symbol_ownership[index as usize];
 
@@ -102,12 +99,12 @@ impl Context {
             Some(&self.sections[index as usize])
         }
     }
-    pub fn find_section_idx(&self, name: Spur) -> u32 {
+    pub fn find_section_idx(&self, name: UniqueStr) -> u32 {
         self.sections
             .binary_search_by_key(&name, |s| s.name)
             .unwrap() as u32
     }
-    fn find_section(&self, name: Spur) -> &Section {
+    fn find_section(&self, name: UniqueStr) -> &Section {
         &self.sections[self.find_section_idx(name) as usize]
     }
     fn remove_symbol(&mut self, index: u32) {
@@ -160,7 +157,7 @@ pub fn write_bindings(
     // this needs to know which Bitmask a BitmaskBits specifies the bits for
     let mut bitmask_pairing = HashMap::new();
 
-    for (name, body) in &ctx.reg.symbols {
+    for Symbol(name, body) in &ctx.reg.symbols {
         match body {
             SymbolBody::Bitmask { bits_enum, .. } => {
                 if let Some(bits_enum) = bits_enum {
@@ -175,7 +172,7 @@ pub fn write_bindings(
 
     // (item index, section index)
     let mut items = Vec::new();
-    for (i, &(name, _)) in ctx.reg.symbols.iter().enumerate() {
+    for (i, &Symbol(name, _)) in ctx.reg.symbols.iter().enumerate() {
         if let Some(section) = ctx.get_item_section_idx(name) {
             let name = ctx.get_section(section).unwrap().name;
             if selected_sections.binary_search(&name).is_ok() {
@@ -207,16 +204,12 @@ pub fn write_bindings(
         )?;
     }
 
-    let formatting_context = GlobalContext {
-        ctx: &ctx,
-        cur_section: Cell::new(0),
-    };
-    let g = &formatting_context;
+    let mut cur_section = 0;
 
     for &(item, section) in &items {
         if section != prev_section {
             // TODO process the names to be more rusty since right now they are literally the names of vulkan extensions
-            let file_name = ctx.get_section(section).unwrap().name.resolve(&ctx);
+            let file_name = ctx.get_section(section).unwrap().name.resolve();
             let file = File::create(out_dir.join(&*file_name).with_extension("rs"))?;
             let writer = FormatWriter::new(WriteWriteAdapter(BufWriter::new(file)));
 
@@ -226,17 +219,16 @@ pub fn write_bindings(
                 .unwrap()
                 .write_str("use crate::platform::*;\n")?;
 
-            g.cur_section.set(section);
+            cur_section = section;
         }
         prev_section = section;
 
         let writer = section_writer.as_mut().unwrap();
 
-        let (spur_name, body) = &ctx.reg.symbols[item];
-        let name = spur_name.wrp(g);
+        let Symbol(name, body) = &ctx.reg.symbols[item];
         match body {
             &SymbolBody::Alias(of) => {
-                if !is_std_type(of, &ctx) {
+                if !is_std_type(of) {
                     let target = resolve_alias(of, &ctx.reg);
                     match target.1 {
                         SymbolBody::BitmaskBits { .. } => continue,
@@ -247,7 +239,7 @@ pub fn write_bindings(
                             code2!(
                                 writer,
                                 "pub const {}: {} = {};"
-                                @ name, ty.as_rust_order(g).wrp(g), Pathed(target.0).wrp(g)
+                                @ name, ty, Pathed(target.0, &ctx, cur_section)
                             )?;
                             continue;
                         }
@@ -266,14 +258,14 @@ pub fn write_bindings(
                 code2!(
                     writer,
                     "pub type {} = {};"
-                    @ name, Pathed(of).wrp(g)
+                    @ name, Pathed(of, &ctx, cur_section)
                 )?;
             }
             SymbolBody::Redeclaration(ty) => {
                 code2!(
                     writer,
                     "pub type {} = {};"
-                    @ name, ty.as_rust_order(&ctx).wrp(g)
+                    @ name, ty
                 )?;
             }
             // there is nothing to do with defines in rust, just skip them
@@ -290,7 +282,7 @@ pub fn write_bindings(
                 code2!(
                     writer,
                     "pub struct {}(pub {});"
-                    @ name, ty.wrp(g)
+                    @ name, ty
                 )?;
             }
             SymbolBody::Handle {
@@ -306,18 +298,16 @@ pub fn write_bindings(
                     "/// {}{}"
                     "#[repr(transparent)]"
                     "pub struct {}(u64);"
-                    @ dispatchable, object_type.wrp(g), name
+                    @ dispatchable, object_type, name
                 )?;
             }
             SymbolBody::Funcpointer { return_type, args } => {
-                let ret = return_type.as_rust_order(&ctx);
-                let args = Separated::args(args.iter(), |(_, ty), f| {
-                    ty.as_rust_order(&ctx).wrp(g).fmt(f)
-                });
+                let ret = return_type;
+                let args = Separated::args(args.iter(), |(_, ty), f| ty.fmt(f));
                 code2!(
                     writer,
                     "pub type {} = fn({}) -> {};"
-                    @ name, args, ret.wrp(g)
+                    @ name, args, ret
                 )?;
             }
             SymbolBody::Struct { union, members } => {
@@ -327,8 +317,8 @@ pub fn write_bindings(
                 };
                 let members = merge_bitfield_members(&members, &ctx);
                 let members = Separated::members(members.iter(), |(name, ty), f| {
-                    let ty = ty.as_rust_order(&ctx);
-                    format_args!("{}: {}", name.wrp(g), ty.wrp(g)).fmt(f)
+                    let ty = ty;
+                    format_args!("{}: {}", name, ty).fmt(f)
                 });
                 code2!(
                     writer,
@@ -342,17 +332,17 @@ pub fn write_bindings(
                 code2!(
                     writer,
                     "pub const {}: {} = {};"
-                    @ name, ty.as_rust_order(g).wrp(g), val
+                    @ name, ty, val
                 )?;
             }
             SymbolBody::Enum { members } => {
                 let members = Separated::members(members.iter(), |(name, val), f| {
-                    let name = name.wrp(g);
+                    let name = name;
                     match val {
                         EnumValue::Bitpos(pos) => format_args!("{} = 1 << {}", name, *pos).fmt(f),
                         EnumValue::Value(val) => format_args!("{} = {}", name, val).fmt(f),
                         EnumValue::Alias(alias) => {
-                            format_args!("{} = Self::{}", name, alias.wrp(g)).fmt(f)
+                            format_args!("{} = Self::{}", name, alias).fmt(f)
                         }
                     }
                 });
@@ -372,14 +362,14 @@ pub fn write_bindings(
 
                 // when vulkan has a Bitmask that is reserved for future use and thus has no actual flag values, there are no BitmaskBits defined and the spec omits Bitmask dependency
                 // however of course there are exceptions such as VkSemaphoreCreateFlagBits which is not Cdeclared as a dependency but is actually an item :(
-                let bitmask_name = match bitmask_pairing.get(spur_name) {
+                let bitmask_name = match bitmask_pairing.get(name) {
                     Some(n) => *n,
                     None => continue,
                 };
 
-                let ty = Pathed(get_concrete_type(bitmask_name, &ctx.reg)).wrp(g);
+                let ty = Pathed(get_concrete_type(bitmask_name, &ctx.reg), &ctx, cur_section);
                 let bits = Separated::statements(members.iter(), |(name, val), f| {
-                    let name = name.wrp(g);
+                    let name = name;
                     match val {
                         EnumValue::Bitpos(pos) => {
                             format_args!("const {}: {} = 1 << {}", name, ty, pos).fmt(f)
@@ -388,7 +378,7 @@ pub fn write_bindings(
                             format_args!("const {}: {} = {}", name, ty, val).fmt(f)
                         }
                         EnumValue::Alias(alias) => {
-                            format_args!("const {}: {} = Self::{}", name, ty, alias.wrp(g)).fmt(f)
+                            format_args!("const {}: {} = Self::{}", name, ty, alias).fmt(f)
                         }
                     }
                 });
@@ -398,7 +388,7 @@ pub fn write_bindings(
                     "impl {} {{"
                     "    {}"
                     "}}"
-                    @ bitmask_name.wrp(g), bits
+                    @ bitmask_name, bits
                 )?;
             }
             SymbolBody::Command {
@@ -411,22 +401,17 @@ pub fn write_bindings(
                     // function just returns 'void'
                     if return_type.0.tokens.len() == 1 {
                         if let TypeToken::Ident(ty) = &return_type.0.tokens[0] {
-                            if &*ctx.resolve(ty) == "void" {
+                            if ty.resolve() == "void" {
                                 break;
                             }
                         }
                     }
-                    return_str = format!(" -> {}", return_type.as_rust_order(&ctx).wrp(g));
+                    return_str = format!(" -> {}", return_type);
                     break;
                 }
 
                 let args = Separated::args(params.iter(), |param, f| {
-                    format_args!(
-                        "{}: {}",
-                        param.name.wrp(g),
-                        param.ty.as_rust_order(&ctx).wrp(g)
-                    )
-                    .fmt(f)
+                    format_args!("{}: {}", param.name, param.ty).fmt(f)
                 });
 
                 code2!(
@@ -442,8 +427,8 @@ pub fn write_bindings(
 }
 
 // whether the type is provided from the rust standard library and as such has no entry in the Registry
-pub fn is_std_type(ty: Spur, int: &Interner) -> bool {
-    match &*ty.resolve(int) {
+pub fn is_std_type(ty: UniqueStr) -> bool {
+    match &*ty.resolve() {
         "void" | "char" | "float" | "double" | "int8_t" | "uint8_t" | "int16_t" | "uint16_t"
         | "uint32_t" | "int32_t" | "uint64_t" | "int64_t" | "size_t" | "u8" | "u16" | "u32"
         | "u64" | "u128" | "i8" | "i16" | "i32" | "i64" | "i128" => true,
@@ -452,32 +437,30 @@ pub fn is_std_type(ty: Spur, int: &Interner) -> bool {
 }
 
 fn apply_renames(ctx: &Context) {
-    for (name, body) in &ctx.reg.symbols {
+    for Symbol(name, body) in &ctx.reg.symbols {
         match body {
             SymbolBody::Bitmask { bits_enum, .. } => {
                 if let Some(bits_enum) = bits_enum {
                     // the rest of vulkan still refers to the *Bits structs even though we don't emit them
-                    ctx.add_rename(*bits_enum, *name);
+                    bits_enum.rename(name);
                 }
             }
             _ => {}
         }
     }
 
-    for (name, body) in &ctx.reg.symbols {
+    for Symbol(name, body) in &ctx.reg.symbols {
         match body {
             SymbolBody::Enum { members } => {
                 for &(member_name, ..) in members.iter() {
-                    ctx.add_rename_with(member_name, || {
-                        make_enum_member_rusty(*name, member_name, false, &ctx).intern(&ctx)
-                    });
+                    let to = make_enum_member_rusty(*name, member_name, false).intern(&ctx);
+                    member_name.rename(&to);
                 }
             }
             SymbolBody::BitmaskBits { members } => {
                 for &(member_name, ..) in members.iter() {
-                    ctx.add_rename_with(member_name, || {
-                        make_enum_member_rusty(*name, member_name, true, &ctx).intern(&ctx)
-                    });
+                    let to = make_enum_member_rusty(*name, member_name, true).intern(&ctx);
+                    member_name.rename(&to);
                 }
             }
             _ => {}
@@ -485,12 +468,15 @@ fn apply_renames(ctx: &Context) {
     }
 }
 
-fn merge_bitfield_members(members: &[(Spur, CDecl)], reg: &Registry) -> Vec<(Spur, CDecl)> {
+fn merge_bitfield_members(
+    members: &[(UniqueStr, CDecl)],
+    reg: &Registry,
+) -> Vec<(UniqueStr, CDecl)> {
     let mut resolved = Vec::new();
     let mut last_ty: Option<Vec<TypeToken>> = None;
     let mut current_bits = 0;
     let mut max_bits = 0;
-    let mut merged_members: Vec<Spur> = Vec::new();
+    let mut merged_members: Vec<UniqueStr> = Vec::new();
 
     for (name, c_ty) in members {
         let ty = &c_ty.0;
@@ -517,10 +503,10 @@ fn merge_bitfield_members(members: &[(Spur, CDecl)], reg: &Registry) -> Vec<(Spu
             let name = if merged_members.len() == 1 {
                 merged_members[0]
             } else {
-                let mut concat = reg.resolve(&merged_members[0]).to_owned();
+                let mut concat = merged_members[0].resolve().to_owned();
                 for member in &merged_members[1..] {
                     concat += "_";
-                    concat += &*reg.resolve(&member);
+                    concat += member.resolve();
                 }
                 concat.intern(&reg)
             };
@@ -541,7 +527,7 @@ fn merge_bitfield_members(members: &[(Spur, CDecl)], reg: &Registry) -> Vec<(Spu
         if let Some(bits) = ty.bitfield_len {
             let type_bits = match ty.tokens[0] {
                 // TODO match against spurs made from &'static str
-                TypeToken::Ident(ty) => match &*reg.resolve(&get_concrete_type(ty, reg)) {
+                TypeToken::Ident(ty) => match ty.resolve() {
                     "uint8_t" | "int8_t" | "u8" | "i8" => 8,
                     "uint16_t" | "int16_t" | "u16" | "i16" => 16,
                     "uint32_t" | "int32_t" | "VkFlags" | "u32" | "i32" => 32,
@@ -569,7 +555,7 @@ fn merge_bitfield_members(members: &[(Spur, CDecl)], reg: &Registry) -> Vec<(Spu
 
 // jumps through as many aliases (Symbol::Alias) as needed and returns the resulting non-alias symbol,
 // in cases where the provided identifier is not an alias it is immediatelly returned back
-fn resolve_alias<'a>(alias: Spur, reg: &'a Registry) -> (Spur, &'a SymbolBody) {
+fn resolve_alias<'a>(alias: UniqueStr, reg: &'a Registry) -> (UniqueStr, &'a SymbolBody) {
     let mut next = alias;
     loop {
         let symbol = reg.find_symbol(next).unwrap();
@@ -586,7 +572,7 @@ fn resolve_alias<'a>(alias: Spur, reg: &'a Registry) -> (Spur, &'a SymbolBody) {
 // resolve_alias is that this also jumps through things preserving the type
 // layout, such as handles or constants this will stop at typedefs as those
 // are handled by bindgen and thus we don't have information about
-fn get_concrete_type(name: Spur, reg: &Registry) -> Spur {
+fn get_concrete_type(name: UniqueStr, reg: &Registry) -> UniqueStr {
     let mut name = name;
     loop {
         let top = reg.find_symbol(name).unwrap();
@@ -652,10 +638,9 @@ impl<'a> Iterator for CamelCaseSplit<'a> {
 //  VK_DEBUG_REPORT_INFORMATION_BIT_EXT -> VK DEBUG REPORT INFORMATION BIT EXT
 // => INFORMATION BIT
 fn make_enum_member_rusty(
-    enum_name: Spur,
-    member_name: Spur,
+    enum_name: UniqueStr,
+    member_name: UniqueStr,
     constant_syntax: bool,
-    int: &Interner,
 ) -> String {
     // enum VkPresentModeKHR {
     //     VK_PRESENT_MODE_IMMEDIATE_KHR = 0, -> Immediate = 0,
@@ -687,8 +672,8 @@ fn make_enum_member_rusty(
     // workaround for identifiers starting with a digit, see above
     let mut prev_char = None;
 
-    let enum_str = &*int.resolve(&enum_name);
-    let member_str = &*int.resolve(&member_name);
+    let enum_str = enum_name.resolve();
+    let member_str = member_name.resolve();
 
     // we skip "Flags" as they are part of the enum boilerplate but don't occur in the member, see above
     let mut enum_chunks = CamelCaseSplit::new(enum_str)
@@ -749,6 +734,8 @@ fn make_enum_member_rusty(
 
 #[test]
 fn test_enum_rustify() {
+    use generator_lib::interner::Interner;
+
     let reg = Interner::new();
 
     let data = &[
@@ -788,10 +775,10 @@ fn test_enum_rustify() {
         let enum_name = enum_name.intern(&reg);
         let member_name = member_name.intern(&reg);
 
-        let const_syntax = make_enum_member_rusty(enum_name, member_name, true, &reg);
+        let const_syntax = make_enum_member_rusty(enum_name, member_name, true);
         assert_eq!(const_expect, &const_syntax);
 
-        let normal_syntax = make_enum_member_rusty(enum_name, member_name, false, &reg);
+        let normal_syntax = make_enum_member_rusty(enum_name, member_name, false);
         assert_eq!(normal_expect, &normal_syntax);
     }
 }

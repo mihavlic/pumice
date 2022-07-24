@@ -2,19 +2,16 @@
 // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html
 
 use std::{
-    cell::{Ref, RefCell},
     collections::{hash_map::Entry, HashMap},
     fmt::Debug,
     ops::Deref,
 };
 
-use lasso::{Rodeo, Spur};
+use interner::{Intern, Interner, UniqueStr};
 use roxmltree::Node;
 use type_declaration::{parse_type, CDecl};
 
-pub extern crate lasso;
-
-pub mod debug_impl;
+pub mod interner;
 pub mod type_declaration;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -33,12 +30,15 @@ pub enum SymbolKind {
     Command,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
+pub struct Symbol(pub UniqueStr, pub SymbolBody);
+
+#[derive(Debug, Clone)]
 pub enum SymbolBody {
-    Alias(Spur),
+    Alias(UniqueStr),
     Redeclaration(CDecl),
     Included {
-        header: Spur,
+        header: UniqueStr,
     },
     Define {
         body: String,
@@ -47,21 +47,21 @@ pub enum SymbolBody {
         code: String,
     },
     Bitmask {
-        ty: Spur,
+        ty: UniqueStr,
         // the bits can be missing if it the flags exist but are so far unused
-        bits_enum: Option<Spur>,
+        bits_enum: Option<UniqueStr>,
     },
     Handle {
-        object_type: Spur,
+        object_type: UniqueStr,
         dispatchable: bool,
     },
     Funcpointer {
         return_type: CDecl,
-        args: Vec<(Spur, CDecl)>,
+        args: Vec<(UniqueStr, CDecl)>,
     },
     Struct {
         union: bool,
-        members: Vec<(Spur, CDecl)>,
+        members: Vec<(UniqueStr, CDecl)>,
     },
     Constant {
         ty: CDecl,
@@ -69,10 +69,10 @@ pub enum SymbolBody {
     },
     // FIXME merge Enum and Bitmaskbits just like we've done to Struct and Union
     Enum {
-        members: Vec<(Spur, EnumValue)>,
+        members: Vec<(UniqueStr, EnumValue)>,
     },
     BitmaskBits {
-        members: Vec<(Spur, EnumValue)>,
+        members: Vec<(UniqueStr, EnumValue)>,
     },
     Command {
         return_type: CDecl,
@@ -80,50 +80,53 @@ pub enum SymbolBody {
     },
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum EnumValue {
     Bitpos(u32),
     Value(i64),
-    Alias(Spur),
+    Alias(UniqueStr),
 }
 
+#[derive(Debug)]
 pub struct Feature {
-    pub name: Spur,
-    pub api: Spur,
-    pub number: Spur,
-    pub protect: Option<Spur>,
+    pub name: UniqueStr,
+    pub api: UniqueStr,
+    pub number: UniqueStr,
+    pub protect: Option<UniqueStr>,
     pub children: Vec<FeatureExtensionItem>,
 }
 
 // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html#_attributes_of_extension_tags
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Extension {
-    pub name: Spur,
+    pub name: UniqueStr,
     pub number: u32,
     pub sortorder: Option<u32>,
     pub author: Option<String>,
     pub contact: Option<String>,
 
-    pub ext_type: Option<Spur>,
-    pub requires: Vec<Spur>,
-    pub requires_core: Option<Spur>,
-    pub protect: Option<Spur>,
-    pub platform: Option<Spur>,
-    pub supported: Vec<Spur>,
-    pub promotedto: Option<Spur>,
-    pub deprecatedby: Option<Spur>,
-    pub obsoletedby: Option<Spur>,
+    pub ext_type: Option<UniqueStr>,
+    pub requires: Vec<UniqueStr>,
+    pub requires_core: Option<UniqueStr>,
+    pub protect: Option<UniqueStr>,
+    pub platform: Option<UniqueStr>,
+    pub supported: Vec<UniqueStr>,
+    pub promotedto: Option<UniqueStr>,
+    pub deprecatedby: Option<UniqueStr>,
+    pub obsoletedby: Option<UniqueStr>,
     pub provisional: bool,
-    pub specialuse: Vec<Spur>,
+    pub specialuse: Vec<UniqueStr>,
     pub children: Vec<FeatureExtensionItem>,
 }
 
+#[derive(Debug)]
 pub enum YCBREncoding {
     E420,
     E422,
     E444,
 }
 
+#[derive(Debug)]
 pub enum NumericFormat {
     SFLOAT,
     SINT,
@@ -136,38 +139,41 @@ pub enum NumericFormat {
     USCALED,
 }
 
+#[derive(Debug)]
 pub struct Component {
-    pub name: Spur,
+    pub name: UniqueStr,
     pub bits: Option<u8>, // is none for "compressed"
     pub numeric_format: NumericFormat,
     pub plane_index: Option<u8>,
 }
 
+#[derive(Debug)]
 pub struct Plane {
     pub index: u8,
     pub width_divisor: u8,
     pub height_divisor: u8,
-    pub compatible: Spur,
+    pub compatible: UniqueStr,
 }
 
+#[derive(Debug)]
 pub struct Format {
-    pub name: Spur,
-    pub class: Spur,
+    pub name: UniqueStr,
+    pub class: UniqueStr,
     pub blocksize: u8,
     pub texels_per_block: u8,
     pub block_extent: Option<[u8; 3]>,
     pub packed: Option<u8>,
-    pub compressed: Option<Spur>,
+    pub compressed: Option<UniqueStr>,
     pub chroma: Option<YCBREncoding>,
 
     pub components: Vec<Component>,
     pub planes: Vec<Plane>,
-    pub spirvimageformats: Vec<Spur>,
+    pub spirvimageformats: Vec<UniqueStr>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct CommandParameter {
-    pub name: Spur,
+    pub name: UniqueStr,
     pub len: Option<String>,
     pub alt_len: Option<String>,
     pub optional: bool,
@@ -175,100 +181,100 @@ pub struct CommandParameter {
     pub ty: CDecl,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum FeatureExtensionItem {
     Comment(String),
     // consider splitting this off
     Require {
-        profile: Option<Spur>,
+        profile: Option<UniqueStr>,
         // The api attribute is only supported inside extension tags, since feature tags already define a specific API.
-        api: Vec<Spur>,
+        api: Vec<UniqueStr>,
         // The extension attribute currently does not affect output generators in any way, and is simply metadata. This will be addressed as we better define different types of dependencies between extensions.
         // bruh
-        extension: Option<Spur>,
-        feature: Option<Spur>,
+        extension: Option<UniqueStr>,
+        feature: Option<UniqueStr>,
         items: Vec<InterfaceItem>,
     },
     Remove {
-        profile: Option<Spur>,
+        profile: Option<UniqueStr>,
         // The api attribute is only supported inside extension tags, since feature tags already define a specific API.
-        api: Vec<Spur>,
+        api: Vec<UniqueStr>,
         // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html#_enum_tags
         // the item removed will always be `InterfaceItem::Simple`, api property that can be in <enum> is not applicable I think?
         // https://github.com/osor-io/Vulkan/blob/e4bc1b9125645f3db3c8342edc24d81dc497f252/generate_code/generate_vulkan_code.jai#L1586
         // here it seems that the author doesn't handle `api`
-        items: Vec<Spur>,
+        items: Vec<UniqueStr>,
     },
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum ExtendMethod {
     Bitpos(u32),
     // extnumber, offset, is positive direction, the notion of a direction when offset could have been negative is stupid
     BitposExtnumber { extnumber: u32, offset: i32 },
     // value can in fact be whatever
     Value(String),
-    Alias(Spur),
+    Alias(UniqueStr),
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum ConstantValue {
     Value(String),
-    Alias(Spur),
+    Alias(UniqueStr),
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum InterfaceItem {
     // just importing already finished items
     // for some reason Enums can have an Api condition
     // even though it can already be scoped by the parent <require>, why??
     Simple {
-        name: Spur,
-        api: Option<Spur>,
+        name: UniqueStr,
+        api: Option<UniqueStr>,
     },
     Extend {
-        name: Spur,
-        extends: Spur,
-        api: Option<Spur>,
+        name: UniqueStr,
+        extends: UniqueStr,
+        api: Option<UniqueStr>,
         method: ExtendMethod,
     },
-    // AddConstant {
-    //     name: Spur,
-    //     value: ConstantValue,
-    // },
 }
 
 // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html#tag-spirvenable
+#[derive(Debug)]
 pub enum SpirvEnable {
-    Version(Spur),
-    Extension(Spur),
+    Version(UniqueStr),
+    Extension(UniqueStr),
     Feature {
-        structure: Spur,
-        feature: Spur,
-        requires: Vec<Spur>,
-        alias: Option<Spur>,
+        structure: UniqueStr,
+        feature: UniqueStr,
+        requires: Vec<UniqueStr>,
+        alias: Option<UniqueStr>,
     },
     Property {
-        property: Spur,
-        member: Spur,
-        value: Spur,
-        requires: Vec<Spur>,
+        property: UniqueStr,
+        member: UniqueStr,
+        value: UniqueStr,
+        requires: Vec<UniqueStr>,
     },
 }
 
+#[derive(Debug)]
 pub struct SpirvExtCap {
-    pub name: Spur,
+    pub name: UniqueStr,
     pub enables: Vec<SpirvEnable>,
 }
 
+#[derive(Debug)]
 pub struct Platform {
-    pub name: Spur,
-    pub protect: Spur,
+    pub name: UniqueStr,
+    pub protect: UniqueStr,
     pub comment: String,
 }
 
+#[derive(Debug)]
 pub struct Tag {
-    pub name: Spur,
+    pub name: UniqueStr,
     pub author: String,
     pub contact: String,
 }
@@ -283,76 +289,6 @@ pub enum ItemKind {
     SpirvExtension,
 }
 
-pub type ItemIdx = u32;
-
-struct InnerInterner {
-    rodeo: Rodeo,
-    // a map for substituting certain Spurs with Different spurs
-    // this is used at code generation to consistently rename different identifiers
-    // to make them match rust naming conventions better
-    // this is a pretty dumb solution and it is debatable whether this should be implemented here
-    // but keeping everything withou wrapper types makes it by far the least painful solution
-    // another option was preparing all the renames beforehand and then iterating through everything here
-    // and replacing the renamed spurs but that would be quite tiring to maintain and would break any spurs
-    // that the user may have kept in variables for comparison
-    renames: HashMap<Spur, Spur>,
-}
-
-pub struct Interner(RefCell<InnerInterner>);
-
-impl Interner {
-    pub fn new() -> Self {
-        Self(RefCell::new(InnerInterner {
-            rodeo: Rodeo::new(),
-            renames: HashMap::new(),
-        }))
-    }
-    pub fn add_rename_with(&self, original: Spur, with: impl FnOnce() -> Spur) {
-        // we need to ensure that the RefCell guard is imediatelly dropped because the `with` closure may itself try to borrow the RefCell,
-        // this is non-ideal because we can't use the entry api, it would be neccessary to give the cloure an already borrowed reference but
-        // that would require some lines of code to keep the api consistent
-        let get = {
-            let s = self.0.borrow();
-            s.renames.get(&original).map(|s| *s)
-        };
-
-        let rename = with();
-
-        if let Some(existing) = get {
-            if existing != rename {
-                panic!("Attempt to rename Spur multiple times.")
-            }
-        } else {
-            let mut s = self.0.borrow_mut();
-
-            // currently we're using renames to do simple substitutions, this is unnecessary and we may want to preserve the original rename
-            // // if we are renaming a spur that is already renamed we directly replace the spur with that rename
-            // // this will spin forever if any cycles are encountered, too bad!
-            // while let Some(next) = renames_ref.get(&rename) {
-            //     rename = *next;
-            // }
-
-            s.renames.insert(original, rename);
-        }
-    }
-    // renaming changes the string that a spur will resolve to, however it keeps all spurs the same
-    // thus we can have multiple *different* spurs resolve to the same string
-    // this is useful for example when merging the two-part bitfield Cdeclarations: *Bits and *Flags structs
-    // we use only the *Flags name but all vulkan identifiers use the *Bits as the type, thus we can merge them easily
-    pub fn add_rename(&self, original: Spur, spur: Spur) {
-        self.add_rename_with(original, || spur);
-    }
-    pub fn resolve<'a>(&'a self, spur: &Spur) -> Ref<'a, str> {
-        let s = self.0.borrow();
-        Ref::map(s, |a| a.rodeo.resolve(a.renames.get(spur).unwrap_or(spur)))
-    }
-    pub fn intern(&self, str: &str) -> Spur {
-        self.0.borrow_mut().rodeo.get_or_intern(str)
-    }
-}
-
-// the following set of traits allow calling `spur.intern(reg)` rather than `reg.interner.intern(&spur)`
-
 impl Deref for Registry {
     type Target = Interner;
 
@@ -361,39 +297,19 @@ impl Deref for Registry {
     }
 }
 
-pub trait Intern {
-    fn intern(&self, int: &Interner) -> Spur;
-}
-
-impl<T: AsRef<str>> Intern for T {
-    fn intern(&self, int: &Interner) -> Spur {
-        int.intern(self.as_ref())
-    }
-}
-
-pub trait Resolve {
-    fn resolve<'a>(&self, int: &'a Interner) -> Ref<'a, str>;
-}
-
-impl Resolve for Spur {
-    fn resolve<'a>(&self, int: &'a Interner) -> Ref<'a, str> {
-        int.resolve(self)
-    }
-}
-
 pub struct Registry {
     pub platforms: Vec<Platform>,
     pub tags: Vec<Tag>,
-    pub headers: Vec<Spur>,
+    pub headers: Vec<UniqueStr>,
 
-    pub symbols: Vec<(Spur, SymbolBody)>,
+    pub symbols: Vec<Symbol>,
     pub features: Vec<Feature>,
     pub extensions: Vec<Extension>,
     pub formats: Vec<Format>,
     pub spirv_capabilities: Vec<SpirvExtCap>,
     pub spirv_extensions: Vec<SpirvExtCap>,
 
-    pub item_map: HashMap<Spur, (u32, ItemKind)>,
+    pub item_map: HashMap<UniqueStr, (u32, ItemKind)>,
     pub interner: Interner,
 }
 
@@ -415,16 +331,16 @@ impl Registry {
             interner: Interner::new(),
         }
     }
-    pub fn get_symbol_index(&self, name: Spur) -> Option<u32> {
+    pub fn get_symbol_index(&self, name: UniqueStr) -> Option<u32> {
         let &(index, ty) = self.item_map.get(&name)?;
         assert!(ty == ItemKind::Symbol);
         Some(index)
     }
-    pub fn find_symbol(&self, name: Spur) -> Option<&SymbolBody> {
+    pub fn find_symbol(&self, name: UniqueStr) -> Option<&SymbolBody> {
         let item = self.get_symbol_index(name)?;
         Some(&self.symbols[item as usize].1)
     }
-    pub fn add_symbol(&mut self, name: Spur, body: SymbolBody) {
+    pub fn add_symbol(&mut self, name: UniqueStr, body: SymbolBody) {
         let entry = self.item_map.entry(name);
         match entry {
             Entry::Occupied(o) => {
@@ -442,13 +358,13 @@ impl Registry {
                 }
                 panic!(
                     "Attempt to insert duplicate item '{}' into registry.",
-                    name.resolve(&self)
+                    name.resolve()
                 )
             }
             Entry::Vacant(v) => {
                 let index = u32::try_from(self.symbols.len()).unwrap();
                 v.insert((index, ItemKind::Symbol));
-                self.symbols.push((name, body));
+                self.symbols.push(Symbol(name, body));
             }
         }
     }
@@ -459,7 +375,6 @@ impl Registry {
             add,
             ItemKind::Feature,
             &mut self.item_map,
-            &self.interner,
         );
     }
     pub fn add_extension(&mut self, add: Extension) {
@@ -469,7 +384,6 @@ impl Registry {
             add,
             ItemKind::Extension,
             &mut self.item_map,
-            &self.interner,
         );
     }
     pub fn add_format(&mut self, add: Format) {
@@ -479,7 +393,6 @@ impl Registry {
             add,
             ItemKind::Format,
             &mut self.item_map,
-            &self.interner,
         );
     }
     pub fn add_spirv_capability(&mut self, add: SpirvExtCap) {
@@ -489,7 +402,6 @@ impl Registry {
             add,
             ItemKind::SpirvCapability,
             &mut self.item_map,
-            &self.interner,
         );
     }
     pub fn add_spirv_extension(&mut self, add: SpirvExtCap) {
@@ -499,64 +411,59 @@ impl Registry {
             add,
             ItemKind::SpirvExtension,
             &mut self.item_map,
-            &self.interner,
         );
     }
     pub fn remove_symbol(&mut self, idx: u32) {
         let i = idx as usize;
-        let name = self.symbols[i].0;
 
-        self.symbols.remove(i);
+        let Symbol(name, _) = self.symbols.remove(i);
         self.item_map.remove(&name).unwrap();
 
         // need to adjust all the following indexes in the item_map because we've just deleted an element
-        for (name, ..) in &self.symbols[i..] {
+        for Symbol(name, _) in &self.symbols[i..] {
             self.item_map.get_mut(name).unwrap().0 -= 1;
         }
     }
-    pub fn get_item_entry(&self, name: Spur) -> Option<&(u32, ItemKind)> {
+    pub fn get_item_entry(&self, name: UniqueStr) -> Option<&(u32, ItemKind)> {
         self.item_map.get(&name)
     }
 }
 
 fn add_impl<T>(
     vec: &mut Vec<T>,
-    name: Spur,
+    name: UniqueStr,
     what: T,
     kind: ItemKind,
-    item_map: &mut HashMap<Spur, (u32, ItemKind)>,
-    int: &Interner,
+    item_map: &mut HashMap<UniqueStr, (u32, ItemKind)>,
 ) {
     let index = u32::try_from(vec.len()).unwrap();
     let none = item_map.insert(name, (index, kind));
     assert!(
         none.is_none(),
         "Attempt to insert duplicate item '{}' into registry.",
-        name.resolve(int)
+        name.resolve()
     );
     vec.push(what);
 }
 
-macro_rules! typed_index {
-    ($name:ident) => {
-        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-        pub struct $name(u32);
-
-        impl $name {
-            pub fn new(index: usize) -> Self {
-                Self(u32::try_from(index).unwrap())
-            }
-            pub fn idx(&self) -> usize {
-                self.0 as usize
-            }
-        }
-    };
+impl Debug for Registry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Registry")
+            .field("platforms", &self.platforms)
+            .field("tags", &self.tags)
+            .field("headers", &self.headers)
+            .field("symbols", &self.symbols)
+            .field("features", &self.features)
+            .field("extensions", &self.extensions)
+            .field("formats", &self.formats)
+            .field("spirv_capabilities", &self.spirv_capabilities)
+            .field("spirv_extensions", &self.spirv_extensions)
+            .finish()
+    }
 }
 
-typed_index!(Symbol);
-
 trait NodeUtils<'a> {
-    fn intern(&self, attribute: &str, reg: &Interner) -> Spur;
+    fn intern(&self, attribute: &str, reg: &Interner) -> UniqueStr;
     fn owned(&self, attribute: &str) -> String;
     fn get(&'a self, attribute: &str) -> &'a str;
     fn child_text(&'a self, child: &str) -> &'a str;
@@ -564,7 +471,7 @@ trait NodeUtils<'a> {
 }
 
 impl<'a, 'b> NodeUtils<'b> for Node<'a, 'b> {
-    fn intern(&self, attribute: &str, reg: &Interner) -> Spur {
+    fn intern(&self, attribute: &str, reg: &Interner) -> UniqueStr {
         self.attribute(attribute).unwrap().intern(reg)
     }
     fn owned(&self, attribute: &str) -> String {
@@ -1410,7 +1317,7 @@ fn convert_section_children(
     converted
 }
 
-fn parse_comma_separated(str: Option<&str>, int: &Interner) -> Vec<Spur> {
+fn parse_comma_separated(str: Option<&str>, int: &Interner) -> Vec<UniqueStr> {
     match str {
         Some(s) => s.split_terminator(',').map(|s| s.intern(int)).collect(),
         None => Vec::new(),

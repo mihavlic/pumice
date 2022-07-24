@@ -1,4 +1,8 @@
-use generator_lib::{lasso::Spur, type_declaration::parse_type, Intern, SymbolBody};
+use generator_lib::{
+    interner::{Intern, UniqueStr},
+    type_declaration::parse_type,
+    Symbol, SymbolBody,
+};
 
 use crate::Context;
 
@@ -8,7 +12,10 @@ enum Workaround {
     SetOwnership(u32),
 }
 
-fn sorted_get_all(name: Spur, buf: &[(Spur, Workaround)]) -> Option<&[(Spur, Workaround)]> {
+fn sorted_get_all(
+    name: UniqueStr,
+    buf: &[(UniqueStr, Workaround)],
+) -> Option<&[(UniqueStr, Workaround)]> {
     let index = buf.binary_search_by_key(&name, |s| s.0).ok()?;
 
     let mut start = index;
@@ -151,7 +158,7 @@ pub fn apply_workarounds(ctx: &mut Context) {
 
     let mut i = 0;
     'outer: while i < ctx.reg.symbols.len() {
-        let (name, body) = &mut ctx.reg.symbols[i];
+        let Symbol(name, body) = &mut ctx.reg.symbols[i];
 
         for (_, method) in sorted_get_all(*name, &workarounds).unwrap_or(&[]) {
             match method {
@@ -179,7 +186,7 @@ pub fn apply_workarounds(ctx: &mut Context) {
     }
 }
 
-fn prune_leaf_vec<T>(vec: &mut Vec<(Spur, T)>, workarounds: &Vec<(Spur, Workaround)>) {
+fn prune_leaf_vec<T>(vec: &mut Vec<(UniqueStr, T)>, workarounds: &Vec<(UniqueStr, Workaround)>) {
     let mut i = 0;
     while i < vec.len() {
         if let Ok(j) = workarounds.binary_search_by_key(&vec[i].0, |s| s.0) {

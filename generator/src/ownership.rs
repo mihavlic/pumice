@@ -1,6 +1,6 @@
 use generator_lib::{
-    lasso::Spur, FeatureExtensionItem, InterfaceItem, Intern, ItemKind, Registry, Resolve,
-    SymbolBody,
+    interner::{Intern, UniqueStr},
+    FeatureExtensionItem, InterfaceItem, ItemKind, Registry, SymbolBody,
 };
 
 use crate::{is_std_type, resolve_alias, Context, Section, SectionKind, INVALID_SECTION};
@@ -37,7 +37,7 @@ pub fn resolve_ownership(ctx: &mut Context) {
     for (i, item) in reg.symbols.iter().enumerate() {
         if let SymbolBody::Alias(of) = item.1 {
             // std types are not in the registry, see workarounds.rs
-            if is_std_type(of, reg) {
+            if is_std_type(of) {
                 break;
             }
             // aliases to BitmaskBits are allowed to be unowned
@@ -49,11 +49,13 @@ pub fn resolve_ownership(ctx: &mut Context) {
         match item.1 {
             // some BitmaskBits are left unowned if they contain no members :(
             SymbolBody::BitmaskBits { .. } => {}
-            SymbolBody::Included { .. } => unreachable!("[{}] Types included from headers are opaque and as such must be resolved by other means before this stage.", item.0.resolve(reg)),
+            SymbolBody::Included { .. } => unreachable!("[{}] Types included from headers are opaque and as such must be resolved by other means before this stage.", item.0.resolve()
+        ),
             _ => {
                 assert!(
                     symbol_ownership[i] != INVALID_SECTION,
-                    "[{}] Concrete types should have valid ownership assigned at this point.", item.0.resolve(reg)
+                    "[{}] Concrete types should have valid ownership assigned at this point.", item.0.resolve()
+
                 )
             }
         }
@@ -63,7 +65,7 @@ pub fn resolve_ownership(ctx: &mut Context) {
 fn section_used_symbols<'a>(
     section: &'a Section,
     reg: &'a Registry,
-) -> impl Iterator<Item = Spur> + 'a {
+) -> impl Iterator<Item = UniqueStr> + 'a {
     let children = match section.kind {
         SectionKind::Feature(idx) => reg.features[idx as usize].children.as_slice(),
         SectionKind::Extension(idx) => reg.extensions[idx as usize].children.as_slice(),
@@ -95,12 +97,12 @@ fn section_used_symbols<'a>(
 fn foreach_dependency<F: FnMut(Section)>(section: &Section, mut f: F, reg: &Registry) {
     match section.kind {
         SectionKind::Feature(idx) => {
-            let number = reg.features[idx as usize].number.resolve(reg);
+            let number = reg.features[idx as usize].number.resolve();
             for (i, feature) in reg.features.iter().enumerate() {
                 // we want to output all lower feature levels (essentially the vulkan version) than the one selected
                 // thankfully this order is still valid on textual numbers
                 // ie: "1.0" < "1.1" < "1.2"
-                if &*feature.number.resolve(reg) < &*number {
+                if &*feature.number.resolve() < &*number {
                     f(Section {
                         name: feature.name,
                         kind: SectionKind::Feature(i as u32),
@@ -130,7 +132,7 @@ fn foreach_dependency<F: FnMut(Section)>(section: &Section, mut f: F, reg: &Regi
     }
 }
 
-pub fn add_dependent_sections(selected_sections: &mut Vec<Spur>, ctx: &Context) {
+pub fn add_dependent_sections(selected_sections: &mut Vec<UniqueStr>, ctx: &Context) {
     let mut i = 0;
     while i < selected_sections.len() {
         let section = ctx.find_section(selected_sections[i]);
