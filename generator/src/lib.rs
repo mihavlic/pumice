@@ -427,14 +427,28 @@ pub fn write_bindings(
 // whether the type is provided from the rust standard library and as such has no entry in the Registry
 pub fn is_std_type(ty: UniqueStr) -> bool {
     match &*ty.resolve() {
-        "void" | "char" | "float" | "double" | "int8_t" | "uint8_t" | "int16_t" | "uint16_t"
-        | "uint32_t" | "int32_t" | "uint64_t" | "int64_t" | "size_t" | "u8" | "u16" | "u32"
-        | "u64" | "u128" | "i8" | "i16" | "i32" | "i64" | "i128" => true,
+        "void" | "char" | "float" | "double" | "size_t" | "u8" | "u16" | "u32" | "u64" | "i8"
+        | "i16" | "i32" | "i64" => true,
         _ => false,
     }
 }
 
 fn apply_renames(ctx: &Context) {
+    let renames = &[
+        ("uint8_t", "u8"),
+        ("uint16_t", "u16"),
+        ("uint32_t", "u32"),
+        ("uint64_t", "u64"),
+        ("int8_t", "i8"),
+        ("int16_t", "i16"),
+        ("int32_t", "i32"),
+        ("int64_t", "i64"),
+    ];
+
+    for &(from, to) in renames {
+        from.intern(ctx).rename(to.intern(ctx));
+    }
+
     for Symbol(name, body) in &ctx.reg.symbols {
         match body {
             SymbolBody::Bitmask { bits_enum, .. } => {
@@ -527,11 +541,10 @@ fn merge_bitfield_members<'a>(
                 .expect("Only a base raw integr can be a bitfield.");
 
             let type_bits = match get_concrete_type(basetype, reg).resolve() {
-                // FIXME optimize this? with renaming?
-                "uint8_t" | "int8_t" | "u8" | "i8" => 8,
-                "uint16_t" | "int16_t" | "u16" | "i16" => 16,
-                "uint32_t" | "int32_t" | "u32" | "i32" => 32,
-                "uint64_t" | "int64_t" | "u64" | "i64" => 64,
+                "u8" | "i8" => 8,
+                "u16" | "i16" => 16,
+                "u32" | "i32" => 32,
+                "u64" | "i64" => 64,
                 other => unimplemented!("Don't know the bit-width of '{}'", other),
             };
 
