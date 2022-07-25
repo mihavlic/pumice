@@ -1,6 +1,6 @@
 use generator_lib::{
     interner::{Intern, UniqueStr},
-    type_declaration::parse_type,
+    type_declaration::parse_type_decl,
     Symbol, SymbolBody,
 };
 
@@ -44,7 +44,7 @@ pub fn apply_workarounds(ctx: &mut Context) {
         |arg: &str| -> Workaround { Workaround::Replace(SymbolBody::Alias(arg.intern(ctx))) };
 
     let redeclare = |arg: &str| -> Workaround {
-        Workaround::Replace(SymbolBody::Redeclaration(parse_type(arg, false, ctx).1))
+        Workaround::Replace(SymbolBody::Redeclaration(parse_type_decl(arg, ctx).1))
     };
 
     let ownership = |arg: &str| -> Workaround {
@@ -84,12 +84,12 @@ pub fn apply_workarounds(ctx: &mut Context) {
         (Workaround::Remove, "char"),
         (Workaround::Remove, "float"),
         (Workaround::Remove, "double"),
-        (Workaround::Remove, "int8_t"),
         (Workaround::Remove, "uint8_t"),
-        (Workaround::Remove, "int16_t"),
         (Workaround::Remove, "uint16_t"),
         (Workaround::Remove, "uint32_t"),
         (Workaround::Remove, "uint64_t"),
+        (Workaround::Remove, "int8_t"),
+        (Workaround::Remove, "int16_t"),
         (Workaround::Remove, "int32_t"),
         (Workaround::Remove, "int64_t"),
         (Workaround::Remove, "size_t"),

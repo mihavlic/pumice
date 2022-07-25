@@ -6,8 +6,8 @@ use crate::{
 use generator_lib::{
     interner::{Intern, UniqueStr},
     process_registry_xml,
-    type_declaration::{CDecl, Decl, TypeToken},
-    EnumValue, Registry, Symbol, SymbolBody,
+    type_declaration::Type,
+    EnumValue, Registry, StructMember, Symbol, SymbolBody,
 };
 use registry_format::Pathed;
 use std::{
@@ -301,7 +301,10 @@ pub fn write_bindings(
                     @ dispatchable, object_type, name
                 )?;
             }
-            SymbolBody::Funcpointer { return_type, args } => {
+            SymbolBody::Funcpointer {
+                ret: return_type,
+                args,
+            } => {
                 let ret = return_type;
                 let args = Separated::args(args.iter(), |(_, ty), f| ty.fmt(f));
                 code2!(
@@ -395,29 +398,24 @@ pub fn write_bindings(
                 return_type,
                 params,
             } => {
-                let mut return_str = String::new();
-
-                loop {
-                    // function just returns 'void'
-                    if return_type.0.tokens.len() == 1 {
-                        if let TypeToken::Ident(ty) = &return_type.0.tokens[0] {
-                            if ty.resolve() == "void" {
-                                break;
-                            }
-                        }
-                    }
-                    return_str = format!(" -> {}", return_type);
-                    break;
-                }
-
                 let args = Separated::args(params.iter(), |param, f| {
                     format_args!("{}: {}", param.name, param.ty).fmt(f)
                 });
 
+                // uhh ... we're not allocating a string anymore though
+                let (ret1, ret2): (&str, &dyn Display) = loop {
+                    if let Some(ty) = return_type.try_only_basetype() {
+                        if ty.resolve() == "void" {
+                            break (&"", &"");
+                        }
+                    }
+                    break (&"-> ", &return_type);
+                };
+
                 code2!(
                     writer,
-                    "pub fn {}({}){} {{}}"
-                    @ name, args, return_str
+                    "pub fn {}({}){}{} {{}}"
+                    @ name, args, ret1, ret2
                 )?;
             }
         }
@@ -442,7 +440,7 @@ fn apply_renames(ctx: &Context) {
             SymbolBody::Bitmask { bits_enum, .. } => {
                 if let Some(bits_enum) = bits_enum {
                     // the rest of vulkan still refers to the *Bits structs even though we don't emit them
-                    bits_enum.rename(name);
+                    bits_enum.rename(*name);
                 }
             }
             _ => {}
@@ -454,13 +452,13 @@ fn apply_renames(ctx: &Context) {
             SymbolBody::Enum { members } => {
                 for &(member_name, ..) in members.iter() {
                     let to = make_enum_member_rusty(*name, member_name, false).intern(&ctx);
-                    member_name.rename(&to);
+                    member_name.rename(to);
                 }
             }
             SymbolBody::BitmaskBits { members } => {
                 for &(member_name, ..) in members.iter() {
                     let to = make_enum_member_rusty(*name, member_name, true).intern(&ctx);
-                    member_name.rename(&to);
+                    member_name.rename(to);
                 }
             }
             _ => {}
@@ -468,21 +466,22 @@ fn apply_renames(ctx: &Context) {
     }
 }
 
-fn merge_bitfield_members(
-    members: &[(UniqueStr, CDecl)],
+fn merge_bitfield_members<'a>(
+    members: &'a [StructMember],
     reg: &Registry,
-) -> Vec<(UniqueStr, CDecl)> {
+) -> Vec<(UniqueStr, &'a Type)> {
     let mut resolved = Vec::new();
-    let mut last_ty: Option<Vec<TypeToken>> = None;
+    let mut last_ty: Option<&Type> = None;
     let mut current_bits = 0;
     let mut max_bits = 0;
     let mut merged_members: Vec<UniqueStr> = Vec::new();
 
-    for (name, c_ty) in members {
-        let ty = &c_ty.0;
+    for member in members {
+        let StructMember { name, ty, bitfield } = member;
+
         // the type matches and it is a bitfield
-        if Some(&ty.tokens) == last_ty.as_ref() && ty.bitfield_len.is_some() {
-            let bits = ty.bitfield_len.unwrap();
+        if Some(ty) == last_ty && bitfield.is_some() {
+            let bits = bitfield.unwrap();
             assert!(bits <= max_bits);
             current_bits += bits;
             // we still have space to merge this member
@@ -496,7 +495,7 @@ fn merge_bitfield_members(
 
         // merge the accumulated members into one member that will have to be packed and unpacked by the user
         // TODO consider propagating this information and making helper functions
-        if let Some(tokens) = last_ty.take() {
+        if let Some(ty) = last_ty.take() {
             assert!(!merged_members.is_empty());
 
             // TODO consider some better naming rather than just concatenating everything
@@ -508,45 +507,42 @@ fn merge_bitfield_members(
                     concat += "_";
                     concat += member.resolve();
                 }
-                concat.intern(&reg)
+                concat.intern(reg)
             };
-            resolved.push((
-                name,
-                CDecl(Decl {
-                    tokens,
-                    array_len: None,
-                    bitfield_len: Some(current_bits),
-                }),
-            ));
+
+            resolved.push((name, ty));
             merged_members.clear();
         }
 
         // start accumulating a new type, if it isn't a bitfield, we add it to the resolved vec straight away,
         // since last_ty is still None, the next member that comes skips both of the block above and can either
         // start accumulating because it is a bitfield or is again just passed through to resolved
-        if let Some(bits) = ty.bitfield_len {
-            let type_bits = match ty.tokens[0] {
-                // TODO match against spurs made from &'static str
-                TypeToken::Ident(ty) => match ty.resolve() {
-                    "uint8_t" | "int8_t" | "u8" | "i8" => 8,
-                    "uint16_t" | "int16_t" | "u16" | "i16" => 16,
-                    "uint32_t" | "int32_t" | "VkFlags" | "u32" | "i32" => 32,
-                    "uint64_t" | "int64_t" | "VkFlags64" | "u64" | "i64" => 64,
-                    other => todo!("Add another type ('{}') to this match", other),
-                },
-                // microsoft (https://docs.microsoft.com/en-us/cpp/c-language/c-bit-fields?view=msvc-170) says that only primitive types
-                // can be bitfields, in practice this means that the type tokens will be just an ident, also in the spec only one?
-                // type is ever used for bitfield so here will be a little hardcoded lookup from type name to bit width,
-                // we don't really ever have good quality information about type layout as we expect bindgen to do it for us
-                _ => unreachable!(),
+        if let Some(bits) = bitfield {
+            // microsoft (https://docs.microsoft.com/en-us/cpp/c-language/c-bit-fields?view=msvc-170) says that only primitive types
+            // can be bitfields, in practice this means that the type tokens will be just an ident, also in the spec only one?
+            // type is ever used for bitfield so here will be a little hardcoded lookup from type name to bit width,
+            // we don't really ever have good quality information about type layout as we expect bindgen to do it for us
+            let basetype = ty
+                .try_only_basetype()
+                .expect("Only a base raw integr can be a bitfield.");
+
+            let type_bits = match get_concrete_type(basetype, reg).resolve() {
+                // FIXME optimize this? with renaming?
+                "uint8_t" | "int8_t" | "u8" | "i8" => 8,
+                "uint16_t" | "int16_t" | "u16" | "i16" => 16,
+                "uint32_t" | "int32_t" | "u32" | "i32" => 32,
+                "uint64_t" | "int64_t" | "u64" | "i64" => 64,
+                other => unimplemented!("Don't know the bit-width of '{}'", other),
             };
-            assert!(bits <= type_bits);
+
+            assert!(*bits <= type_bits);
+
             max_bits = type_bits;
-            current_bits = bits;
-            last_ty = Some(ty.tokens.clone());
+            current_bits = *bits;
+            last_ty = Some(ty);
             merged_members.push(*name);
         } else {
-            resolved.push((*name, c_ty.clone()));
+            resolved.push((*name, ty));
         }
     }
 
@@ -575,6 +571,10 @@ fn resolve_alias<'a>(alias: UniqueStr, reg: &'a Registry) -> (UniqueStr, &'a Sym
 fn get_concrete_type(name: UniqueStr, reg: &Registry) -> UniqueStr {
     let mut name = name;
     loop {
+        if is_std_type(name) {
+            return name;
+        }
+
         let top = reg.find_symbol(name).unwrap();
         match top {
             SymbolBody::Alias (of) => name = *of,

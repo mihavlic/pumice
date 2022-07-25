@@ -1,13 +1,22 @@
-use generator_lib::interner::UniqueStr;
+use generator_lib::{
+    interner::UniqueStr,
+    type_declaration::{fmt_type_tokens_impl, Type},
+};
 use std::fmt::{Display, Formatter};
 
 use crate::Context;
 
-pub struct Pathed<'a>(pub UniqueStr, pub &'a Context, pub u32);
+pub struct Pathed<'a, T>(pub T, pub &'a Context, pub u32);
 
-impl<'a> Display for Pathed<'a> {
+impl<'a> Display for Pathed<'a, UniqueStr> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         fmt_symbol_path(self.0, self.1, self.2, f)
+    }
+}
+
+impl<'a> Display for Pathed<'a, Type> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        fmt_type_tokens_impl(&self.0 .0, |s, f| fmt_symbol_path(s, &self.1, self.2, f), f)
     }
 }
 

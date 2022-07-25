@@ -9,7 +9,7 @@ use std::{
 
 use interner::{Intern, Interner, UniqueStr};
 use roxmltree::Node;
-use type_declaration::{parse_type, CDecl};
+use type_declaration::{parse_type_decl, Type};
 
 pub mod interner;
 pub mod type_declaration;
@@ -36,7 +36,7 @@ pub struct Symbol(pub UniqueStr, pub SymbolBody);
 #[derive(Debug, Clone)]
 pub enum SymbolBody {
     Alias(UniqueStr),
-    Redeclaration(CDecl),
+    Redeclaration(Type),
     Included {
         header: UniqueStr,
     },
@@ -56,15 +56,15 @@ pub enum SymbolBody {
         dispatchable: bool,
     },
     Funcpointer {
-        return_type: CDecl,
-        args: Vec<(UniqueStr, CDecl)>,
+        ret: Type,
+        args: Vec<(UniqueStr, Type)>,
     },
     Struct {
         union: bool,
-        members: Vec<(UniqueStr, CDecl)>,
+        members: Vec<StructMember>,
     },
     Constant {
-        ty: CDecl,
+        ty: Type,
         val: String,
     },
     // FIXME merge Enum and Bitmaskbits just like we've done to Struct and Union
@@ -75,9 +75,16 @@ pub enum SymbolBody {
         members: Vec<(UniqueStr, EnumValue)>,
     },
     Command {
-        return_type: CDecl,
+        return_type: Type,
         params: Vec<CommandParameter>,
     },
+}
+
+#[derive(Debug, Clone)]
+pub struct StructMember {
+    pub name: UniqueStr,
+    pub ty: Type,
+    pub bitfield: Option<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -178,7 +185,7 @@ pub struct CommandParameter {
     pub alt_len: Option<String>,
     pub optional: bool,
     pub externsync: Option<String>,
-    pub ty: CDecl,
+    pub ty: Type,
 }
 
 #[derive(Debug, Clone)]
@@ -752,7 +759,7 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
                             let return_type = {
                                 let first = brackets.next().unwrap();
                                 let clean = first.trim_start_matches("typedef");
-                                parse_type(clean, false, reg).1
+                                parse_type_decl(clean, reg).1
                             };
 
                             // waste the second parenthesis
@@ -766,13 +773,24 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
 
                             let mut args = Vec::new();
                             for arg in args_text.split(',') {
-                                let (name, ty) = parse_type(&arg, true, &reg);
+                                // QUIRK
+                                //   the signature `typedef void (VKAPI_PTR *PFN_vkVoidFunction)(void);`
+                                //   has no arguments yet we try to parse them, for this one case we check the argument text
+
+                                if arg == "void" {
+                                    continue;
+                                }
+
+                                let (name, ty, _) = parse_type_decl(&arg, &reg);
                                 args.push((name.unwrap(), ty));
                             }
 
                             reg.add_symbol(
                                 t.child_text("name").intern(reg),
-                                SymbolBody::Funcpointer { return_type, args },
+                                SymbolBody::Funcpointer {
+                                    ret: return_type,
+                                    args,
+                                },
                             );
                         }
                         // <type category="struct" name="VkBaseOutStructure">
@@ -800,9 +818,13 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
 
                                 buf.clear();
                                 node_collect_text(member, &mut buf);
-                                let (name, ty) = parse_type(&buf, true, reg);
+                                let (name, ty, bitfield) = parse_type_decl(&buf, reg);
 
-                                members.push((name.unwrap(), ty));
+                                members.push(StructMember {
+                                    name: name.unwrap(),
+                                    ty,
+                                    bitfield,
+                                });
                             }
 
                             reg.add_symbol(
@@ -832,7 +854,7 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
                             let ty = {
                                 let code = e.get("type");
                                 // FIXME this is usually just an integer, it seems wasteful to be calling this allocating function just for that
-                                parse_type(code, false, reg).1
+                                parse_type_decl(code, reg).1
                             };
 
                             buf.clear();
@@ -913,7 +935,7 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
                         buf.clear();
                         node_collect_text(proto, &mut buf);
 
-                        let (name, ty) = parse_type(&buf, true, reg);
+                        let (name, ty, _) = parse_type_decl(&buf, reg);
                         (name.unwrap(), ty)
                     };
 
@@ -927,7 +949,7 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
 
                         buf.clear();
                         node_collect_text(p, &mut buf);
-                        let (name, ty) = parse_type(&buf, true, reg);
+                        let (name, ty, _) = parse_type_decl(&buf, reg);
 
                         params.push(CommandParameter {
                             name: name.unwrap(),
@@ -1258,11 +1280,11 @@ fn convert_section_children(
                                     let mut val = value.to_owned();
                                     // QUIRK we have to guess the type of the constant
                                     let ty = if val.starts_with('"') {
-                                        parse_type("const char *", false, reg).1
+                                        parse_type_decl("const char *", reg).1
                                     } else {
                                         // erupt uses u32 for these constants so we will too
                                         numeric_expression_rustify(&mut val);
-                                        parse_type("uint32_t", false, reg).1
+                                        parse_type_decl("uint32_t", reg).1
                                     };
                                     reg.add_symbol(name, SymbolBody::Constant { ty, val });
                                 } else if let Some(value) = item.attribute("alias") {

@@ -1,223 +1,458 @@
-use std::fmt::{Debug, Display, Write};
+use std::{
+    fmt::{Debug, Display, Write},
+    iter::Peekable,
+    marker::PhantomData,
+    slice,
+};
 
-use crate::interner::{Intern, Interner, UniqueStr};
+use crate::{interner::UniqueStr, Intern, Interner};
 
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum TypeToken {
-    Ident(UniqueStr),
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Token<'a> {
+    Alphanumeric(&'a str),
     Ptr,
     Const,
-    // only in rust-ed type declarations
-    Mut,
+    LBracket,
+    RBracket,
+    LParen,
+    RParen,
+    DoubleColon,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct Decl {
-    pub tokens: Vec<TypeToken>,
-    // only one of these should be possible at a time
-    pub array_len: Option<UniqueStr>,
-    // bitfield! yay! https://docs.microsoft.com/en-us/cpp/c-language/c-bit-fields?view=msvc-170
-    pub bitfield_len: Option<u32>,
+pub struct CLexer<'a> {
+    cur: *const u8,
+    end: *const u8,
+    ident: Option<*const u8>,
+    phantom: PhantomData<&'a ()>,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct CDecl(pub Decl);
-
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct RustDecl(pub Decl);
-
-impl CDecl {
-    pub fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Decl {
-            tokens, array_len, ..
-        } = &self.0;
-
-        // rust cannot represent bitfields; they need to be resolved higher up, currently we store in this
-        // field the total amount of bits used after merging the bitfields together, so for now this check is disabled
-        // assert!(self.bitfield_len.is_none());
-        let mut tokens = tokens.as_slice();
-
-        // remove the outer pointer decoration in the type as we'll be replacing it with an array
-        if array_len.is_some() {
-            tokens = &tokens[..tokens.len() - 1];
+impl<'a> CLexer<'a> {
+    pub fn new(str: &'a str) -> Self {
+        unsafe {
+            Self {
+                cur: str.as_ptr(),
+                end: str.as_ptr().add(str.len()),
+                ident: None,
+                phantom: PhantomData,
+            }
         }
-
-        fmt_tokens(tokens, &|ident, f| f.write_str(&ident.resolve()), f)?;
-
-        if let Some(size) = array_len {
-            f.write_fmt(format_args!("[{}]", size.resolve()))?;
-        }
-
-        Ok(())
     }
 }
 
-impl Display for CDecl {
+impl<'a> Iterator for CLexer<'a> {
+    type Item = Token<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        unsafe fn str_from_ptr_range(start: *const u8, end: *const u8) -> &'static str {
+            let bytes = slice::from_raw_parts(start, end.offset_from(start) as usize);
+            std::str::from_utf8_unchecked(bytes)
+        }
+
+        let Self {
+            cur, end, ident, ..
+        } = self;
+
+        loop {
+            unsafe {
+                if cur == end {
+                    return None;
+                }
+
+                let char = str_from_ptr_range(*cur, *end)
+                    .chars()
+                    .next()
+                    .unwrap_unchecked();
+                let next = cur.add(char.len_utf8());
+                let alphanumeric = char.is_ascii_alphanumeric() || char == '_';
+
+                if alphanumeric {
+                    if ident.is_none() {
+                        // this character is potentially the start of a multi-character token
+                        *ident = Some(*cur);
+                    }
+                    *cur = next;
+                }
+
+                // we're either on the last character or the current ident has ended
+                if !alphanumeric || next == *end {
+                    if let Some(ident) = ident.take() {
+                        let ident = str_from_ptr_range(ident, *cur);
+                        match ident {
+                            // struct in type declaration is ignored
+                            "struct" => continue,
+                            "const" => return Some(Token::Const),
+                            _ => return Some(Token::Alphanumeric(ident)),
+                        };
+                    } else {
+                        // note that we increment after this character only after we've potentially returned an ident
+                        // looped around, and now we're actually handling the single-character token
+                        *cur = next;
+                        match char {
+                            '*' => return Some(Token::Ptr),
+                            '[' => return Some(Token::LBracket),
+                            ']' => return Some(Token::RBracket),
+                            '(' => return Some(Token::LParen),
+                            ')' => return Some(Token::RParen),
+                            ':' => return Some(Token::DoubleColon),
+                            _ => continue,
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TyToken {
+    BaseType(UniqueStr),
+    Ptr,
+    Array(Option<String>),
+    Const,
+}
+
+#[derive(PartialEq, Eq, Clone)]
+pub struct Type(pub Vec<TyToken>);
+
+impl Type {
+    pub fn try_only_basetype(&self) -> Option<UniqueStr> {
+        // type cannot be empty, unwrapping is fine
+        if let &TyToken::BaseType(s) = self.0.get(0).unwrap() {
+            Some(s)
+        } else {
+            None
+        }
+    }
+    pub fn from_ty_tokens(tokens: Vec<TyToken>) -> Self {
+        Self(tokens)
+    }
+}
+
+impl Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("dummy")
+        fmt_type_tokens_impl(&self.0, |s, f| f.write_str(s.resolve()), f)
     }
 }
 
-pub fn fmt_tokens(
-    tokens: &[TypeToken],
-    // this function is used in two places, in one we want a readable text that simply specifies all the type structure in C syntax
-    // the other is actually rust type syntax and needs identifiers to contain paths to their respective modules, as such you get this:
-    fmt_ident: &dyn Fn(&UniqueStr, &mut std::fmt::Formatter) -> std::fmt::Result,
-    f: &mut std::fmt::Formatter,
+impl Debug for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_char('"')?;
+        fmt_type_tokens_impl(&self.0, |s, f| f.write_str(s.resolve()), f)?;
+        f.write_char('"')
+    }
+}
+
+pub fn fmt_type_tokens_impl<F: Fn(UniqueStr, &mut std::fmt::Formatter<'_>) -> std::fmt::Result>(
+    tokens: &[TyToken],
+    on_ident: F,
+    f: &mut std::fmt::Formatter<'_>,
 ) -> std::fmt::Result {
     for (i, token) in tokens.iter().enumerate() {
-        // control flow tricks
-        loop {
-            let str = match token {
-                TypeToken::Const => "const",
-                TypeToken::Mut => "mut",
-                TypeToken::Ptr => "*",
-                TypeToken::Ident(ty) => {
-                    fmt_ident(ty, f)?;
-                    break;
+        match token {
+            TyToken::BaseType(s) => {
+                on_ident(*s, f)?;
+            }
+            TyToken::Ptr => {
+                f.write_char('*')?;
+
+                if !matches!(tokens.get(i + 1), Some(&TyToken::Const)) {
+                    f.write_str("mut ")?;
                 }
-            };
-            f.write_str(str)?;
-            break;
+            }
+            TyToken::Array(s) => {
+                f.write_char('[')?;
+                fmt_type_tokens_impl(&tokens[i + 1..], on_ident, f)?;
+                if let Some(size) = s {
+                    f.write_fmt(format_args!("; {}", size))?;
+                }
+                f.write_char(']')?;
+                return Ok(());
+            }
+            TyToken::Const => {
+                f.write_str("const")?;
+            }
         }
-        if i != tokens.len() - 1 && *token != TypeToken::Ptr {
+
+        if i != tokens.len() - 1 && *token != TyToken::Ptr {
             f.write_char(' ')?;
         }
     }
     Ok(())
 }
 
-pub fn parse_type(str: &str, has_name: bool, int: &Interner) -> (Option<UniqueStr>, CDecl) {
-    let mut out = Decl {
-        tokens: Vec::new(),
-        array_len: None,
-        bitfield_len: None,
-    };
-    let mut bitfield = false;
-    let mut start = None;
-    let mut chars = str.char_indices().peekable();
-    loop {
-        let (mut i, char) = match chars.next() {
-            Some(s) => s,
-            None => break,
-        };
+pub struct Lexer<'a>(Peekable<CLexer<'a>>);
 
-        let alphanumeric = char.is_ascii_alphanumeric() || char == '_';
-        if alphanumeric {
-            if start.is_none() {
-                start = Some(i);
-            }
-        }
-
-        if alphanumeric == false || chars.peek().is_none() {
-            if let Some(s) = start {
-                if alphanumeric == true && chars.peek().is_none() {
-                    i += 1;
-                }
-
-                let ident = &str[s..i];
-                match ident {
-                    // archaic C declaration like "struct Type something" are read as "Type something"
-                    "struct" => {}
-                    "const" => out.tokens.push(TypeToken::Const),
-                    _ => out.tokens.push(TypeToken::Ident(ident.intern(int))),
-                }
-                start = None;
-            }
-        }
-
-        match char {
-            '*' => out.tokens.push(TypeToken::Ptr),
-            // char deviceName[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE]
-            ']' => {
-                assert!(bitfield == false);
-                match out.tokens.pop() {
-                    Some(TypeToken::Ident(str)) => {
-                        // make <something>  <name>[len]
-                        // into <something>* <name>
-                        out.array_len = Some(str);
-                        out.tokens.insert(out.tokens.len() - 1, TypeToken::Ptr)
-                    }
-                    _ => unreachable!(),
-                }
-            }
-            ':' => bitfield = true,
-            _ => {}
-        }
+impl<'a> Lexer<'a> {
+    pub fn new(str: &'a str) -> Self {
+        Self(CLexer::new(str).peekable())
     }
-
-    if bitfield {
-        assert!(out.array_len.is_none());
-        let size = match out.tokens.pop() {
-            Some(TypeToken::Ident(str)) => str.resolve().parse::<u32>().unwrap(),
-            _ => unreachable!(),
-        };
-        out.bitfield_len = Some(size);
+    pub fn next(&mut self) -> Option<Token> {
+        self.0.next()
     }
+    pub fn peek(&mut self) -> Option<Token> {
+        self.0.peek().cloned()
+    }
+    pub fn expect(&mut self, tok: Token) {
+        let next = self.next();
+        assert!(Some(tok) == next, "Expected '{:?}', got {:?}", tok, next);
+    }
+    pub fn consume_all(&mut self, tok: Token) -> usize {
+        let mut i = 0;
+        while let Some(next) = self.peek() {
+            if next == tok {
+                i += 1;
+                self.next();
+            } else {
+                return i;
+            }
+        }
+        return i;
+    }
+    pub fn consume_n(&mut self, tok: Token, n: usize) -> usize {
+        let mut i = 0;
+        while let Some(next) = self.peek() {
+            if next == tok {
+                i += 1;
+                self.next();
 
-    let name = if has_name {
-        Some(match out.tokens.pop() {
-            Some(TypeToken::Ident(str)) => str,
-            _ => unreachable!(),
-        })
-    } else {
-        None
-    };
+                if i == n {
+                    return n;
+                }
+            } else {
+                break;
+            }
+        }
 
-    (name, CDecl(out))
+        return i;
+    }
+    pub fn consume_all_fn<F: Fn(Token) -> bool>(&mut self, fun: F) -> usize {
+        let mut i = 0;
+        while let Some(next) = self.peek() {
+            if !fun(next) {
+                break;
+            }
+            i += 1;
+        }
+        return i;
+    }
 }
 
+// Bloody hell, C type decls are such a mess!
+// Resources used:
+//   https://eli.thegreenplace.net/2008/07/18/reading-c-type-declarations/
+//   http://www.unixwiz.net/techtips/reading-cdecl.html
+//   https://cdecl.org/
+// TODO support function pointers
+pub fn parse_type_decl(str: &str, int: &Interner) -> (Option<UniqueStr>, Type, Option<u8>) {
+    let mut l = Lexer::new(str);
+    let parens = l.consume_all(Token::LParen);
+
+    let mut tokens = Vec::new();
+    match l.next().unwrap() {
+        Token::Alphanumeric(s) => {
+            tokens.push(TyToken::BaseType(s.intern(int)));
+            if let Some(Token::Const) = l.peek() {
+                tokens.push(TyToken::Const);
+                l.next();
+            }
+        }
+        Token::Const => {
+            if let Some(Token::Alphanumeric(s)) = l.next() {
+                tokens.push(TyToken::BaseType(s.intern(int)));
+                tokens.push(TyToken::Const);
+            } else {
+                unreachable!()
+            }
+        }
+        _ => unreachable!(),
+    };
+
+    let mut name = None;
+    let mut bitfield = None;
+    recursive_parse(&mut l, &mut tokens, &mut name, &mut bitfield, int);
+
+    l.consume_n(Token::RParen, parens);
+
+    // reverse the order of all consecutive `TyToken::Array`s since they should be parsed in the reverse direction that
+    // the modifiers left of the variable name
+    let mut i = 0;
+    while i < tokens.len() {
+        if let TyToken::Array(_) = tokens[i] {
+            let start = i;
+            i += 1;
+            while i < tokens.len() {
+                if !matches!(tokens[i], TyToken::Array(_)) {
+                    break;
+                }
+                i += 1;
+            }
+
+            tokens[start..i].reverse();
+        }
+        i += 1;
+    }
+
+    // we've been parsing such that the basetype is at the start and the type is built off it
+    // it's really more useful to have it the other way
+    tokens.reverse();
+    (name, Type(tokens), bitfield)
+}
+
+fn recursive_parse(
+    l: &mut Lexer,
+    tokens: &mut Vec<TyToken>,
+    name: &mut Option<UniqueStr>,
+    bitfield: &mut Option<u8>,
+    int: &Interner,
+) {
+    // in declarations where no parentheses are used this never allocates (in fact I don't think vulkan uses any)
+    let mut later = Vec::new();
+    while let Some(next) = l.next() {
+        match next {
+            Token::Ptr => tokens.push(TyToken::Ptr),
+            Token::Const => tokens.push(TyToken::Const),
+            Token::LBracket => {
+                let size = match l.next().unwrap() {
+                    Token::Alphanumeric(s) => {
+                        let s = s.to_owned();
+                        l.expect(Token::RBracket);
+                        Some(s)
+                    }
+                    Token::RBracket => None,
+                    _ => unreachable!(),
+                };
+                tokens.push(TyToken::Array(size))
+            }
+            Token::LParen => {
+                recursive_parse(l, &mut later, name, bitfield, int);
+                l.expect(Token::RParen);
+
+                if bitfield.is_some() {
+                    break;
+                }
+            }
+            Token::Alphanumeric(s) => {
+                // any alphanumeric in this place must be a name
+                assert!(name.is_none());
+                *name = Some(s.intern(int));
+            }
+            Token::DoubleColon => {
+                if let Some(Token::Alphanumeric(bits)) = l.next() {
+                    assert!(bitfield.is_none());
+                    *bitfield = Some(bits.parse().unwrap());
+                    break;
+                } else {
+                    unreachable!()
+                }
+            }
+            Token::RBracket | Token::RParen => unreachable!(),
+        }
+
+        if let Some(Token::RParen) = l.peek() {
+            break;
+        }
+    }
+
+    tokens.append(&mut later)
+}
+
+#[test]
+fn test_lex_type() {
+    let data: &[(&str, &[Token])] = &[
+        (
+            "const char*",
+            &[Token::Const, Token::Alphanumeric("char"), Token::Ptr],
+        ),
+        (
+            "ůůAaůů *   I ඞ",
+            &[
+                // only recognizes ascii characters
+                Token::Alphanumeric("Aa"),
+                Token::Ptr,
+                Token::Alphanumeric("I"),
+            ],
+        ),
+        (
+            "name1 2 ** [size] \n next ",
+            &[
+                Token::Alphanumeric("name1"),
+                Token::Alphanumeric("2"),
+                Token::Ptr,
+                Token::Ptr,
+                Token::LBracket,
+                Token::Alphanumeric("size"),
+                Token::RBracket,
+                Token::Alphanumeric("next"),
+            ],
+        ),
+    ];
+
+    for (str, expect) in data {
+        let tokens = CLexer::new(str).collect::<Vec<_>>();
+        assert_eq!(tokens.as_slice(), *expect);
+    }
+}
 #[test]
 fn test_parse_type() {
     let int = Interner::new();
-
-    let expected = (
-        Some("deviceName".intern(&int)),
-        CDecl(Decl {
-            tokens: vec![TypeToken::Ident("char".intern(&int)), TypeToken::Ptr],
-            array_len: Some("VK_MAX_PHYSICAL_DEVICE_NAME_SIZE".intern(&int)),
-            bitfield_len: None,
-        }),
-    );
-    let test = parse_type(
-        "char deviceName[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE]",
-        true,
-        &int,
-    );
-    assert_eq!(expected, test);
-
-    let expected = (
-        Some("pTest".intern(&int)),
-        CDecl(Decl {
-            tokens: vec![
-                TypeToken::Const,
-                TypeToken::Ident("char".intern(&int)),
-                TypeToken::Ptr,
-                TypeToken::Const,
+    // verified by https://cdecl.org/
+    let data: &[(&str, Option<&str>, &[TyToken])] = &[
+        (
+            "const char*",
+            None,
+            &[
+                TyToken::Ptr,
+                TyToken::Const,
+                TyToken::BaseType("char".intern(&int)),
             ],
-            array_len: None,
-            bitfield_len: None,
-        }),
-    );
-    let test = parse_type("const char* const pTest", true, &int);
-    assert_eq!(expected, test);
+        ),
+        (
+            "char (*(*name)[1][2])[3]",
+            Some("name"),
+            &[
+                TyToken::Ptr,
+                TyToken::Array(Some("1".to_owned())),
+                TyToken::Array(Some("2".to_owned())),
+                TyToken::Ptr,
+                TyToken::Array(Some("3".to_owned())),
+                TyToken::BaseType("char".intern(&int)),
+            ],
+        ),
+    ];
+
+    for &(str, name, tokens) in data {
+        let expect = (name, tokens);
+
+        // borrowchk fun!
+        let got = parse_type_decl(str, &int);
+        let mut tmp = None;
+        let got = (
+            got.0.map(|s| {
+                tmp = Some(s);
+                tmp.as_ref().unwrap().resolve()
+            }),
+            got.1 .0.as_slice(),
+        );
+
+        assert_eq!(got, expect);
+    }
 }
 
 #[test]
-fn test_type_parse_convert() {
+fn test_type_display() {
     let int = Interner::new();
+    let ty = Type(vec![
+        TyToken::Ptr,
+        TyToken::Array(None),
+        TyToken::Array(Some("1".to_owned())),
+        TyToken::Ptr,
+        TyToken::Const,
+        TyToken::BaseType("char".intern(&int)),
+    ]);
 
-    let c = vec![
-        TypeToken::Const,
-        TypeToken::Ident("VkAccelerationStructureBuildRangeInfoKHR".intern(&int)),
-        TypeToken::Ptr,
-        TypeToken::Const,
-        TypeToken::Ptr,
-        TypeToken::Ptr,
-    ];
+    let display = format!("{}", ty);
+    let debug = format!("{:?}", ty);
 
-    let c_src = "const VkAccelerationStructureBuildRangeInfoKHR *const**";
-    let (_, decl) = parse_type(c_src, false, &int);
-
-    assert_eq!(decl.0.tokens, c);
+    assert_eq!(display, "*mut [[*const char; 1]]");
+    assert_eq!(debug, "\"*mut [[*const char; 1]]\"");
 }

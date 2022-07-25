@@ -32,7 +32,7 @@ impl UniqueStr {
             std::str::from_utf8_unchecked(bytes)
         }
     }
-    pub fn rename(&self, to: &UniqueStr) {
+    pub fn rename(&self, to: UniqueStr) {
         *self.get_header_mut() = to.get_header().clone();
     }
     fn get_header(&self) -> &StringHeader {
@@ -273,7 +273,7 @@ fn test_interner() {
     assert_eq!(b.resolve(), "B");
     assert_eq!(s.resolve(), "ඞ");
 
-    a.rename(&b);
+    a.rename(b);
 
     assert_eq!(a.resolve(), "B");
 

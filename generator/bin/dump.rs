@@ -17,6 +17,7 @@ fn main() {
 
     let vk = true;
     let video = true;
+    let workarounds = true;
 
     let mut reg = Registry::new();
 
@@ -28,9 +29,15 @@ fn main() {
         process_registry_xml(&mut reg, &std::fs::read_to_string("./video.xml").unwrap());
     }
 
-    write!(reg_file, "{:#?}", &reg).unwrap();
+    if !workarounds {
+        write!(reg_file, "{:#?}", &reg).unwrap();
+    }
 
     let ctx = Context::new(reg);
+
+    if workarounds {
+        write!(reg_file, "{:#?}", &ctx.reg()).unwrap();
+    }
 
     let mut own_file = BufWriter::new(
         File::create(concat!(
