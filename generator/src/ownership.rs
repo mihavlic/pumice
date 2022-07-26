@@ -14,6 +14,7 @@ pub fn resolve_ownership(ctx: &mut Context) {
         reg,
         symbol_ownership,
         sections,
+        ..
     } = ctx;
 
     // iterate through the sections and the items in their `require` tags

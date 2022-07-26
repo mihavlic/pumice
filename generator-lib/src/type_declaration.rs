@@ -107,7 +107,7 @@ impl<'a> Iterator for CLexer<'a> {
 pub enum TyToken {
     BaseType(UniqueStr),
     Ptr,
-    Array(Option<String>),
+    Array(Option<UniqueStr>),
     Const,
 }
 
@@ -130,27 +130,36 @@ impl Type {
 
 impl Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        fmt_type_tokens_impl(&self.0, |s, f| f.write_str(s.resolve()), f)
+        fmt_type_tokens_simple(&self.0, f)
     }
 }
 
 impl Debug for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_char('"')?;
-        fmt_type_tokens_impl(&self.0, |s, f| f.write_str(s.resolve()), f)?;
+        fmt_type_tokens_simple(&self.0, f)?;
         f.write_char('"')
     }
 }
 
-pub fn fmt_type_tokens_impl<F: Fn(UniqueStr, &mut std::fmt::Formatter<'_>) -> std::fmt::Result>(
+fn fmt_type_tokens_simple(tokens: &[TyToken], f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    let resolve = |s: UniqueStr, f: &mut std::fmt::Formatter| f.write_str(s.resolve());
+    fmt_type_tokens_impl(tokens, &resolve, &resolve, f)
+}
+
+pub fn fmt_type_tokens_impl<
+    F1: Fn(UniqueStr, &mut std::fmt::Formatter<'_>) -> std::fmt::Result,
+    F2: Fn(UniqueStr, &mut std::fmt::Formatter<'_>) -> std::fmt::Result,
+>(
     tokens: &[TyToken],
-    on_ident: F,
+    on_ident: &F1,
+    on_arr: &F2,
     f: &mut std::fmt::Formatter<'_>,
 ) -> std::fmt::Result {
     for (i, token) in tokens.iter().enumerate() {
         match token {
-            TyToken::BaseType(s) => {
-                on_ident(*s, f)?;
+            &TyToken::BaseType(s) => {
+                on_ident(s, f)?;
             }
             TyToken::Ptr => {
                 f.write_char('*')?;
@@ -159,11 +168,12 @@ pub fn fmt_type_tokens_impl<F: Fn(UniqueStr, &mut std::fmt::Formatter<'_>) -> st
                     f.write_str("mut ")?;
                 }
             }
-            TyToken::Array(s) => {
+            &TyToken::Array(s) => {
                 f.write_char('[')?;
-                fmt_type_tokens_impl(&tokens[i + 1..], on_ident, f)?;
+                fmt_type_tokens_impl(&tokens[i + 1..], on_ident, on_arr, f)?;
                 if let Some(size) = s {
-                    f.write_fmt(format_args!("; {}", size))?;
+                    f.write_str("; ")?;
+                    on_arr(size, f)?;
                 }
                 f.write_char(']')?;
                 return Ok(());
@@ -314,7 +324,7 @@ fn recursive_parse(
             Token::LBracket => {
                 let size = match l.next().unwrap() {
                     Token::Alphanumeric(s) => {
-                        let s = s.to_owned();
+                        let s = s.intern(int);
                         l.expect(Token::RBracket);
                         Some(s)
                     }
@@ -411,10 +421,10 @@ fn test_parse_type() {
             Some("name"),
             &[
                 TyToken::Ptr,
-                TyToken::Array(Some("1".to_owned())),
-                TyToken::Array(Some("2".to_owned())),
+                TyToken::Array(Some("1".intern(&int))),
+                TyToken::Array(Some("2".intern(&int))),
                 TyToken::Ptr,
-                TyToken::Array(Some("3".to_owned())),
+                TyToken::Array(Some("3".intern(&int))),
                 TyToken::BaseType("char".intern(&int)),
             ],
         ),
@@ -444,7 +454,7 @@ fn test_type_display() {
     let ty = Type(vec![
         TyToken::Ptr,
         TyToken::Array(None),
-        TyToken::Array(Some("1".to_owned())),
+        TyToken::Array(Some("1".intern(&int))),
         TyToken::Ptr,
         TyToken::Const,
         TyToken::BaseType("char".intern(&int)),

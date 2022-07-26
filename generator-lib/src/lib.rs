@@ -90,7 +90,8 @@ pub struct StructMember {
 #[derive(Debug, Clone)]
 pub enum EnumValue {
     Bitpos(u32),
-    Value(i64),
+    // i32 is fine, see https://github.com/KhronosGroup/Vulkan-Docs/issues/124#issuecomment-192878892
+    Value(i32),
     Alias(UniqueStr),
 }
 
@@ -1346,10 +1347,10 @@ fn parse_comma_separated(str: Option<&str>, int: &Interner) -> Vec<UniqueStr> {
     }
 }
 
-fn parse_detect_radix(str: &str) -> i64 {
+fn parse_detect_radix(str: &str) -> i32 {
     if str.len() > 2 && &str[0..2] == "0x" {
-        i64::from_str_radix(&str[2..], 16).unwrap()
+        i32::from_str_radix(&str[2..], 16).unwrap()
     } else {
-        i64::from_str_radix(str, 10).unwrap()
+        i32::from_str_radix(str, 10).unwrap()
     }
 }

@@ -1,5 +1,5 @@
 use crate::{
-    format_utils::{FormatWriter, Separated, WriteWriteAdapter},
+    format_utils::{FormatWriter, Pathed, Separated, WriteWriteAdapter},
     ownership::{add_dependent_sections, resolve_ownership},
     workarounds::apply_workarounds,
 };
@@ -9,7 +9,6 @@ use generator_lib::{
     type_declaration::Type,
     EnumValue, Registry, StructMember, Symbol, SymbolBody,
 };
-use registry_format::Pathed;
 use std::{
     collections::HashMap,
     error::Error,
@@ -22,7 +21,6 @@ use std::{
 
 mod format_utils;
 mod ownership;
-mod registry_format;
 mod workarounds;
 
 pub enum SectionKind {
@@ -41,6 +39,12 @@ pub struct Context {
     pub(crate) reg: Registry,
     pub(crate) symbol_ownership: Vec<u32>,
     pub(crate) sections: Vec<Section>,
+    // in vulkan bitmasks are implemented as a typedef of an integer that serves
+    // as the actual object of the bitmask and a distinct enum that hold the
+    // actual name/value pairs, in rust we have no need for this, the formatting
+    // code needs to know which Bitmask a BitmaskBits specifies the bits for to
+    // merge them
+    pub(crate) bitmask_pairing: HashMap<UniqueStr, UniqueStr>,
 }
 
 impl Context {
@@ -49,6 +53,7 @@ impl Context {
             symbol_ownership: vec![INVALID_SECTION; reg.symbols.len()],
             reg,
             sections: Vec::new(),
+            bitmask_pairing: HashMap::new(),
         };
 
         {
@@ -71,6 +76,18 @@ impl Context {
 
         apply_workarounds(&mut s);
         resolve_ownership(&mut s);
+
+        for Symbol(name, body) in &s.reg.symbols {
+            match body {
+                SymbolBody::Bitmask { bits_enum, .. } => {
+                    if let Some(bits_enum) = bits_enum {
+                        s.bitmask_pairing.insert(*bits_enum, *name);
+                    }
+                }
+                _ => {}
+            }
+        }
+
         s
     }
     pub fn reg(&self) -> &Registry {
@@ -111,6 +128,9 @@ impl Context {
         self.reg.remove_symbol(index);
         self.symbol_ownership.remove(index as usize);
     }
+    fn get_bitmask_bits_enum(&self, bitmask_bits: UniqueStr) -> Option<UniqueStr> {
+        self.bitmask_pairing.get(&bitmask_bits).cloned()
+    }
 }
 
 impl Deref for Context {
@@ -150,22 +170,6 @@ pub fn write_bindings(
     } else {
         selected_sections.extend(sections.iter().map(|str| str.intern(&ctx)));
         add_dependent_sections(&mut selected_sections, &ctx);
-    }
-
-    // in vulkan bitmasks are implemented as a typedef of an integer that serves as the actual object of the bitmask
-    // and a distinct enum that hold the various bitflags, with rust we want to have only the integer with the flags as associated values
-    // this needs to know which Bitmask a BitmaskBits specifies the bits for
-    let mut bitmask_pairing = HashMap::new();
-
-    for Symbol(name, body) in &ctx.reg.symbols {
-        match body {
-            SymbolBody::Bitmask { bits_enum, .. } => {
-                if let Some(bits_enum) = bits_enum {
-                    bitmask_pairing.insert(*bits_enum, *name);
-                }
-            }
-            _ => {}
-        }
     }
 
     selected_sections.sort_unstable();
@@ -223,9 +227,15 @@ pub fn write_bindings(
         }
         prev_section = section;
 
-        let writer = section_writer.as_mut().unwrap();
+        macro_rules! path {
+            ($var:expr) => {
+                Pathed($var, &ctx, cur_section)
+            };
+        }
 
+        let writer = section_writer.as_mut().unwrap();
         let Symbol(name, body) = &ctx.reg.symbols[item];
+
         match body {
             &SymbolBody::Alias(of) => {
                 if !is_std_type(of) {
@@ -239,7 +249,7 @@ pub fn write_bindings(
                             code2!(
                                 writer,
                                 "pub const {}: {} = {};"
-                                @ name, ty, Pathed(target.0, &ctx, cur_section)
+                                @ name, path!(ty), path!(target.0)
                             )?;
                             continue;
                         }
@@ -258,14 +268,14 @@ pub fn write_bindings(
                 code2!(
                     writer,
                     "pub type {} = {};"
-                    @ name, Pathed(of, &ctx, cur_section)
+                    @ name, path!(of)
                 )?;
             }
             SymbolBody::Redeclaration(ty) => {
                 code2!(
                     writer,
                     "pub type {} = {};"
-                    @ name, ty
+                    @ name, path!(ty)
                 )?;
             }
             // there is nothing to do with defines in rust, just skip them
@@ -319,9 +329,8 @@ pub fn write_bindings(
                     false => "struct",
                 };
                 let members = merge_bitfield_members(&members, &ctx);
-                let members = Separated::members(members.iter(), |(name, ty), f| {
-                    let ty = ty;
-                    format_args!("{}: {}", name, ty).fmt(f)
+                let members = Separated::members(members.iter(), |&(name, ty), f| {
+                    format_args!("{}: {}", name, path!(ty)).fmt(f)
                 });
                 code2!(
                     writer,
@@ -339,18 +348,15 @@ pub fn write_bindings(
                 )?;
             }
             SymbolBody::Enum { members } => {
-                let members = Separated::members(members.iter(), |(name, val), f| {
-                    let name = name;
-                    match val {
-                        EnumValue::Bitpos(pos) => format_args!("{} = 1 << {}", name, *pos).fmt(f),
-                        EnumValue::Value(val) => format_args!("{} = {}", name, val).fmt(f),
-                        EnumValue::Alias(alias) => {
-                            format_args!("{} = Self::{}", name, alias).fmt(f)
-                        }
-                    }
+                let members = Separated::members(members.iter(), |(name, val), f| match *val {
+                    EnumValue::Bitpos(pos) => format_args!("{} = 1 << {}", name, pos).fmt(f),
+                    EnumValue::Value(val) => format_args!("{} = {}", name, val).fmt(f),
+                    EnumValue::Alias(alias) => format_args!("{} = Self::{}", name, alias).fmt(f),
                 });
+
                 code2!(
                     writer,
+                    "#[repr(i32)]"
                     "pub enum {} {{"
                     "    {}"
                     "}}"
@@ -365,12 +371,13 @@ pub fn write_bindings(
 
                 // when vulkan has a Bitmask that is reserved for future use and thus has no actual flag values, there are no BitmaskBits defined and the spec omits Bitmask dependency
                 // however of course there are exceptions such as VkSemaphoreCreateFlagBits which is not Cdeclared as a dependency but is actually an item :(
-                let bitmask_name = match bitmask_pairing.get(name) {
-                    Some(n) => *n,
+                let bitmask_name = match ctx.get_bitmask_bits_enum(*name) {
+                    Some(n) => n,
                     None => continue,
                 };
 
-                let ty = Pathed(get_concrete_type(bitmask_name, &ctx.reg), &ctx, cur_section);
+                let ty = path!(get_underlying_type(bitmask_name, &ctx));
+
                 let bits = Separated::statements(members.iter(), |(name, val), f| {
                     let name = name;
                     match val {
@@ -399,17 +406,19 @@ pub fn write_bindings(
                 params,
             } => {
                 let args = Separated::args(params.iter(), |param, f| {
-                    format_args!("{}: {}", param.name, param.ty).fmt(f)
+                    format_args!("{}: {}", param.name, path!(&param.ty)).fmt(f)
                 });
 
                 // uhh ... we're not allocating a string anymore though
+                let mut _tmp = None;
                 let (ret1, ret2): (&str, &dyn Display) = loop {
                     if let Some(ty) = return_type.try_only_basetype() {
                         if ty.resolve() == "void" {
                             break (&"", &"");
                         }
                     }
-                    break (&"-> ", &return_type);
+                    _tmp = Some(path!(return_type));
+                    break (&"-> ", _tmp.as_ref().unwrap());
                 };
 
                 code2!(
@@ -482,7 +491,7 @@ fn apply_renames(ctx: &Context) {
 
 fn merge_bitfield_members<'a>(
     members: &'a [StructMember],
-    reg: &Registry,
+    ctx: &Context,
 ) -> Vec<(UniqueStr, &'a Type)> {
     let mut resolved = Vec::new();
     let mut last_ty: Option<&Type> = None;
@@ -521,7 +530,7 @@ fn merge_bitfield_members<'a>(
                     concat += "_";
                     concat += member.resolve();
                 }
-                concat.intern(reg)
+                concat.intern(ctx)
             };
 
             resolved.push((name, ty));
@@ -538,9 +547,9 @@ fn merge_bitfield_members<'a>(
             // we don't really ever have good quality information about type layout as we expect bindgen to do it for us
             let basetype = ty
                 .try_only_basetype()
-                .expect("Only a base raw integr can be a bitfield.");
+                .expect("Only a base raw integer can be a bitfield.");
 
-            let type_bits = match get_concrete_type(basetype, reg).resolve() {
+            let type_bits = match get_underlying_type(basetype, ctx).resolve() {
                 "u8" | "i8" => 8,
                 "u16" | "i16" => 16,
                 "u32" | "i32" => 32,
@@ -577,32 +586,33 @@ fn resolve_alias<'a>(alias: UniqueStr, reg: &'a Registry) -> (UniqueStr, &'a Sym
     }
 }
 
-// get the underlying type of a symbol, the difference between this and
-// resolve_alias is that this also jumps through things preserving the type
-// layout, such as handles or constants this will stop at typedefs as those
-// are handled by bindgen and thus we don't have information about
-fn get_concrete_type(name: UniqueStr, reg: &Registry) -> UniqueStr {
+// Get the underlying type of a symbol.
+// The difference between this and `resolve_alias()` is that this also jumps through "transparent" symbols, such as handles or constants.
+fn get_underlying_type(name: UniqueStr, ctx: &Context) -> UniqueStr {
     let mut name = name;
     loop {
         if is_std_type(name) {
             return name;
         }
 
-        let top = reg.find_symbol(name).unwrap();
+        let top = ctx.find_symbol(name).unwrap();
         match top {
-            SymbolBody::Alias (of) => name = *of,
+            SymbolBody::Alias(of) => name = *of,
             SymbolBody::Bitmask { ty, .. } => name = *ty,
-            SymbolBody::Handle { .. } => name = "uint64_t".intern(&reg), // the underlying type of all handles is this 
-            SymbolBody::Constant { .. } => panic!("FIXME somehow unify symbols and more complex types?"),
-            SymbolBody::Redeclaration(_) |
-            SymbolBody::Basetype { .. } |
-            SymbolBody::Included { .. } |
-            SymbolBody::Struct { .. } |
-            SymbolBody::Funcpointer { .. } => return name,
+            SymbolBody::Handle { .. } => name = "uint64_t".intern(ctx), // the underlying type of all handles is this
+            SymbolBody::Constant { ty, .. } => name = ty.try_only_basetype().unwrap(),
+            SymbolBody::Redeclaration(_)
+            | SymbolBody::Basetype { .. }
+            | SymbolBody::Included { .. }
+            | SymbolBody::Struct { .. }
+            | SymbolBody::Funcpointer { .. } => return name,
             SymbolBody::Command { .. } | SymbolBody::Define { .. } => unreachable!(),
-            // even though it's called bits, it's just an enum with different semantics
-            SymbolBody::BitmaskBits { .. } |
-            SymbolBody::Enum { .. } => unreachable!("This doesn't really make sense as in vulkan 'enum's only have integer values but no types."),
+            SymbolBody::BitmaskBits { .. } => name = ctx.get_bitmask_bits_enum(name).unwrap(),
+            // in C it isn't really clear what type backs an enum, however vulkan never crosses i32::max
+            // and reddit says that it's indeed i32, erupt also uses i32
+            //   https://www.reddit.com/r/vulkan/comments/4710rm/comment/d09gprb/
+            //   https://github.com/KhronosGroup/Vulkan-Docs/issues/124#issuecomment-192878892
+            SymbolBody::Enum { .. } => name = "int32_t".intern(ctx),
         }
     }
 }
