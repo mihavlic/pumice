@@ -1,11 +1,14 @@
-use std::fmt::{Display, Formatter, Write};
+use std::{
+    fmt::{Display, Formatter, Write},
+    iter,
+};
 
 use generator_lib::{
     interner::UniqueStr,
     type_declaration::{fmt_type_tokens_impl, Type},
 };
 
-use crate::Context;
+use crate::{Context, Section};
 
 #[derive(PartialEq, Eq)]
 enum State {
@@ -251,21 +254,35 @@ fn fmt_symbol_path(
         "int32_t" => "i32",
         "int64_t" => "i64",
         other => {
-            let section = ctx
+            let section_idx = ctx
                 .get_item_section_idx(name)
                 .unwrap_or_else(|| panic!("{}", &name_ref));
-            if section != current_section {
-                format_args!(
-                    "crate::{}::",
-                    ctx.sections()[section as usize].name.resolve()
-                )
-                .fmt(f)?;
+
+            if section_idx != current_section {
+                f.write_str("crate::")?;
+
+                let section = ctx.get_section(section_idx).unwrap();
+                let section_name = section.name.resolve();
+
+                for path in section_get_path(section)
+                    .iter()
+                    .chain(iter::once(&section_name))
+                {
+                    format_args!("{}::", path).fmt(f)?;
+                }
             }
             other
         }
     };
 
     f.write_str(str)
+}
+
+pub fn section_get_path(section: &Section) -> &'static [&'static str] {
+    match section.kind {
+        crate::SectionKind::Feature(_) => &[],
+        crate::SectionKind::Extension(_) => &["extensions"],
+    }
 }
 
 #[test]

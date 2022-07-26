@@ -1,5 +1,5 @@
 use crate::{
-    format_utils::{FormatWriter, Pathed, Separated, WriteWriteAdapter},
+    format_utils::{section_get_path, FormatWriter, Pathed, Separated, WriteWriteAdapter},
     ownership::{add_dependent_sections, resolve_ownership},
     workarounds::apply_workarounds,
 };
@@ -13,10 +13,10 @@ use std::{
     collections::HashMap,
     error::Error,
     fmt::{Display, Write},
-    fs::File,
+    fs::{self, File},
     io::BufWriter,
     ops::Deref,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 mod format_utils;
@@ -121,14 +121,14 @@ impl Context {
             .binary_search_by_key(&name, |s| s.name)
             .unwrap() as u32
     }
-    fn find_section(&self, name: UniqueStr) -> &Section {
+    pub fn find_section(&self, name: UniqueStr) -> &Section {
         &self.sections[self.find_section_idx(name) as usize]
     }
-    fn remove_symbol(&mut self, index: u32) {
+    pub fn remove_symbol(&mut self, index: u32) {
         self.reg.remove_symbol(index);
         self.symbol_ownership.remove(index as usize);
     }
-    fn get_bitmask_bits_enum(&self, bitmask_bits: UniqueStr) -> Option<UniqueStr> {
+    pub fn get_bitmask_bits_enum(&self, bitmask_bits: UniqueStr) -> Option<UniqueStr> {
         self.bitmask_pairing.get(&bitmask_bits).cloned()
     }
 }
@@ -156,44 +156,54 @@ pub fn write_bindings(
 
     apply_renames(&ctx);
 
-    let mut selected_sections = Vec::new();
-    if sections.contains(&"@all") {
-        let disabled = "disabled".intern(&ctx);
-        selected_sections.extend(ctx.reg.features.iter().map(|a| a.name));
-        selected_sections.extend(
-            ctx.reg
-                .extensions
-                .iter()
-                .filter(|a| a.supported.get(0) != Some(&disabled))
-                .map(|a| a.name),
-        );
-    } else {
-        selected_sections.extend(sections.iter().map(|str| str.intern(&ctx)));
-        add_dependent_sections(&mut selected_sections, &ctx);
+    let selected_sections = fill_missing_sections(sections, &ctx);
+
+    let out_dir = out.as_ref().to_path_buf();
+    let mut cur_dir = PathBuf::new();
+
+    {
+        let file = File::create(out_dir.join("Cargo.toml"))?;
+        let mut write = FormatWriter::new(WriteWriteAdapter(BufWriter::new(file)));
+        code2!(
+            &mut write,
+            r#"[package]"#
+            r#"name = "slag""#
+            r#"version = "0.1.0""#
+            r#"edition = "2021""#
+            r#""#
+            r#"[dependencies]"#
+            @
+        )?;
     }
 
-    selected_sections.sort_unstable();
+    std::fs::create_dir_all(out_dir.join("src/extensions"))?;
 
-    // (item index, section index)
-    let mut items = Vec::new();
-    for (i, &Symbol(name, _)) in ctx.reg.symbols.iter().enumerate() {
-        if let Some(section) = ctx.get_item_section_idx(name) {
-            let name = ctx.get_section(section).unwrap().name;
-            if selected_sections.binary_search(&name).is_ok() {
-                items.push((i, section));
+    {
+        use std::io::Write;
+
+        let mut lib = BufWriter::new(File::create(out_dir.join("src/lib.rs"))?);
+        let mut exts = BufWriter::new(File::create(out_dir.join("src/extensions/mod.rs"))?);
+
+        writeln!(&mut lib, "pub mod platform;")?;
+        writeln!(&mut lib, "pub mod extensions;")?;
+
+        let mut sections = selected_sections
+            .iter()
+            .map(|&s| ctx.find_section(s))
+            .collect::<Vec<_>>();
+
+        sections.sort_by_key(|s| s.name.resolve());
+
+        for section in sections {
+            match section.kind {
+                SectionKind::Feature(_) => writeln!(&mut lib, "pub mod {};", section.name)?,
+                SectionKind::Extension(_) => writeln!(&mut exts, "pub mod {};", section.name)?,
             }
         }
     }
 
-    // we rely on this sort being stable, ie preserves the relative order of equal elements
-    items.sort_by_key(|i| i.1);
-
-    let out_dir = out.as_ref().to_path_buf();
-    let mut prev_section = INVALID_SECTION;
-    let mut section_writer = None;
-
     {
-        let file = File::create(out_dir.join("platform.rs"))?;
+        let file = File::create(out_dir.join("src/platform.rs"))?;
         let mut write = FormatWriter::new(WriteWriteAdapter(BufWriter::new(file)));
         code2!(
             &mut write,
@@ -208,13 +218,38 @@ pub fn write_bindings(
         )?;
     }
 
+    // (item index, section index)
+    let mut items = Vec::new();
+    for (i, &Symbol(name, _)) in ctx.reg.symbols.iter().enumerate() {
+        if let Some(section) = ctx.get_item_section_idx(name) {
+            let name = ctx.get_section(section).unwrap().name;
+            if selected_sections.binary_search(&name).is_ok() {
+                items.push((i, section));
+            }
+        }
+    }
+
+    items.sort_by_key(|i| i.1);
+
+    let mut prev_section = INVALID_SECTION;
+    let mut section_writer = None;
+
     let mut cur_section = 0;
 
     for &(item, section) in &items {
         if section != prev_section {
-            // TODO process the names to be more rusty since right now they are literally the names of vulkan extensions
-            let file_name = ctx.get_section(section).unwrap().name.resolve();
-            let file = File::create(out_dir.join(&*file_name).with_extension("rs"))?;
+            cur_section = section;
+
+            let section = ctx.get_section(section).unwrap();
+
+            cur_dir.clone_from(&out_dir);
+            cur_dir.push("src");
+            cur_dir.extend(section_get_path(&section));
+            cur_dir.push(section.name.resolve());
+            cur_dir.set_extension("rs");
+
+            let file = File::create(&cur_dir)?;
+
             let writer = FormatWriter::new(WriteWriteAdapter(BufWriter::new(file)));
 
             section_writer = Some(writer);
@@ -222,8 +257,6 @@ pub fn write_bindings(
                 .as_mut()
                 .unwrap()
                 .write_str("use crate::platform::*;\n")?;
-
-            cur_section = section;
         }
         prev_section = section;
 
@@ -431,6 +464,26 @@ pub fn write_bindings(
     }
 
     Ok(())
+}
+
+fn fill_missing_sections(sections: &[&str], ctx: &Context) -> Vec<UniqueStr> {
+    let mut selected_sections = Vec::new();
+    if sections.contains(&"@all") {
+        let disabled = "disabled".intern(ctx);
+        selected_sections.extend(ctx.reg.features.iter().map(|a| a.name));
+        selected_sections.extend(
+            ctx.reg
+                .extensions
+                .iter()
+                .filter(|a| a.supported.get(0) != Some(&disabled))
+                .map(|a| a.name),
+        );
+    } else {
+        selected_sections.extend(sections.iter().map(|str| str.intern(ctx)));
+        add_dependent_sections(&mut selected_sections, ctx);
+    }
+    selected_sections.sort_unstable();
+    selected_sections
 }
 
 // whether the type is provided from the rust standard library and as such has no entry in the Registry
