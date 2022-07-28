@@ -177,8 +177,7 @@ pub fn apply_workarounds(ctx: &mut Context) {
         }
 
         match body {
-            SymbolBody::Enum { members } => prune_leaf_vec(members, &workarounds),
-            SymbolBody::BitmaskBits { members } => prune_leaf_vec(members, &workarounds),
+            SymbolBody::Enum { members, .. } => prune_leaf_vec(members, &workarounds),
             _ => {}
         }
 

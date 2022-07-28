@@ -6,14 +6,13 @@ use crate::{
 use generator_lib::{
     interner::{Intern, UniqueStr},
     process_registry_xml,
-    type_declaration::Type,
+    type_declaration::{TyToken, Type},
     EnumValue, Registry, StructMember, Symbol, SymbolBody,
 };
 use std::{
-    collections::HashMap,
     error::Error,
     fmt::{Display, Write},
-    fs::{self, File},
+    fs::File,
     io::BufWriter,
     ops::Deref,
     path::{Path, PathBuf},
@@ -39,12 +38,6 @@ pub struct Context {
     pub(crate) reg: Registry,
     pub(crate) symbol_ownership: Vec<u32>,
     pub(crate) sections: Vec<Section>,
-    // in vulkan bitmasks are implemented as a typedef of an integer that serves
-    // as the actual object of the bitmask and a distinct enum that hold the
-    // actual name/value pairs, in rust we have no need for this, the formatting
-    // code needs to know which Bitmask a BitmaskBits specifies the bits for to
-    // merge them
-    pub(crate) bitmask_pairing: HashMap<UniqueStr, UniqueStr>,
 }
 
 impl Context {
@@ -53,7 +46,6 @@ impl Context {
             symbol_ownership: vec![INVALID_SECTION; reg.symbols.len()],
             reg,
             sections: Vec::new(),
-            bitmask_pairing: HashMap::new(),
         };
 
         {
@@ -76,17 +68,6 @@ impl Context {
 
         apply_workarounds(&mut s);
         resolve_ownership(&mut s);
-
-        for Symbol(name, body) in &s.reg.symbols {
-            match body {
-                SymbolBody::Bitmask { bits_enum, .. } => {
-                    if let Some(bits_enum) = bits_enum {
-                        s.bitmask_pairing.insert(*bits_enum, *name);
-                    }
-                }
-                _ => {}
-            }
-        }
 
         s
     }
@@ -128,9 +109,6 @@ impl Context {
         self.reg.remove_symbol(index);
         self.symbol_ownership.remove(index as usize);
     }
-    pub fn get_bitmask_bits_enum(&self, bitmask_bits: UniqueStr) -> Option<UniqueStr> {
-        self.bitmask_pairing.get(&bitmask_bits).cloned()
-    }
 }
 
 impl Deref for Context {
@@ -161,6 +139,8 @@ pub fn write_bindings(
     let out_dir = out.as_ref().to_path_buf();
     let mut cur_dir = PathBuf::new();
 
+    std::fs::create_dir_all(out_dir.join("src/extensions"))?;
+
     {
         let file = File::create(out_dir.join("Cargo.toml"))?;
         let mut write = FormatWriter::new(WriteWriteAdapter(BufWriter::new(file)));
@@ -175,8 +155,6 @@ pub fn write_bindings(
             @
         )?;
     }
-
-    std::fs::create_dir_all(out_dir.join("src/extensions"))?;
 
     {
         use std::io::Write;
@@ -208,12 +186,11 @@ pub fn write_bindings(
         code2!(
             &mut write,
             "// aliases providing definitions for some types from vk_platform.h"
-            "pub type void = std::ffi::c_void;"
-            "pub type char = std::ffi::c_char;"
-            "pub type float = std::ffi::c_float;"
-            "pub type double = std::ffi::c_double;"
-            "pub type size_t = std::ffi::c_size_t;"
-            "pub type int = std::ffi::c_int;"
+            "pub type void = std::os::raw::c_void;"
+            "pub type char = std::os::raw::c_char;"
+            "pub type float = std::os::raw::c_float;"
+            "pub type double = std::os::raw::c_double;"
+            "pub type int = std::os::raw::c_int;"
             @
         )?;
     }
@@ -274,7 +251,6 @@ pub fn write_bindings(
                 if !is_std_type(of) {
                     let target = resolve_alias(of, &ctx.reg);
                     match target.1 {
-                        SymbolBody::BitmaskBits { .. } => continue,
                         SymbolBody::Alias { .. } | SymbolBody::Define { .. } => {
                             unreachable!();
                         }
@@ -320,14 +296,6 @@ pub fn write_bindings(
             SymbolBody::Basetype { .. } => {
                 unreachable!("[{}] Cannot process C preprocessor code, this type should be manually replaced in a workaround.", name);
             }
-            SymbolBody::Bitmask { ty, .. } => {
-                // TODO when we're actually generating semantically valid rust code add #repr(transparent)
-                code2!(
-                    writer,
-                    "pub struct {}(pub {});"
-                    @ name, ty
-                )?;
-            }
             SymbolBody::Handle {
                 object_type,
                 dispatchable,
@@ -348,12 +316,12 @@ pub fn write_bindings(
                 ret: return_type,
                 args,
             } => {
-                let ret = return_type;
-                let args = Separated::args(args.iter(), |(_, ty), f| ty.fmt(f));
+                let args =
+                    Separated::args(args.iter(), |(_, ty), f| convert_type_in_fun_ctx(ty).fmt(f));
                 code2!(
                     writer,
                     "pub type {} = fn({}) -> {};"
-                    @ name, args, ret
+                    @ name, args, path!(return_type)
                 )?;
             }
             SymbolBody::Struct { union, members } => {
@@ -380,38 +348,21 @@ pub fn write_bindings(
                     @ name, ty, val
                 )?;
             }
-            SymbolBody::Enum { members } => {
-                let members = Separated::members(members.iter(), |(name, val), f| match *val {
-                    EnumValue::Bitpos(pos) => format_args!("{} = 1 << {}", name, pos).fmt(f),
-                    EnumValue::Value(val) => format_args!("{} = {}", name, val).fmt(f),
-                    EnumValue::Alias(alias) => format_args!("{} = Self::{}", name, alias).fmt(f),
-                });
+            SymbolBody::Enum { ty, members, .. } => {
+                let ty = get_underlying_type(*ty, &ctx);
 
                 code2!(
                     writer,
-                    "#[repr(i32)]"
-                    "pub enum {} {{"
-                    "    {}"
-                    "}}"
-                    @ name, members
+                    "pub struct {}({});"
+                    @ name, path!(ty)
                 )?;
-            }
-            SymbolBody::BitmaskBits { members } => {
+
                 // skip generating empty impl blocks
                 if members.is_empty() {
                     continue;
                 }
 
-                // when vulkan has a Bitmask that is reserved for future use and thus has no actual flag values, there are no BitmaskBits defined and the spec omits Bitmask dependency
-                // however of course there are exceptions such as VkSemaphoreCreateFlagBits which is not Cdeclared as a dependency but is actually an item :(
-                let bitmask_name = match ctx.get_bitmask_bits_enum(*name) {
-                    Some(n) => n,
-                    None => continue,
-                };
-
-                let ty = path!(get_underlying_type(bitmask_name, &ctx));
-
-                let bits = Separated::statements(members.iter(), |(name, val), f| {
+                let members = Separated::statements(members.iter(), |(name, val), f| {
                     let name = name;
                     match val {
                         EnumValue::Bitpos(pos) => {
@@ -431,15 +382,22 @@ pub fn write_bindings(
                     "impl {} {{"
                     "    {}"
                     "}}"
-                    @ bitmask_name, bits
+                    @ name, members
                 )?;
             }
             SymbolBody::Command {
                 return_type,
                 params,
             } => {
+                let return_type = convert_type_in_fun_ctx(return_type);
+
                 let args = Separated::args(params.iter(), |param, f| {
-                    format_args!("{}: {}", param.name, path!(&param.ty)).fmt(f)
+                    format_args!(
+                        "{}: {}",
+                        param.name,
+                        path!(&convert_type_in_fun_ctx(&param.ty))
+                    )
+                    .fmt(f)
                 });
 
                 // uhh ... we're not allocating a string anymore though
@@ -450,13 +408,13 @@ pub fn write_bindings(
                             break (&"", &"");
                         }
                     }
-                    _tmp = Some(path!(return_type));
-                    break (&"-> ", _tmp.as_ref().unwrap());
+                    _tmp = Some(path!(&return_type));
+                    break (&" -> ", _tmp.as_ref().unwrap());
                 };
 
                 code2!(
                     writer,
-                    "pub fn {}({}){}{} {{}}"
+                    "pub fn {}({}){}{} {{ todo!() }}"
                     @ name, args, ret1, ret2
                 )?;
             }
@@ -497,6 +455,7 @@ pub fn is_std_type(ty: UniqueStr) -> bool {
 
 fn apply_renames(ctx: &Context) {
     let renames = &[
+        // rust-native integer types
         ("uint8_t", "u8"),
         ("uint16_t", "u16"),
         ("uint32_t", "u32"),
@@ -505,35 +464,24 @@ fn apply_renames(ctx: &Context) {
         ("int16_t", "i16"),
         ("int32_t", "i32"),
         ("int64_t", "i64"),
+        ("size_t", "usize"),
+        // avoid conflicts
+        ("type", "kind"),
     ];
 
     for &(from, to) in renames {
         from.intern(ctx).rename(to.intern(ctx));
     }
 
-    for Symbol(name, body) in &ctx.reg.symbols {
-        match body {
-            SymbolBody::Bitmask { bits_enum, .. } => {
-                if let Some(bits_enum) = bits_enum {
-                    // the rest of vulkan still refers to the *Bits structs even though we don't emit them
-                    bits_enum.rename(*name);
-                }
-            }
-            _ => {}
-        }
+    for (flag_bits, &(flags, _)) in ctx.reg.flag_bits_to_flags.iter() {
+        flag_bits.rename(flags)
     }
 
     for Symbol(name, body) in &ctx.reg.symbols {
         match body {
-            SymbolBody::Enum { members } => {
+            SymbolBody::Enum { members, .. } => {
                 for &(member_name, ..) in members.iter() {
                     let to = make_enum_member_rusty(*name, member_name, false).intern(&ctx);
-                    member_name.rename(to);
-                }
-            }
-            SymbolBody::BitmaskBits { members } => {
-                for &(member_name, ..) in members.iter() {
-                    let to = make_enum_member_rusty(*name, member_name, true).intern(&ctx);
                     member_name.rename(to);
                 }
             }
@@ -651,7 +599,7 @@ fn get_underlying_type(name: UniqueStr, ctx: &Context) -> UniqueStr {
         let top = ctx.find_symbol(name).unwrap();
         match top {
             SymbolBody::Alias(of) => name = *of,
-            SymbolBody::Bitmask { ty, .. } => name = *ty,
+            SymbolBody::Enum { ty, .. } => name = *ty,
             SymbolBody::Handle { .. } => name = "uint64_t".intern(ctx), // the underlying type of all handles is this
             SymbolBody::Constant { ty, .. } => name = ty.try_only_basetype().unwrap(),
             SymbolBody::Redeclaration(_)
@@ -660,12 +608,6 @@ fn get_underlying_type(name: UniqueStr, ctx: &Context) -> UniqueStr {
             | SymbolBody::Struct { .. }
             | SymbolBody::Funcpointer { .. } => return name,
             SymbolBody::Command { .. } | SymbolBody::Define { .. } => unreachable!(),
-            SymbolBody::BitmaskBits { .. } => name = ctx.get_bitmask_bits_enum(name).unwrap(),
-            // in C it isn't really clear what type backs an enum, however vulkan never crosses i32::max
-            // and reddit says that it's indeed i32, erupt also uses i32
-            //   https://www.reddit.com/r/vulkan/comments/4710rm/comment/d09gprb/
-            //   https://github.com/KhronosGroup/Vulkan-Docs/issues/124#issuecomment-192878892
-            SymbolBody::Enum { .. } => name = "int32_t".intern(ctx),
         }
     }
 }
@@ -806,6 +748,43 @@ fn make_enum_member_rusty(
     }
 
     out
+}
+
+// Since C is such a lovely language, some types have different semantics when they are used as a function argument.
+// For example, consider:
+//  void vkCmdSetBlendConstants(VkCommandBuffer commandBuffer, const float blendConstants[4]) {}
+// there `const float [4]` actually means (in rust) `*const [float; 4]`
+// this break our codegen and must be converted out
+fn convert_type_in_fun_ctx(ty: &Type) -> Type {
+    // arr 4, const, float
+    let mut out = Vec::new();
+    let mut tokens = ty.0.iter().peekable();
+
+    while let Some(&token) = tokens.next() {
+        match token {
+            TyToken::Array(_) => {
+                out.push(TyToken::Ptr);
+                // if we have a situation like
+                //   `const char[4]`
+                //   Arr(4), Const, Ident(Char)
+                // we would get
+                //   Ptr, Arr(4), Const, Ident(Char)
+                // yet we want
+                //   Ptr, Const, Arr(4), Ident(Char)
+                // which is obviously invalid, so if we see a Const when
+                // emitting a pointer, we eat it from the Arr and re-emit it
+                // after the pointer, after which the actual array is emitted
+                if let Some(TyToken::Const) = tokens.peek() {
+                    out.push(TyToken::Const);
+                    tokens.next();
+                }
+            }
+            _ => {}
+        }
+        out.push(token);
+    }
+
+    Type(out)
 }
 
 #[test]

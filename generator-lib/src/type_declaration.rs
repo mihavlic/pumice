@@ -103,7 +103,7 @@ impl<'a> Iterator for CLexer<'a> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TyToken {
     BaseType(UniqueStr),
     Ptr,

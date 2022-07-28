@@ -239,12 +239,11 @@ fn fmt_symbol_path(
     current_section: u32,
     f: &mut Formatter<'_>,
 ) -> std::fmt::Result {
-    let name_ref = name.resolve();
-    let str = match &*name_ref {
+    let str = match name.resolve() {
         // types always included from the platform module
-        ffi @ ("void" | "char" | "float" | "double" | "size_t" | "int") => ffi,
+        ffi @ ("void" | "char" | "float" | "double" | "int") => ffi,
         // just pass through primitive types
-        native @ ("u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64") => native,
+        native @ ("u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" | "usize") => native,
         "uint8_t" => "u8",
         "uint16_t" => "u16",
         "uint32_t" => "u32",
@@ -253,10 +252,11 @@ fn fmt_symbol_path(
         "int16_t" => "i16",
         "int32_t" => "i32",
         "int64_t" => "i64",
-        other => {
+        "size_t" => "usize",
+        _ => {
             let section_idx = ctx
                 .get_item_section_idx(name)
-                .unwrap_or_else(|| panic!("{}", &name_ref));
+                .unwrap_or_else(|| panic!("{}", name.resolve()));
 
             if section_idx != current_section {
                 f.write_str("crate::")?;
@@ -271,7 +271,7 @@ fn fmt_symbol_path(
                     format_args!("{}::", path).fmt(f)?;
                 }
             }
-            other
+            name.resolve()
         }
     };
 

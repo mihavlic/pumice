@@ -46,10 +46,10 @@ pub enum SymbolBody {
     Basetype {
         code: String,
     },
-    Bitmask {
+    Enum {
+        bitmask: bool,
         ty: UniqueStr,
-        // the bits can be missing if it the flags exist but are so far unused
-        bits_enum: Option<UniqueStr>,
+        members: Vec<(UniqueStr, EnumValue)>,
     },
     Handle {
         object_type: UniqueStr,
@@ -66,13 +66,6 @@ pub enum SymbolBody {
     Constant {
         ty: Type,
         val: String,
-    },
-    // FIXME merge Enum and Bitmaskbits just like we've done to Struct and Union
-    Enum {
-        members: Vec<(UniqueStr, EnumValue)>,
-    },
-    BitmaskBits {
-        members: Vec<(UniqueStr, EnumValue)>,
     },
     Command {
         return_type: Type,
@@ -319,6 +312,8 @@ pub struct Registry {
 
     pub item_map: HashMap<UniqueStr, (u32, ItemKind)>,
     pub interner: Interner,
+    //                      (name of bitmaskbits), (name of bitmask, type of bitmask)
+    pub flag_bits_to_flags: HashMap<UniqueStr, (UniqueStr, UniqueStr)>,
 }
 
 impl Registry {
@@ -337,9 +332,31 @@ impl Registry {
 
             item_map: Default::default(),
             interner: Interner::new(),
+            flag_bits_to_flags: Default::default(),
         }
     }
-    pub fn get_symbol_index(&self, name: UniqueStr) -> Option<u32> {
+    pub fn get_symbol_index(&self, mut name: UniqueStr) -> Option<u32> {
+        // (this is kind of an odd place to put this?)
+        // QUIRK, we have some structs like this:
+        // https://github.com/KhronosGroup/Vulkan-Docs/issues/30
+        //   struct VkSurfaceCapabilitiesKHR {
+        //     supportedTransforms: VkSurfaceTransformFlagsKHR,
+        //     currentTransform: VkSurfaceTransformFlagBitsKHR,
+        //     ...
+        //   }
+        // Which use both the Flags and FlagBits symbols, while this is supported by vulkan,
+        // it is rare and makes the generator unhappy. Erupt in this case emits both of
+        // these versions, as opposed to usually just emitting the Flags where possible.
+        // I think that since this is so rare it's fine to merge these back to just Flags,
+        // the programmer will have to be aware that some bitfields are supposed to have only one bit set.
+        // I would like to note that the fact that Erupt uses the `struct FlagBits(integer)`
+        // pattern is rather unideal in these cases where we would really only like to
+        // exhaustively match on the different bits. Though this would neccesitate gathering
+        // all the variant definition into one `enum` declaration.
+        if let Some((actual, _)) = self.flag_bits_to_flags(name) {
+            name = actual;
+        }
+
         let &(index, ty) = self.item_map.get(&name)?;
         assert!(ty == ItemKind::Symbol);
         Some(index)
@@ -434,6 +451,9 @@ impl Registry {
     }
     pub fn get_item_entry(&self, name: UniqueStr) -> Option<&(u32, ItemKind)> {
         self.item_map.get(&name)
+    }
+    pub fn flag_bits_to_flags(&self, name: UniqueStr) -> Option<(UniqueStr, UniqueStr)> {
+        self.flag_bits_to_flags.get(&name).cloned()
     }
 }
 
@@ -686,8 +706,6 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
                         // </type>
                         // <type category="bitmask" name="VkGeometryFlagsNV" alias="VkGeometryFlagsKHR"/>
                         Some("bitmask") => {
-                            let ty = t.child_text("type").intern(reg);
-
                             // due to vk.xml being a horror produced from C headers
                             // bitmasks are actually an enum with the values and a typedef of the actual integer that is passed around vulkan
                             // as such, this element is for the integer typedef and the values pub enum is listed as a
@@ -701,13 +719,25 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
                                 None
                             };
 
-                            reg.add_symbol(
-                                t.child_text("name").intern(reg),
-                                SymbolBody::Bitmask {
-                                    ty,
-                                    bits_enum: bits.map(|b| b.intern(reg)),
-                                },
-                            );
+                            let name = t.child_text("name").intern(reg);
+                            let ty = t.child_text("type").intern(reg);
+
+                            if let Some(bits) = bits {
+                                reg.flag_bits_to_flags.insert(bits.intern(&reg), (name, ty));
+                            } else {
+                                // QUIRK bitmasks are divided into two parts:
+                                // a "bitmask" element and a "bitmaskbits" element, the latter of which specifies the variants in the enum
+                                // and may be missing if there are none, as such we add the symbol here only if `bits` is None, because otherwise we should encounter
+                                // the actually useful definition later
+                                reg.add_symbol(
+                                    name,
+                                    SymbolBody::Enum {
+                                        bitmask: true,
+                                        ty: ty,
+                                        members: Vec::new(),
+                                    },
+                                );
+                            }
                         }
                         // <type category="handle" objtypeenum="VK_OBJECT_TYPE_INSTANCE"><type>VK_DEFINE_HANDLE</type>(<name>VkInstance</name>)</type>
                         // <type category="handle" name="VkDescriptorUpdateTemplateKHR" alias="VkDescriptorUpdateTemplate"/>
@@ -872,7 +902,7 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
                         }
                     }
                     // <enums name="VkImageLayout" type="enum">
-                    category @ Some("enum" | "bitmask") => {
+                    Some(category @ ("enum" | "bitmask")) => {
                         assert_eq!(n.tag_name().name(), "enums");
                         let mut members = Vec::new();
                         for e in node_iter_children(n) {
@@ -900,13 +930,25 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
                             members.push((variant_name, val));
                         }
 
-                        // FIXME merge the enum variants for more straightforward code
+                        let mut name = n.intern("name", reg);
+                        let mut ty = None;
+
+                        // see the comment in the match case for <types category="bitmask">
+                        if let Some((flags_name, flags_ty)) = reg.flag_bits_to_flags(name) {
+                            name = flags_name;
+                            ty = Some(flags_ty);
+                        }
+
                         reg.add_symbol(
-                            n.intern("name", reg),
-                            match category {
-                                Some("enum") => SymbolBody::Enum { members },
-                                Some("bitmask") => SymbolBody::BitmaskBits { members },
-                                _ => unreachable!(),
+                            name,
+                            SymbolBody::Enum {
+                                // in C it isn't really clear what type backs an enum without futher constraints,
+                                // however vulkan never crosses i32::max and reddit says that it's indeed i32, erupt also uses i32
+                                //   https://www.reddit.com/r/vulkan/comments/4710rm/comment/d09gprb/
+                                //   https://github.com/KhronosGroup/Vulkan-Docs/issues/124#issuecomment-192878892
+                                ty: ty.unwrap_or_else(|| "i32".intern(&reg)),
+                                bitmask: category == "bitmask",
+                                members,
                             },
                         );
                     }
@@ -1282,6 +1324,8 @@ fn convert_section_children(
                                     // QUIRK we have to guess the type of the constant
                                     let ty = if val.starts_with('"') {
                                         parse_type_decl("const char *", reg).1
+                                    } else if val.starts_with("VK_") {
+                                        parse_type_decl("uint32_t", reg).1
                                     } else {
                                         // erupt uses u32 for these constants so we will too
                                         numeric_expression_rustify(&mut val);
