@@ -10,6 +10,8 @@ use generator_lib::{
 
 use crate::{Context, Section};
 
+use super::switch;
+
 #[derive(PartialEq, Eq)]
 enum State {
     Start,
@@ -239,24 +241,18 @@ fn fmt_symbol_path(
     current_section: u32,
     f: &mut Formatter<'_>,
 ) -> std::fmt::Result {
-    let str = match name.resolve() {
-        // types always included from the platform module
-        ffi @ ("void" | "char" | "float" | "double" | "int") => ffi,
-        // just pass through primitive types
-        native @ ("u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" | "usize") => native,
-        "uint8_t" => "u8",
-        "uint16_t" => "u16",
-        "uint32_t" => "u32",
-        "uint64_t" => "u64",
-        "int8_t" => "i8",
-        "int16_t" => "i16",
-        "int32_t" => "i32",
-        "int64_t" => "i64",
-        "size_t" => "usize",
-        _ => {
+    let s = &ctx.strings;
+    switch!(
+        name;
+        // these ffi types are imported into every module
+        s.void, s.int, s.char, s.float, s.double,
+        // stdint.h types are always renamed to their rust-native counterparts
+        s.uint8_t, s.uint16_t, s.uint32_t, s.uint64_t, s.int8_t, s.int16_t, s.int32_t, s.int64_t, s.size_t => {};
+        s.usize, s.u8, s.u16, s.u32, s.u64, s.i8, s.i16, s.i32, s.i64 => unreachable!("Rust-native types shouldn't every be used by our code!");
+        @ {
             let section_idx = ctx
                 .get_item_section_idx(name)
-                .unwrap_or_else(|| panic!("{}", name.resolve()));
+                .unwrap();
 
             if section_idx != current_section {
                 f.write_str("crate::")?;
@@ -271,11 +267,10 @@ fn fmt_symbol_path(
                     format_args!("{}::", path).fmt(f)?;
                 }
             }
-            name.resolve()
         }
-    };
+    );
 
-    f.write_str(str)
+    f.write_str(name.resolve())
 }
 
 pub fn section_get_path(section: &Section) -> &'static [&'static str] {

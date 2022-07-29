@@ -5,6 +5,8 @@ use std::{
     slice,
 };
 
+use smallvec::SmallVec;
+
 use crate::{interner::UniqueStr, Intern, Interner};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -111,20 +113,21 @@ pub enum TyToken {
     Const,
 }
 
+// in release mode the size of TyToken is 16 bytes, the maximum size
+// which allows the SmallVec to be the same size as a Vec
 #[derive(PartialEq, Eq, Clone)]
-pub struct Type(pub Vec<TyToken>);
+pub struct Type(pub SmallVec<[TyToken; 1]>);
 
 impl Type {
     pub fn try_only_basetype(&self) -> Option<UniqueStr> {
-        // type cannot be empty, unwrapping is fine
-        if let &TyToken::BaseType(s) = self.0.get(0).unwrap() {
-            Some(s)
-        } else {
-            None
+        // FIXME if it is valid to have only a const basetype then this function does not work
+        if self.0.len() == 1 {
+            if let &TyToken::BaseType(s) = &self.0[0] {
+                return Some(s);
+            }
         }
-    }
-    pub fn from_ty_tokens(tokens: Vec<TyToken>) -> Self {
-        Self(tokens)
+
+        None
     }
 }
 
@@ -158,8 +161,8 @@ pub fn fmt_type_tokens_impl<
 ) -> std::fmt::Result {
     for (i, token) in tokens.iter().enumerate() {
         match token {
-            &TyToken::BaseType(s) => {
-                on_ident(s, f)?;
+            TyToken::BaseType(s) => {
+                on_ident(*s, f)?;
             }
             TyToken::Ptr => {
                 f.write_char('*')?;
@@ -168,12 +171,12 @@ pub fn fmt_type_tokens_impl<
                     f.write_str("mut ")?;
                 }
             }
-            &TyToken::Array(s) => {
+            TyToken::Array(s) => {
                 f.write_char('[')?;
                 fmt_type_tokens_impl(&tokens[i + 1..], on_ident, on_arr, f)?;
                 if let Some(size) = s {
                     f.write_str("; ")?;
-                    on_arr(size, f)?;
+                    on_arr(*size, f)?;
                 }
                 f.write_char(']')?;
                 return Ok(());
@@ -257,7 +260,8 @@ pub fn parse_type_decl(str: &str, int: &Interner) -> (Option<UniqueStr>, Type, O
     let mut l = Lexer::new(str);
     let parens = l.consume_all(Token::LParen);
 
-    let mut tokens = Vec::new();
+    let mut tokens = SmallVec::new();
+
     match l.next().unwrap() {
         Token::Alphanumeric(s) => {
             tokens.push(TyToken::BaseType(s.intern(int)));
@@ -305,18 +309,19 @@ pub fn parse_type_decl(str: &str, int: &Interner) -> (Option<UniqueStr>, Type, O
     // we've been parsing such that the basetype is at the start and the type is built off it
     // it's really more useful to have it the other way
     tokens.reverse();
+
     (name, Type(tokens), bitfield)
 }
 
 fn recursive_parse(
     l: &mut Lexer,
-    tokens: &mut Vec<TyToken>,
+    tokens: &mut SmallVec<[TyToken; 1]>,
     name: &mut Option<UniqueStr>,
     bitfield: &mut Option<u8>,
     int: &Interner,
 ) {
     // in declarations where no parentheses are used this never allocates (in fact I don't think vulkan uses any)
-    let mut later = Vec::new();
+    let mut later = SmallVec::new();
     while let Some(next) = l.next() {
         match next {
             Token::Ptr => tokens.push(TyToken::Ptr),
@@ -402,56 +407,60 @@ fn test_lex_type() {
         assert_eq!(tokens.as_slice(), *expect);
     }
 }
+
 #[test]
 fn test_parse_type() {
     let int = Interner::new();
     // verified by https://cdecl.org/
-    let data: &[(&str, Option<&str>, &[TyToken])] = &[
+    let data: &[(&str, (Option<&str>, &[TyToken], Option<u8>))] = &[
         (
             "const char*",
-            None,
-            &[
-                TyToken::Ptr,
-                TyToken::Const,
-                TyToken::BaseType("char".intern(&int)),
-            ],
+            (
+                None,
+                &[
+                    TyToken::Ptr,
+                    TyToken::Const,
+                    TyToken::BaseType("char".intern(&int)),
+                ],
+                None,
+            ),
         ),
         (
             "char (*(*name)[1][2])[3]",
-            Some("name"),
-            &[
-                TyToken::Ptr,
-                TyToken::Array(Some("1".intern(&int))),
-                TyToken::Array(Some("2".intern(&int))),
-                TyToken::Ptr,
-                TyToken::Array(Some("3".intern(&int))),
-                TyToken::BaseType("char".intern(&int)),
-            ],
+            (
+                Some("name"),
+                &[
+                    TyToken::Ptr,
+                    TyToken::Array(Some("1".intern(&int))),
+                    TyToken::Array(Some("2".intern(&int))),
+                    TyToken::Ptr,
+                    TyToken::Array(Some("3".intern(&int))),
+                    TyToken::BaseType("char".intern(&int)),
+                ],
+                None,
+            ),
         ),
     ];
 
-    for &(str, name, tokens) in data {
-        let expect = (name, tokens);
-
-        // borrowchk fun!
+    for &(str, expect) in data {
         let got = parse_type_decl(str, &int);
-        let mut tmp = None;
-        let got = (
-            got.0.map(|s| {
-                tmp = Some(s);
-                tmp.as_ref().unwrap().resolve()
-            }),
+
+        let got_ = (
+            got.0.as_ref().map(|s| s.resolve()),
             got.1 .0.as_slice(),
+            got.2,
         );
 
-        assert_eq!(got, expect);
+        assert_eq!(got_, expect);
     }
 }
 
 #[test]
 fn test_type_display() {
+    use smallvec::smallvec;
+
     let int = Interner::new();
-    let ty = Type(vec![
+    let ty = Type(smallvec![
         TyToken::Ptr,
         TyToken::Array(None),
         TyToken::Array(Some("1".intern(&int))),

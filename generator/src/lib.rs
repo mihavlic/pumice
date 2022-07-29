@@ -6,6 +6,7 @@ use crate::{
 use generator_lib::{
     interner::{Intern, UniqueStr},
     process_registry_xml,
+    smallvec::SmallVec,
     type_declaration::{TyToken, Type},
     EnumValue, Registry, StructMember, Symbol, SymbolBody,
 };
@@ -34,16 +35,44 @@ pub struct Section {
     pub kind: SectionKind,
 }
 
+macro_rules! common_strings {
+    ($($string:ident),+) => {
+        pub struct CommonStrings {
+            $(
+                pub $string: UniqueStr,
+            )+
+        }
+        impl CommonStrings {
+            fn new(int: &generator_lib::interner::Interner) -> Self {
+                Self {
+                    $(
+                        $string: stringify!($string).intern(int),
+                    )+
+                }
+            }
+        }
+    };
+}
+
+common_strings! {
+    void, int, char, float, double,
+    size_t, uint8_t, uint16_t, uint32_t, uint64_t, int8_t, int16_t, int32_t, int64_t,
+    usize, u8, u16, u32, u64, i8, i16, i32, i64,
+    vk_platform
+}
+
 pub struct Context {
     pub(crate) reg: Registry,
     pub(crate) symbol_ownership: Vec<u32>,
     pub(crate) sections: Vec<Section>,
+    pub(crate) strings: CommonStrings,
 }
 
 impl Context {
     pub fn new(reg: Registry) -> Self {
         let mut s = Self {
             symbol_ownership: vec![INVALID_SECTION; reg.symbols.len()],
+            strings: CommonStrings::new(&reg),
             reg,
             sections: Vec::new(),
         };
@@ -248,7 +277,7 @@ pub fn write_bindings(
 
         match body {
             &SymbolBody::Alias(of) => {
-                if !is_std_type(of) {
+                if !is_std_type(of, &ctx) {
                     let target = resolve_alias(of, &ctx.reg);
                     match target.1 {
                         SymbolBody::Alias { .. } | SymbolBody::Define { .. } => {
@@ -404,7 +433,7 @@ pub fn write_bindings(
                 let mut _tmp = None;
                 let (ret1, ret2): (&str, &dyn Display) = loop {
                     if let Some(ty) = return_type.try_only_basetype() {
-                        if ty.resolve() == "void" {
+                        if ty == ctx.strings.void {
                             break (&"", &"");
                         }
                     }
@@ -445,12 +474,13 @@ fn fill_missing_sections(sections: &[&str], ctx: &Context) -> Vec<UniqueStr> {
 }
 
 // whether the type is provided from the rust standard library and as such has no entry in the Registry
-pub fn is_std_type(ty: UniqueStr) -> bool {
-    match &*ty.resolve() {
-        "void" | "char" | "float" | "double" | "size_t" | "u8" | "u16" | "u32" | "u64" | "i8"
-        | "i16" | "i32" | "i64" => true,
-        _ => false,
-    }
+pub fn is_std_type(ty: UniqueStr, reg: &Context) -> bool {
+    let s = &reg.strings;
+    switch!(ty;
+        s.void, s.int, s.char, s.float, s.double,
+        s.uint8_t, s.uint16_t, s.uint32_t, s.uint64_t, s.int8_t, s.int16_t, s.int32_t, s.int64_t, s.size_t => true;
+        @ false
+    )
 }
 
 fn apply_renames(ctx: &Context) {
@@ -489,6 +519,21 @@ fn apply_renames(ctx: &Context) {
         }
     }
 }
+
+// essentially allows matching against runtime values
+macro_rules! switch {
+    ($what:expr; $( $($e:expr),+ => $to:expr;)+ @ $esle:expr) => {
+        $(
+            if $($what == $e) ||+  {
+                $to
+            } else
+        )+
+        {
+            $esle
+        }
+    };
+}
+pub(crate) use switch;
 
 fn merge_bitfield_members<'a>(
     members: &'a [StructMember],
@@ -550,13 +595,15 @@ fn merge_bitfield_members<'a>(
                 .try_only_basetype()
                 .expect("Only a base raw integer can be a bitfield.");
 
-            let type_bits = match get_underlying_type(basetype, ctx).resolve() {
-                "u8" | "i8" => 8,
-                "u16" | "i16" => 16,
-                "u32" | "i32" => 32,
-                "u64" | "i64" => 64,
-                other => unimplemented!("Don't know the bit-width of '{}'", other),
-            };
+            let s = &ctx.strings;
+            let underlying = get_underlying_type(basetype, ctx);
+            let type_bits = switch!(underlying;
+                s.uint8_t,  s.int8_t => 8;
+                s.uint16_t, s.int16_t => 16;
+                s.uint32_t, s.int32_t => 32;
+                s.uint64_t, s.int64_t => 64;
+                @ unimplemented!("Don't know the bit-width of '{}'", underlying)
+            );
 
             assert!(*bits <= type_bits);
 
@@ -577,7 +624,7 @@ fn merge_bitfield_members<'a>(
 fn resolve_alias<'a>(alias: UniqueStr, reg: &'a Registry) -> (UniqueStr, &'a SymbolBody) {
     let mut next = alias;
     loop {
-        let symbol = reg.find_symbol(next).unwrap();
+        let symbol = reg.find_symbol(next).unwrap_or_else(|| panic!("{}", next));
         match symbol {
             &SymbolBody::Alias(of) => {
                 next = of;
@@ -592,7 +639,7 @@ fn resolve_alias<'a>(alias: UniqueStr, reg: &'a Registry) -> (UniqueStr, &'a Sym
 fn get_underlying_type(name: UniqueStr, ctx: &Context) -> UniqueStr {
     let mut name = name;
     loop {
-        if is_std_type(name) {
+        if is_std_type(name, &ctx) {
             return name;
         }
 
@@ -600,7 +647,7 @@ fn get_underlying_type(name: UniqueStr, ctx: &Context) -> UniqueStr {
         match top {
             SymbolBody::Alias(of) => name = *of,
             SymbolBody::Enum { ty, .. } => name = *ty,
-            SymbolBody::Handle { .. } => name = "uint64_t".intern(ctx), // the underlying type of all handles is this
+            SymbolBody::Handle { .. } => name = ctx.strings.uint64_t, // the underlying type of all handles is this
             SymbolBody::Constant { ty, .. } => name = ty.try_only_basetype().unwrap(),
             SymbolBody::Redeclaration(_)
             | SymbolBody::Basetype { .. }
@@ -757,7 +804,7 @@ fn make_enum_member_rusty(
 // this break our codegen and must be converted out
 fn convert_type_in_fun_ctx(ty: &Type) -> Type {
     // arr 4, const, float
-    let mut out = Vec::new();
+    let mut out = SmallVec::new();
     let mut tokens = ty.0.iter().peekable();
 
     while let Some(&token) = tokens.next() {

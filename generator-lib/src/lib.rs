@@ -11,6 +11,8 @@ use interner::{Intern, Interner, UniqueStr};
 use roxmltree::Node;
 use type_declaration::{parse_type_decl, Type};
 
+pub extern crate smallvec;
+
 pub mod interner;
 pub mod type_declaration;
 
@@ -312,7 +314,6 @@ pub struct Registry {
 
     pub item_map: HashMap<UniqueStr, (u32, ItemKind)>,
     pub interner: Interner,
-    //                      (name of bitmaskbits), (name of bitmask, type of bitmask)
     pub flag_bits_to_flags: HashMap<UniqueStr, (UniqueStr, UniqueStr)>,
 }
 
@@ -946,7 +947,7 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
                                 // however vulkan never crosses i32::max and reddit says that it's indeed i32, erupt also uses i32
                                 //   https://www.reddit.com/r/vulkan/comments/4710rm/comment/d09gprb/
                                 //   https://github.com/KhronosGroup/Vulkan-Docs/issues/124#issuecomment-192878892
-                                ty: ty.unwrap_or_else(|| "i32".intern(&reg)),
+                                ty: ty.unwrap_or_else(|| "int32_t".intern(&reg)),
                                 bitmask: category == "bitmask",
                                 members,
                             },
