@@ -129,6 +129,9 @@ impl Type {
 
         None
     }
+    pub fn from_only_basetype(basetype: UniqueStr) -> Self {
+        Self(smallvec::smallvec![TyToken::BaseType(basetype)])
+    }
 }
 
 impl Display for Type {

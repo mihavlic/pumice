@@ -131,15 +131,17 @@ impl<W: std::io::Write> Write for WriteWriteAdapter<W> {
 
 #[macro_export]
 macro_rules! code2 {
-    ($buf:expr, $($code:literal)+ @ $($tail:tt)*) => {
+    ($buf:expr, $($code:literal)+ $(@ $($tail:tt)*)?) => {
         {
             let result = std::fmt::Write::write_fmt(
                 $buf,
                 format_args!(
                     concat!($($code, "\n"),+),
                     $(
-                        $tail
-                    )*
+                        $(
+                            $tail
+                        )*
+                    )?
                 )
             );
             if result.is_ok() {

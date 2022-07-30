@@ -1,10 +1,9 @@
 [workspace]
 members = [
-    "bindings-glue",
+    "bindings-template",
     "generator",
     "generator-lib",
 ]
 exclude = [
     "slag",
-    "generated/bindings"
 ]

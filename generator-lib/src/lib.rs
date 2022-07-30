@@ -66,8 +66,8 @@ pub enum SymbolBody {
         members: Vec<StructMember>,
     },
     Constant {
-        ty: Type,
-        val: String,
+        val: ConstantValue,
+        ty: Option<UniqueStr>,
     },
     Command {
         return_type: Type,
@@ -222,8 +222,11 @@ pub enum ExtendMethod {
 
 #[derive(Debug, Clone)]
 pub enum ConstantValue {
-    Value(String),
-    Alias(UniqueStr),
+    // erupt uses u32 for these constants so we will too
+    Literal(u32),
+    Expression(String),
+    Symbol(UniqueStr),
+    String(String),
 }
 
 #[derive(Debug, Clone)]
@@ -882,23 +885,13 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
                                 continue;
                             }
 
-                            // <enum type="uint32_t" value="256" name="VK_MAX_PHYSICAL_DEVICE_NAME_SIZE"/>
-                            let ty = {
-                                let code = e.get("type");
-                                // FIXME this is usually just an integer, it seems wasteful to be calling this allocating function just for that
-                                parse_type_decl(code, reg).1
-                            };
-
-                            buf.clear();
-                            buf.push_str(e.get("value"));
-                            numeric_expression_rustify(&mut buf);
+                            // // <enum type="uint32_t" value="256" name="VK_MAX_PHYSICAL_DEVICE_NAME_SIZE"/>
+                            let val = guess_constant_val(e.get("value"), reg);
+                            let ty = e.get("type").intern(reg);
 
                             reg.add_symbol(
                                 e.intern("name", reg),
-                                SymbolBody::Constant {
-                                    ty,
-                                    val: buf.clone(),
-                                },
+                                SymbolBody::Constant { val, ty: Some(ty) },
                             );
                         }
                     }
@@ -1320,19 +1313,9 @@ fn convert_section_children(
                                     method,
                                 }
                             } else {
-                                if let Some(value) = item.attribute("value") {
-                                    let mut val = value.to_owned();
-                                    // QUIRK we have to guess the type of the constant
-                                    let ty = if val.starts_with('"') {
-                                        parse_type_decl("const char *", reg).1
-                                    } else if val.starts_with("VK_") {
-                                        parse_type_decl("uint32_t", reg).1
-                                    } else {
-                                        // erupt uses u32 for these constants so we will too
-                                        numeric_expression_rustify(&mut val);
-                                        parse_type_decl("uint32_t", reg).1
-                                    };
-                                    reg.add_symbol(name, SymbolBody::Constant { ty, val });
+                                if let Some(val) = item.attribute("value") {
+                                    let val = guess_constant_val(val, reg);
+                                    reg.add_symbol(name, SymbolBody::Constant { ty: None, val });
                                 } else if let Some(value) = item.attribute("alias") {
                                     reg.add_symbol(name, SymbolBody::Alias(value.intern(reg)));
                                 }
@@ -1398,4 +1381,19 @@ fn parse_detect_radix(str: &str) -> i32 {
     } else {
         i32::from_str_radix(str, 10).unwrap()
     }
+}
+
+fn guess_constant_val(val: &str, reg: &mut Registry) -> ConstantValue {
+    let val = if val.starts_with('"') {
+        ConstantValue::String(val.trim_matches('"').to_owned())
+    } else if val.starts_with("VK_") {
+        ConstantValue::Symbol(val.intern(reg))
+    } else if let Ok(int) = val.parse() {
+        ConstantValue::Literal(int)
+    } else {
+        let mut val = val.to_owned();
+        numeric_expression_rustify(&mut val);
+        ConstantValue::Expression(val)
+    };
+    val
 }

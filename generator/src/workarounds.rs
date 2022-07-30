@@ -1,7 +1,7 @@
 use generator_lib::{
     interner::{Intern, UniqueStr},
     type_declaration::parse_type_decl,
-    Symbol, SymbolBody,
+    FeatureExtensionItem, InterfaceItem, Symbol, SymbolBody,
 };
 
 use crate::Context;
@@ -53,6 +53,12 @@ pub fn apply_workarounds(ctx: &mut Context) {
 
     #[rustfmt::skip]
     let mut workarounds = [
+        // constants that require evaluating preprocessor macros to be valid and frankly I don't care about version numbers
+        // FIXME start evaluating preprocessor macros
+        (Workaround::Remove, "VK_STD_VULKAN_VIDEO_CODEC_H264_DECODE_SPEC_VERSION"),
+        (Workaround::Remove, "VK_STD_VULKAN_VIDEO_CODEC_H264_ENCODE_SPEC_VERSION"),
+        (Workaround::Remove, "VK_STD_VULKAN_VIDEO_CODEC_H265_DECODE_SPEC_VERSION"),
+        (Workaround::Remove, "VK_STD_VULKAN_VIDEO_CODEC_H265_ENCODE_SPEC_VERSION"),
         // symbols commented as typos in vk.xml, they are messy and at worst break our renaming schemes 
         (Workaround::Remove, "VK_STENCIL_FRONT_AND_BACK"),
         (Workaround::Remove, "VK_COLORSPACE_SRGB_NONLINEAR_KHR"),
@@ -177,24 +183,45 @@ pub fn apply_workarounds(ctx: &mut Context) {
         }
 
         match body {
-            SymbolBody::Enum { members, .. } => prune_leaf_vec(members, &workarounds),
+            SymbolBody::Enum { members, .. } => prune_leaf_vec(members, |(s, _)| *s, &workarounds),
             _ => {}
         }
 
         i += 1;
     }
+
+    for ext in &mut ctx.reg.extensions {
+        for child in &mut ext.children {
+            match child {
+                FeatureExtensionItem::Require { items, .. } => prune_leaf_vec(
+                    items,
+                    |item| match item {
+                        InterfaceItem::Simple { name, .. } => *name,
+                        InterfaceItem::Extend { name, .. } => *name,
+                    },
+                    &workarounds,
+                ),
+                _ => {}
+            }
+        }
+    }
 }
 
-fn prune_leaf_vec<T>(vec: &mut Vec<(UniqueStr, T)>, workarounds: &Vec<(UniqueStr, Workaround)>) {
+fn prune_leaf_vec<T, F: Fn(&T) -> UniqueStr>(
+    vec: &mut Vec<T>,
+    fun: F,
+    workarounds: &Vec<(UniqueStr, Workaround)>,
+) {
     let mut i = 0;
     while i < vec.len() {
-        if let Ok(j) = workarounds.binary_search_by_key(&vec[i].0, |s| s.0) {
+        let name = fun(&vec[i]);
+        if let Ok(j) = workarounds.binary_search_by_key(&name, |s| s.0) {
             match workarounds[j].1 {
                 Workaround::Remove => {
                     vec.remove(i);
                     continue;
                 }
-                _ => unreachable!(),
+                _ => {}
             }
         }
         i += 1;

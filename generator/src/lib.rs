@@ -3,23 +3,26 @@ use crate::{
     ownership::{add_dependent_sections, resolve_ownership},
     workarounds::apply_workarounds,
 };
+
+use fs_utils::copy_dir_recursive;
 use generator_lib::{
     interner::{Intern, UniqueStr},
     process_registry_xml,
     smallvec::SmallVec,
     type_declaration::{TyToken, Type},
-    EnumValue, Registry, StructMember, Symbol, SymbolBody,
+    ConstantValue, EnumValue, Registry, StructMember, Symbol, SymbolBody,
 };
 use std::{
     error::Error,
     fmt::{Display, Write},
-    fs::File,
+    fs::{File, OpenOptions},
     io::BufWriter,
     ops::Deref,
     path::{Path, PathBuf},
 };
 
 mod format_utils;
+mod fs_utils;
 mod ownership;
 mod workarounds;
 
@@ -54,6 +57,25 @@ macro_rules! common_strings {
     };
 }
 
+macro_rules! common_types {
+    ($($name:ident: $string:expr),+) => {
+        pub struct CommonTypes {
+            $(
+                pub $name: Type,
+            )+
+        }
+        impl CommonTypes {
+            fn new(int: &generator_lib::interner::Interner) -> Self {
+                Self {
+                    $(
+                        $name: generator_lib::type_declaration::parse_type_decl($string, int).1,
+                    )+
+                }
+            }
+        }
+    };
+}
+
 common_strings! {
     void, int, char, float, double,
     size_t, uint8_t, uint16_t, uint32_t, uint64_t, int8_t, int16_t, int32_t, int64_t,
@@ -61,11 +83,18 @@ common_strings! {
     vk_platform
 }
 
+common_types! {
+    cstring:  "const char *",
+    void:     "void",
+    void_ptr: "void *"
+}
+
 pub struct Context {
     pub(crate) reg: Registry,
     pub(crate) symbol_ownership: Vec<u32>,
     pub(crate) sections: Vec<Section>,
     pub(crate) strings: CommonStrings,
+    pub(crate) types: CommonTypes,
 }
 
 impl Context {
@@ -73,6 +102,7 @@ impl Context {
         let mut s = Self {
             symbol_ownership: vec![INVALID_SECTION; reg.symbols.len()],
             strings: CommonStrings::new(&reg),
+            types: CommonTypes::new(&reg),
             reg,
             sections: Vec::new(),
         };
@@ -151,6 +181,7 @@ impl Deref for Context {
 pub fn write_bindings(
     vk_xml: &str,
     video_xml: &str,
+    glue: &dyn AsRef<Path>,
     out: &dyn AsRef<Path>,
     sections: &[&str],
 ) -> Result<(), Box<dyn Error>> {
@@ -170,29 +201,20 @@ pub fn write_bindings(
 
     std::fs::create_dir_all(out_dir.join("src/extensions"))?;
 
-    {
-        let file = File::create(out_dir.join("Cargo.toml"))?;
-        let mut write = FormatWriter::new(WriteWriteAdapter(BufWriter::new(file)));
-        code2!(
-            &mut write,
-            r#"[package]"#
-            r#"name = "slag""#
-            r#"version = "0.1.0""#
-            r#"edition = "2021""#
-            r#""#
-            r#"[dependencies]"#
-            @
-        )?;
-    }
+    copy_dir_recursive(glue, out)?;
 
     {
         use std::io::Write;
 
-        let mut lib = BufWriter::new(File::create(out_dir.join("src/lib.rs"))?);
+        let mut lib = BufWriter::new(
+            OpenOptions::new()
+                .write(true)
+                .append(true)
+                .open(out_dir.join("src/lib.rs"))?,
+        );
         let mut exts = BufWriter::new(File::create(out_dir.join("src/extensions/mod.rs"))?);
 
-        writeln!(&mut lib, "pub mod platform;")?;
-        writeln!(&mut lib, "pub mod extensions;")?;
+        writeln!(&mut lib, "\npub mod extensions;\n")?;
 
         let mut sections = selected_sections
             .iter()
@@ -207,21 +229,6 @@ pub fn write_bindings(
                 SectionKind::Extension(_) => writeln!(&mut exts, "pub mod {};", section.name)?,
             }
         }
-    }
-
-    {
-        let file = File::create(out_dir.join("src/platform.rs"))?;
-        let mut write = FormatWriter::new(WriteWriteAdapter(BufWriter::new(file)));
-        code2!(
-            &mut write,
-            "// aliases providing definitions for some types from vk_platform.h"
-            "pub type void = std::os::raw::c_void;"
-            "pub type char = std::os::raw::c_char;"
-            "pub type float = std::os::raw::c_float;"
-            "pub type double = std::os::raw::c_double;"
-            "pub type int = std::os::raw::c_int;"
-            @
-        )?;
     }
 
     // (item index, section index)
@@ -256,13 +263,14 @@ pub fn write_bindings(
 
             let file = File::create(&cur_dir)?;
 
-            let writer = FormatWriter::new(WriteWriteAdapter(BufWriter::new(file)));
+            let mut writer = FormatWriter::new(WriteWriteAdapter(BufWriter::new(file)));
+
+            code2!(
+                &mut writer,
+                "use crate::{{void, char, float, double, int, cstr}};"
+            )?;
 
             section_writer = Some(writer);
-            section_writer
-                .as_mut()
-                .unwrap()
-                .write_str("use crate::platform::*;\n")?;
         }
         prev_section = section;
 
@@ -278,16 +286,17 @@ pub fn write_bindings(
         match body {
             &SymbolBody::Alias(of) => {
                 if !is_std_type(of, &ctx) {
-                    let target = resolve_alias(of, &ctx.reg);
+                    let target = resolve_alias(of, &ctx);
                     match target.1 {
                         SymbolBody::Alias { .. } | SymbolBody::Define { .. } => {
                             unreachable!();
                         }
-                        SymbolBody::Constant { ty, .. } => {
+                        SymbolBody::Constant { .. } => {
+                            let ty = get_underlying_type(target.0, &ctx);
                             code2!(
                                 writer,
                                 "pub const {}: {} = {};"
-                                @ name, path!(ty), path!(target.0)
+                                @ name, path!(&ty), path!(target.0)
                             )?;
                             continue;
                         }
@@ -370,12 +379,19 @@ pub fn write_bindings(
                     @ keyword, name, members
                 )?;
             }
-            SymbolBody::Constant { ty, val } => {
-                code2!(
-                    writer,
-                    "pub const {}: {} = {};"
-                    @ name, ty, val
-                )?;
+            SymbolBody::Constant { val, .. } => {
+                let ty = get_underlying_type(*name, &ctx);
+
+                write!(writer, "pub const {}: {} = ", name, path!(&ty))?;
+
+                match val {
+                    ConstantValue::Literal(i) => writeln!(writer, "{};", i),
+                    ConstantValue::Expression(e) => writeln!(writer, "{};", e),
+                    ConstantValue::Symbol(s) => writeln!(writer, "{};", path!(*s)),
+                    ConstantValue::String(s) => {
+                        writeln!(writer, "cstr!(\"{}\");", s)
+                    }
+                }?;
             }
             SymbolBody::Enum { ty, members, .. } => {
                 let ty = get_underlying_type(*ty, &ctx);
@@ -383,7 +399,7 @@ pub fn write_bindings(
                 code2!(
                     writer,
                     "pub struct {}({});"
-                    @ name, path!(ty)
+                    @ name, path!(&ty)
                 )?;
 
                 // skip generating empty impl blocks
@@ -395,13 +411,13 @@ pub fn write_bindings(
                     let name = name;
                     match val {
                         EnumValue::Bitpos(pos) => {
-                            format_args!("const {}: {} = 1 << {}", name, ty, pos).fmt(f)
+                            format_args!("const {}: Self = Self(1 << {})", name, pos).fmt(f)
                         }
                         EnumValue::Value(val) => {
-                            format_args!("const {}: {} = {}", name, ty, val).fmt(f)
+                            format_args!("const {}: Self = Self({})", name, val).fmt(f)
                         }
                         EnumValue::Alias(alias) => {
-                            format_args!("const {}: {} = Self::{}", name, ty, alias).fmt(f)
+                            format_args!("const {}: Self = Self::{}", name, alias).fmt(f)
                         }
                     }
                 });
@@ -596,7 +612,9 @@ fn merge_bitfield_members<'a>(
                 .expect("Only a base raw integer can be a bitfield.");
 
             let s = &ctx.strings;
-            let underlying = get_underlying_type(basetype, ctx);
+            let underlying = get_underlying_type(basetype, ctx)
+                .try_only_basetype()
+                .unwrap();
             let type_bits = switch!(underlying;
                 s.uint8_t,  s.int8_t => 8;
                 s.uint16_t, s.int16_t => 16;
@@ -624,7 +642,7 @@ fn merge_bitfield_members<'a>(
 fn resolve_alias<'a>(alias: UniqueStr, reg: &'a Registry) -> (UniqueStr, &'a SymbolBody) {
     let mut next = alias;
     loop {
-        let symbol = reg.find_symbol(next).unwrap_or_else(|| panic!("{}", next));
+        let symbol = reg.find_symbol(next).unwrap();
         match symbol {
             &SymbolBody::Alias(of) => {
                 next = of;
@@ -636,24 +654,42 @@ fn resolve_alias<'a>(alias: UniqueStr, reg: &'a Registry) -> (UniqueStr, &'a Sym
 
 // Get the underlying type of a symbol.
 // The difference between this and `resolve_alias()` is that this also jumps through "transparent" symbols, such as handles or constants.
-fn get_underlying_type(name: UniqueStr, ctx: &Context) -> UniqueStr {
-    let mut name = name;
+fn get_underlying_type(name: UniqueStr, ctx: &Context) -> Type {
+    let mut symbol = name;
     loop {
-        if is_std_type(name, &ctx) {
-            return name;
+        if is_std_type(symbol, &ctx) {
+            return Type::from_only_basetype(symbol);
         }
 
-        let top = ctx.find_symbol(name).unwrap();
+        let top = ctx.find_symbol(symbol).unwrap();
         match top {
-            SymbolBody::Alias(of) => name = *of,
-            SymbolBody::Enum { ty, .. } => name = *ty,
-            SymbolBody::Handle { .. } => name = ctx.strings.uint64_t, // the underlying type of all handles is this
-            SymbolBody::Constant { ty, .. } => name = ty.try_only_basetype().unwrap(),
+            SymbolBody::Alias(of) => symbol = *of,
+            SymbolBody::Enum { ty, .. } => symbol = *ty,
+            SymbolBody::Handle { .. } => symbol = ctx.strings.uint64_t, // the underlying type of all handles is this
+            SymbolBody::Constant { ty, val } => {
+                if let Some(ty) = ty {
+                    symbol = *ty;
+                } else {
+                    match val {
+                        ConstantValue::Literal(_) | ConstantValue::Expression(_) => {
+                            return Type::from_only_basetype(ctx.strings.uint32_t)
+                        }
+                        ConstantValue::Symbol(s) => symbol = *s,
+                        // FIXME avoid allocating?
+                        // this function returns either just a basetype or a cstrings we could
+                        // return a &Type of the cstring but then we can't return the quite
+                        // arbitrary basetypes which have to be constructed in this scope this could
+                        // be solved by providing the function with a mutable reference to some
+                        // scratch but would be quite ugly
+                        ConstantValue::String(_) => return ctx.types.cstring.clone(),
+                    }
+                }
+            }
             SymbolBody::Redeclaration(_)
             | SymbolBody::Basetype { .. }
             | SymbolBody::Included { .. }
             | SymbolBody::Struct { .. }
-            | SymbolBody::Funcpointer { .. } => return name,
+            | SymbolBody::Funcpointer { .. } => return Type::from_only_basetype(symbol),
             SymbolBody::Command { .. } | SymbolBody::Define { .. } => unreachable!(),
         }
     }
