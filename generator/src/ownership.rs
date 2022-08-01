@@ -2,9 +2,7 @@ use generator_lib::{
     interner::UniqueStr, FeatureExtensionItem, InterfaceItem, ItemKind, Registry, SymbolBody,
 };
 
-use crate::{
-    is_std_type, resolve_alias, CommonStrings, Context, Section, SectionKind, INVALID_SECTION,
-};
+use crate::{is_std_type, resolve_alias, Context, Section, SectionKind, INVALID_SECTION};
 
 // given that the registry is modelled as a global soup of types and functions from which the subsequent categories pick a subset
 // we would like to split the definition into multiple files so that commit diffs aren't enormous, editor doesn't choke, and things are more organised
@@ -14,7 +12,7 @@ pub fn resolve_ownership(ctx: &mut Context) {
     // iterate through the sections and the items in their `require` tags
     // if the item doesn't have ownership, set it to the current section
     for (i, section) in ctx.sections.iter().enumerate() {
-        for mut symbol in section_used_symbols(section, &ctx.reg, &ctx.strings) {
+        for mut symbol in section_used_symbols(section, &ctx.reg) {
             if let Some((flags_name, _)) = ctx.flag_bits_to_flags(symbol) {
                 symbol = flags_name;
             }
@@ -28,6 +26,10 @@ pub fn resolve_ownership(ctx: &mut Context) {
                 // QUIRK
                 //   types like uint8_t and such are removed from the registry as they are always replaced by references into the standard library
                 //   video.xml puts the name of its header which obviously is not a symbol in the <require> tag of its extension
+                if is_std_type(symbol, ctx) {
+                    continue;
+                }
+                panic!("[{}] Unknown symbol.", symbol);
             }
         }
     }
@@ -71,7 +73,6 @@ pub fn resolve_ownership(ctx: &mut Context) {
 fn section_used_symbols<'a>(
     section: &'a Section,
     reg: &'a Registry,
-    strings: &'a CommonStrings,
 ) -> impl Iterator<Item = UniqueStr> + 'a {
     let children = match section.kind {
         SectionKind::Feature(idx) => reg.features[idx as usize].children.as_slice(),
@@ -86,21 +87,15 @@ fn section_used_symbols<'a>(
         })
         .flat_map(move |a| {
             a.iter().filter_map(move |s| match s {
-                InterfaceItem::Simple { name, .. } => {
-                    // QUIRK vk_platform is in <require> tags even though it is a section .. why?
-                    if *name == strings.vk_platform {
-                        None
-                    } else {
-                        Some(*name)
-                    }
-                }
-                InterfaceItem::Extend { extends, .. } => Some(*extends),
+                InterfaceItem::Simple { name, .. } => Some(*name),
+                // an owning section will not be extending its own enum, it will have defined the variants imediatelly
+                InterfaceItem::Extend { .. } => None,
             })
         })
 }
 
 // call fn for every direct dependency of the section
-fn foreach_dependency<F: FnMut(Section)>(section: &Section, mut f: F, reg: &Registry) {
+pub fn foreach_dependency<F: FnMut(Section)>(section: &Section, mut f: F, reg: &Registry) {
     match section.kind {
         SectionKind::Feature(idx) => {
             let number = reg.features[idx as usize].number.resolve();
@@ -135,22 +130,5 @@ fn foreach_dependency<F: FnMut(Section)>(section: &Section, mut f: F, reg: &Regi
                 f(Section { name, kind });
             }
         }
-    }
-}
-
-pub fn add_dependent_sections(selected_sections: &mut Vec<UniqueStr>, ctx: &Context) {
-    let mut i = 0;
-    while i < selected_sections.len() {
-        let section = ctx.find_section(selected_sections[i]);
-        foreach_dependency(
-            section,
-            |s| {
-                if !selected_sections.contains(&s.name) {
-                    selected_sections.push(s.name);
-                }
-            },
-            &ctx.reg,
-        );
-        i += 1;
     }
 }

@@ -53,6 +53,12 @@ pub fn apply_workarounds(ctx: &mut Context) {
 
     #[rustfmt::skip]
     let mut workarounds = [
+        // vk_platform is in <require> tags??
+        (Workaround::Remove, "vk_platform"),
+        // for some reason the video.xml extensions have requires that contain headers, which are not symbols!
+        (Workaround::Remove, "vk_video/vulkan_video_codecs_common.h"),
+        (Workaround::Remove, "vk_video/vulkan_video_codec_h264std.h"),
+        (Workaround::Remove, "vk_video/vulkan_video_codec_h265std.h"),
         // constants that require evaluating preprocessor macros to be valid and frankly I don't care about version numbers
         // FIXME start evaluating preprocessor macros
         (Workaround::Remove, "VK_STD_VULKAN_VIDEO_CODEC_H264_DECODE_SPEC_VERSION"),
@@ -190,19 +196,30 @@ pub fn apply_workarounds(ctx: &mut Context) {
         i += 1;
     }
 
+    for feature in &mut ctx.reg.features {
+        prune_feature_extension(&mut feature.children, &workarounds);
+    }
+
     for ext in &mut ctx.reg.extensions {
-        for child in &mut ext.children {
-            match child {
-                FeatureExtensionItem::Require { items, .. } => prune_leaf_vec(
-                    items,
-                    |item| match item {
-                        InterfaceItem::Simple { name, .. } => *name,
-                        InterfaceItem::Extend { name, .. } => *name,
-                    },
-                    &workarounds,
-                ),
-                _ => {}
-            }
+        prune_feature_extension(&mut ext.children, &workarounds);
+    }
+}
+
+fn prune_feature_extension(
+    children: &mut Vec<FeatureExtensionItem>,
+    workarounds: &Vec<(UniqueStr, Workaround)>,
+) {
+    for child in children {
+        match child {
+            FeatureExtensionItem::Require { items, .. } => prune_leaf_vec(
+                items,
+                |item| match item {
+                    InterfaceItem::Simple { name, .. } => *name,
+                    InterfaceItem::Extend { name, .. } => *name,
+                },
+                workarounds,
+            ),
+            _ => {}
         }
     }
 }
