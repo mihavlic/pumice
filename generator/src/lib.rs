@@ -1,18 +1,21 @@
 use crate::{
     format_utils::{section_get_path, FormatWriter, Pathed, Separated, WriteWriteAdapter},
-    ownership::{add_dependent_sections, resolve_ownership},
+    ownership::resolve_ownership,
     workarounds::apply_workarounds,
 };
 
+use derives::DeriveData;
 use fs_utils::copy_dir_recursive;
 use generator_lib::{
     interner::{Intern, UniqueStr},
     process_registry_xml,
     smallvec::SmallVec,
     type_declaration::{TyToken, Type},
-    ConstantValue, EnumValue, Registry, StructMember, Symbol, SymbolBody,
+    CommandParameter, ConstantValue, EnumValue, Registry, StructMember, Symbol, SymbolBody,
 };
+use ownership::foreach_dependency;
 use std::{
+    collections::HashMap,
     error::Error,
     fmt::{Display, Write},
     fs::{File, OpenOptions},
@@ -21,11 +24,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod derives;
 mod format_utils;
 mod fs_utils;
 mod ownership;
 mod workarounds;
 
+#[derive(Clone)]
 pub enum SectionKind {
     Feature(u32),
     Extension(u32),
@@ -33,6 +38,7 @@ pub enum SectionKind {
 
 pub const INVALID_SECTION: u32 = u32::MAX;
 
+#[derive(Clone)]
 pub struct Section {
     pub name: UniqueStr,
     pub kind: SectionKind,
@@ -90,21 +96,28 @@ common_types! {
 }
 
 pub struct Context {
-    pub(crate) reg: Registry,
-    pub(crate) symbol_ownership: Vec<u32>,
-    pub(crate) sections: Vec<Section>,
-    pub(crate) strings: CommonStrings,
-    pub(crate) types: CommonTypes,
+    pub reg: Registry,
+    pub symbol_ownership: Vec<u32>,
+    pub sections: Vec<Section>,
+    // previously we had sorted the sections vector and then binary searched thta
+    // however the ownership algorithm is order sensitive and this may potentially
+    // cause issues later, instead we now have a hashmap
+    pub section_map: HashMap<UniqueStr, u32>,
+    pub strings: CommonStrings,
+    pub types: CommonTypes,
 }
 
 impl Context {
     pub fn new(reg: Registry) -> Self {
+        let sections_len = reg.features.len() + reg.extensions.len();
+
         let mut s = Self {
             symbol_ownership: vec![INVALID_SECTION; reg.symbols.len()],
+            sections: Vec::with_capacity(sections_len),
+            section_map: HashMap::with_capacity(sections_len),
             strings: CommonStrings::new(&reg),
             types: CommonTypes::new(&reg),
             reg,
-            sections: Vec::new(),
         };
 
         {
@@ -122,22 +135,18 @@ impl Context {
                 });
             }
 
-            s.sections.sort_by_key(|s| s.name);
+            s.section_map.extend(
+                s.sections
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| (e.name, i as u32)),
+            );
         }
 
         apply_workarounds(&mut s);
         resolve_ownership(&mut s);
 
         s
-    }
-    pub fn reg(&self) -> &Registry {
-        &self.reg
-    }
-    pub fn item_ownership(&self) -> &[u32] {
-        &self.symbol_ownership
-    }
-    pub fn sections(&self) -> &[Section] {
-        &self.sections
     }
     pub fn get_item_section_idx(&self, name: UniqueStr) -> Option<u32> {
         let index = self.get_symbol_index(name)?;
@@ -157,9 +166,7 @@ impl Context {
         }
     }
     pub fn find_section_idx(&self, name: UniqueStr) -> u32 {
-        self.sections
-            .binary_search_by_key(&name, |s| s.name)
-            .unwrap() as u32
+        *self.section_map.get(&name).unwrap()
     }
     pub fn find_section(&self, name: UniqueStr) -> &Section {
         &self.sections[self.find_section_idx(name) as usize]
@@ -244,15 +251,13 @@ pub fn write_bindings(
 
     items.sort_by_key(|i| i.1);
 
+    let mut derives = DeriveData::new(&ctx);
+
     let mut prev_section = INVALID_SECTION;
     let mut section_writer = None;
 
-    let mut cur_section = 0;
-
-    for &(item, section) in &items {
+    for &(index, section) in &items {
         if section != prev_section {
-            cur_section = section;
-
             let section = ctx.get_section(section).unwrap();
 
             cur_dir.clone_from(&out_dir);
@@ -267,202 +272,227 @@ pub fn write_bindings(
 
             code2!(
                 &mut writer,
-                "use crate::{{void, char, float, double, int, cstr}};"
+                "use crate::{{char, cstr, double, float, int, void}};\n"
             )?;
 
             section_writer = Some(writer);
         }
         prev_section = section;
 
-        macro_rules! path {
-            ($var:expr) => {
-                Pathed($var, &ctx, cur_section)
-            };
-        }
-
         let writer = section_writer.as_mut().unwrap();
-        let Symbol(name, body) = &ctx.reg.symbols[item];
+        let Symbol(name, body) = &ctx.reg.symbols[index];
 
-        match body {
-            &SymbolBody::Alias(of) => {
-                if !is_std_type(of, &ctx) {
-                    let target = resolve_alias(of, &ctx);
-                    match target.1 {
-                        SymbolBody::Alias { .. } | SymbolBody::Define { .. } => {
-                            unreachable!();
-                        }
-                        SymbolBody::Constant { .. } => {
-                            let ty = get_underlying_type(target.0, &ctx);
-                            code2!(
-                                writer,
-                                "pub const {}: {} = {};"
-                                @ name, path!(&ty), path!(target.0)
-                            )?;
-                            continue;
-                        }
-                        SymbolBody::Command { .. } => {
-                            code2!(
-                                writer,
-                                "// TODO alias of command '{}'"
-                                @ name
-                            )?;
-                            continue;
-                        }
-                        _ => {}
+        write_item(*name, body, writer, &mut derives, section, &ctx)?;
+    }
+
+    Ok(())
+}
+
+fn write_item<W: Write>(
+    name: UniqueStr,
+    body: &SymbolBody,
+    writer: &mut FormatWriter<W>,
+    derives: &mut DeriveData,
+    section: u32,
+    ctx: &Context,
+) -> std::fmt::Result {
+    macro_rules! path {
+        ($var:expr) => {
+            Pathed($var, &ctx, section)
+        };
+    }
+
+    macro_rules! select {
+        ($cond:expr, $true:expr, $false:expr) => {
+            if $cond {
+                $true
+            } else {
+                $false
+            }
+        };
+    }
+
+    match body {
+        &SymbolBody::Alias(of) => {
+            if !is_std_type(of, &ctx) {
+                let target = resolve_alias(of, &ctx);
+                match target.1 {
+                    SymbolBody::Alias { .. } | SymbolBody::Define { .. } => {
+                        unreachable!();
                     }
-                };
-
-                code2!(
-                    writer,
-                    "pub type {} = {};"
-                    @ name, path!(of)
-                )?;
-            }
-            SymbolBody::Redeclaration(ty) => {
-                code2!(
-                    writer,
-                    "pub type {} = {};"
-                    @ name, path!(ty)
-                )?;
-            }
-            // there is nothing to do with defines in rust, just skip them
-            SymbolBody::Define { .. } => {}
-            SymbolBody::Included { .. } => {
-                // verbose error is unnecessary as this is caught in ownership.rs
-                unreachable!("[{}]", name);
-            }
-            SymbolBody::Basetype { .. } => {
-                unreachable!("[{}] Cannot process C preprocessor code, this type should be manually replaced in a workaround.", name);
-            }
-            SymbolBody::Handle {
-                object_type,
-                dispatchable,
-            } => {
-                let dispatchable = match dispatchable {
-                    true => "dispatchable, ",
-                    false => "",
-                };
-                code2!(
-                    writer,
-                    "/// {}{}"
-                    "#[repr(transparent)]"
-                    "pub struct {}(u64);"
-                    @ dispatchable, object_type, name
-                )?;
-            }
-            SymbolBody::Funcpointer {
-                ret: return_type,
-                args,
-            } => {
-                let args =
-                    Separated::args(args.iter(), |(_, ty), f| convert_type_in_fun_ctx(ty).fmt(f));
-                code2!(
-                    writer,
-                    "pub type {} = fn({}) -> {};"
-                    @ name, args, path!(return_type)
-                )?;
-            }
-            SymbolBody::Struct { union, members } => {
-                let keyword = match union {
-                    true => "union",
-                    false => "struct",
-                };
-                let members = merge_bitfield_members(&members, &ctx);
-                let members = Separated::members(members.iter(), |&(name, ty), f| {
-                    format_args!("{}: {}", name, path!(ty)).fmt(f)
-                });
-                code2!(
-                    writer,
-                    "pub {} {} {{"
-                    "    {}"
-                    "}}"
-                    @ keyword, name, members
-                )?;
-            }
-            SymbolBody::Constant { val, .. } => {
-                let ty = get_underlying_type(*name, &ctx);
-
-                write!(writer, "pub const {}: {} = ", name, path!(&ty))?;
-
-                match val {
-                    ConstantValue::Literal(i) => writeln!(writer, "{};", i),
-                    ConstantValue::Expression(e) => writeln!(writer, "{};", e),
-                    ConstantValue::Symbol(s) => writeln!(writer, "{};", path!(*s)),
-                    ConstantValue::String(s) => {
-                        writeln!(writer, "cstr!(\"{}\");", s)
+                    SymbolBody::Constant { .. } => {
+                        let ty = get_underlying_type(target.0, &ctx);
+                        code2!(
+                            writer,
+                            "pub const {}: {} = {};"
+                            @ name, path!(&ty), path!(target.0)
+                        )?;
+                        return Ok(());
                     }
-                }?;
-            }
-            SymbolBody::Enum { ty, members, .. } => {
-                let ty = get_underlying_type(*ty, &ctx);
-
-                code2!(
-                    writer,
-                    "pub struct {}({});"
-                    @ name, path!(&ty)
-                )?;
-
-                // skip generating empty impl blocks
-                if members.is_empty() {
-                    continue;
+                    SymbolBody::Command { .. } => {
+                        code2!(
+                            writer,
+                            "// TODO alias of command '{}'"
+                            @ name
+                        )?;
+                        return Ok(());
+                    }
+                    _ => {}
                 }
+            };
 
-                let members = Separated::statements(members.iter(), |(name, val), f| {
-                    let name = name;
-                    match val {
-                        EnumValue::Bitpos(pos) => {
-                            format_args!("const {}: Self = Self(1 << {})", name, pos).fmt(f)
-                        }
-                        EnumValue::Value(val) => {
-                            format_args!("const {}: Self = Self({})", name, val).fmt(f)
-                        }
-                        EnumValue::Alias(alias) => {
-                            format_args!("const {}: Self = Self::{}", name, alias).fmt(f)
-                        }
-                    }
-                });
+            code2!(
+                writer,
+                "pub type {} = {};"
+                @ name, path!(of)
+            )?;
+        }
+        SymbolBody::Redeclaration(ty) => {
+            code2!(
+                writer,
+                "pub type {} = {};"
+                @ name, path!(ty)
+            )?;
+        }
+        // there is nothing to do with defines in rust, just skip them
+        SymbolBody::Define { .. } => {}
+        SymbolBody::Included { .. } => {
+            unreachable!("[{}]", name);
+        }
+        SymbolBody::Basetype { .. } => {
+            unreachable!("[{}] Cannot process C preprocessor code, this type should be manually replaced in a workaround.", name);
+        }
+        SymbolBody::Handle { dispatchable, .. } => {
+            let default = if *dispatchable { "" } else { ", Default" };
+            code2!(
+                writer,
+                "#[repr(transparent)]"
+                "#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash{})]"
+                "pub struct {}(u64);"
+                @ default, name
+            )?;
+        }
+        SymbolBody::Funcpointer {
+            ret: return_type,
+            args,
+        } => {
+            let args =
+                Separated::args(args.iter(), |(_, ty), f| convert_type_in_fun_ctx(ty).fmt(f));
+            code2!(
+                writer,
+                "pub type {} = unsafe extern \"system\" fn({}) -> {};"
+                @ name, args, path!(return_type)
+            )?;
+        }
+        SymbolBody::Struct { union, members } => {
+            let keyword = match union {
+                true => "union",
+                false => "struct",
+            };
+            let members = merge_bitfield_members(&members, &ctx);
+            let members = Separated::members(members.iter(), |&(name, ty), f| {
+                format_args!("{}: {}", name, path!(ty)).fmt(f)
+            });
+            code2!(
+                writer,
+                "#[derive(Clone{}{})]"
+                "#[repr(C)]"
+                "pub {} {} {{"
+                "    {}"
+                "}}"
+                @
+                select!(derives.is_copy(name, ctx), ", Copy", ""),
+                select!(derives.is_eq(name, ctx), ", PartialEq, Eq, Hash", ""),
+                keyword, name, members
+            )?;
+        }
+        SymbolBody::Constant { val, .. } => {
+            let ty = get_underlying_type(name, &ctx);
 
-                code2!(
-                    writer,
-                    "impl {} {{"
-                    "    {}"
-                    "}}"
-                    @ name, members
-                )?;
+            write!(writer, "pub const {}: {} = ", name, path!(&ty))?;
+
+            match val {
+                ConstantValue::Literal(i) => writeln!(writer, "{};", i),
+                ConstantValue::Expression(e) => writeln!(writer, "{};", e),
+                ConstantValue::Symbol(s) => writeln!(writer, "{};", path!(*s)),
+                ConstantValue::String(s) => {
+                    writeln!(writer, "cstr!(\"{}\");", s)
+                }
+            }?;
+        }
+        SymbolBody::Enum { ty, members, .. } => {
+            let ty = get_underlying_type(*ty, &ctx);
+
+            code2!(
+                writer,
+                "#[derive(Clone, Copy, PartialEq{}{})]"
+                "pub struct {}({});"
+                @
+                select!(derives.is_eq(name, ctx), ", Eq, Hash", ""),
+                select!(derives.is_default(name, ctx), ", Default", ""),
+                name, path!(&ty)
+            )?;
+
+            // skip generating empty impl blocks
+            if members.is_empty() {
+                return Ok(());
             }
-            SymbolBody::Command {
-                return_type,
-                params,
-            } => {
-                let return_type = convert_type_in_fun_ctx(return_type);
 
-                let args = Separated::args(params.iter(), |param, f| {
-                    format_args!(
-                        "{}: {}",
-                        param.name,
-                        path!(&convert_type_in_fun_ctx(&param.ty))
-                    )
-                    .fmt(f)
-                });
-
-                // uhh ... we're not allocating a string anymore though
-                let mut _tmp = None;
-                let (ret1, ret2): (&str, &dyn Display) = loop {
-                    if let Some(ty) = return_type.try_only_basetype() {
-                        if ty == ctx.strings.void {
-                            break (&"", &"");
-                        }
+            let members = Separated::statements(members.iter(), |(name, val), f| {
+                let name = name;
+                match val {
+                    EnumValue::Bitpos(pos) => {
+                        format_args!("pub const {}: Self = Self(1 << {})", name, pos).fmt(f)
                     }
-                    _tmp = Some(path!(&return_type));
-                    break (&" -> ", _tmp.as_ref().unwrap());
-                };
+                    EnumValue::Value(val) => {
+                        format_args!("pub const {}: Self = Self({})", name, val).fmt(f)
+                    }
+                    EnumValue::Alias(alias) => {
+                        format_args!("pub const {}: Self = Self::{}", name, alias).fmt(f)
+                    }
+                }
+            });
 
-                code2!(
-                    writer,
-                    "pub fn {}({}){}{} {{ todo!() }}"
-                    @ name, args, ret1, ret2
-                )?;
-            }
+            code2!(
+                writer,
+                "impl {} {{"
+                "    {}"
+                "}}"
+                @ name, members
+            )?;
+        }
+        SymbolBody::Command {
+            return_type,
+            params,
+        } => {
+            let return_type = convert_type_in_fun_ctx(return_type);
+
+            let args = Separated::args(params.iter(), |param, f| {
+                format_args!(
+                    "{}: {}",
+                    param.name,
+                    path!(&convert_type_in_fun_ctx(&param.ty))
+                )
+                .fmt(f)
+            });
+
+            // uhh ... we're not allocating a string anymore though
+            let mut _tmp = None;
+            let (ret1, ret2): (&str, &dyn Display) = loop {
+                if let Some(ty) = return_type.try_only_basetype() {
+                    if ty == ctx.strings.void {
+                        break (&"", &"");
+                    }
+                }
+                _tmp = Some(path!(&return_type));
+                break (&" -> ", _tmp.as_ref().unwrap());
+            };
+
+            code2!(
+                writer,
+                "pub fn {}({}){}{} {{ todo!() }}"
+                @ name, args, ret1, ret2
+            )?;
         }
     }
 
@@ -489,9 +519,26 @@ fn fill_missing_sections(sections: &[&str], ctx: &Context) -> Vec<UniqueStr> {
     selected_sections
 }
 
+pub fn add_dependent_sections(selected_sections: &mut Vec<UniqueStr>, ctx: &Context) {
+    let mut i = 0;
+    while i < selected_sections.len() {
+        let section = ctx.find_section(selected_sections[i]);
+        foreach_dependency(
+            section,
+            |s| {
+                if !selected_sections.contains(&s.name) {
+                    selected_sections.push(s.name);
+                }
+            },
+            &ctx.reg,
+        );
+        i += 1;
+    }
+}
+
 // whether the type is provided from the rust standard library and as such has no entry in the Registry
-pub fn is_std_type(ty: UniqueStr, reg: &Context) -> bool {
-    let s = &reg.strings;
+pub fn is_std_type(ty: UniqueStr, ctx: &Context) -> bool {
+    let s = &ctx.strings;
     switch!(ty;
         s.void, s.int, s.char, s.float, s.double,
         s.uint8_t, s.uint16_t, s.uint32_t, s.uint64_t, s.int8_t, s.int16_t, s.int32_t, s.int64_t, s.size_t => true;
@@ -519,17 +566,92 @@ fn apply_renames(ctx: &Context) {
         from.intern(ctx).rename(to.intern(ctx));
     }
 
-    for (flag_bits, &(flags, _)) in ctx.reg.flag_bits_to_flags.iter() {
-        flag_bits.rename(flags)
+    let mut buf = String::new();
+
+    for feature in &ctx.reg.features {
+        buf.clear();
+        buf.push_str("vk");
+        buf.push_str(feature.number.resolve());
+        buf.retain(|c| c != '.');
+
+        feature.name.rename(buf.intern(ctx));
+    }
+
+    for extension in &ctx.reg.extensions {
+        let prefixes = &["VK_", "vulkan_video_codec_", "vulkan_video_codecs_"];
+
+        let name = extension.name.resolve();
+
+        let mut stripped = None;
+        for &prefix in prefixes {
+            if let Some(strip) = name.strip_prefix(prefix) {
+                stripped = Some(strip);
+                break;
+            }
+        }
+
+        buf.clear();
+        buf.push_str(stripped.unwrap());
+        buf.make_ascii_lowercase();
+
+        extension.name.rename(buf.intern(ctx));
+    }
+
+    'outer: for Symbol(name, _) in &ctx.reg.symbols {
+        let str = name.resolve();
+        if str.len() >= 3 {
+            let amount = loop {
+                if str.starts_with("VK_") {
+                    break 3;
+                }
+
+                let mut chars = ['\0'; 3];
+                for (i, c) in str.chars().take(3).enumerate() {
+                    chars[i] = c;
+                }
+
+                if (chars[0] == 'V' || chars[0] == 'v')
+                    && chars[1] == 'k'
+                    && chars[2].is_ascii_uppercase()
+                {
+                    break 2;
+                }
+
+                continue 'outer;
+            };
+
+            name.rename_trim_prefix(amount);
+        }
     }
 
     for Symbol(name, body) in &ctx.reg.symbols {
         match body {
             SymbolBody::Enum { members, .. } => {
-                for &(member_name, ..) in members.iter() {
-                    let to = make_enum_member_rusty(*name, member_name, false).intern(&ctx);
-                    member_name.rename(to);
+                for &(member_name, ..) in members {
+                    make_enum_member_rusty(*name, member_name, true, &mut buf);
+                    member_name.rename(buf.intern(&ctx));
                 }
+            }
+            SymbolBody::Struct { members, .. } => {
+                for &StructMember { name, .. } in members {
+                    camel_to_snake(name.resolve(), &mut buf);
+                    name.rename(buf.intern(&ctx));
+                }
+            }
+            SymbolBody::Funcpointer { args, .. } => {
+                for &(name, ..) in args {
+                    camel_to_snake(name.resolve(), &mut buf);
+                    name.rename(buf.intern(&ctx));
+                }
+                name.rename(name.resolve().strip_prefix("PFN_vk").unwrap().intern(ctx));
+            }
+            SymbolBody::Command { params, .. } => {
+                for &CommandParameter { name, .. } in params {
+                    camel_to_snake(name.resolve(), &mut buf);
+                    name.rename(buf.intern(&ctx));
+                }
+                camel_to_snake(name.resolve(), &mut buf);
+                name.rename(buf.intern(&ctx));
             }
             _ => {}
         }
@@ -734,6 +856,18 @@ impl<'a> Iterator for CamelCaseSplit<'a> {
     }
 }
 
+fn camel_to_snake(str: &str, out: &mut String) {
+    out.clear();
+
+    let mut iter = CamelCaseSplit::new(str);
+    out.push_str(iter.next().unwrap());
+    for next in iter {
+        out.push('_');
+        out.push_str(next);
+    }
+    out.make_ascii_lowercase();
+}
+
 // this will fuzzy match on the member name and strip the enum name and the extension tag boilerplate
 //  VkDebugReportFlagsEXT -> Vk Debug Report Flags EXT
 //  VK_DEBUG_REPORT_INFORMATION_BIT_EXT -> VK DEBUG REPORT INFORMATION BIT EXT
@@ -742,7 +876,8 @@ fn make_enum_member_rusty(
     enum_name: UniqueStr,
     member_name: UniqueStr,
     constant_syntax: bool,
-) -> String {
+    out: &mut String,
+) {
     // enum VkPresentModeKHR {
     //     VK_PRESENT_MODE_IMMEDIATE_KHR = 0, -> Immediate = 0,
     //     ..
@@ -768,7 +903,7 @@ fn make_enum_member_rusty(
     //  VK_SHADING_RATE_PALETTE_ENTRY_16_INVOCATIONS_PER_PIXEL_NV
     //  => E16InvocationsPerPixel
 
-    let mut out = String::new();
+    out.clear();
 
     // workaround for identifiers starting with a digit, see above
     let mut prev_char = None;
@@ -817,7 +952,7 @@ fn make_enum_member_rusty(
             }
 
             let len = out.len();
-            out += mstr;
+            *out += mstr;
 
             // currently we pushed into out a string that is all upeercase due to being derived from the member string
             // which is following constant syntax, now if we don't want to output constant syntax we make all but the
@@ -829,8 +964,6 @@ fn make_enum_member_rusty(
 
         prev_char = Some(start_char);
     }
-
-    out
 }
 
 // Since C is such a lovely language, some types have different semantics when they are used as a function argument.
@@ -909,14 +1042,15 @@ fn test_enum_rustify() {
         ),
     ];
 
-    for (enum_name, member_name, const_expect, normal_expect) in data {
+    let mut buf = String::new();
+    for &(enum_name, member_name, const_expect, normal_expect) in data {
         let enum_name = enum_name.intern(&reg);
         let member_name = member_name.intern(&reg);
 
-        let const_syntax = make_enum_member_rusty(enum_name, member_name, true);
-        assert_eq!(const_expect, &const_syntax);
+        make_enum_member_rusty(enum_name, member_name, true, &mut buf);
+        assert_eq!(const_expect, buf);
 
-        let normal_syntax = make_enum_member_rusty(enum_name, member_name, false);
-        assert_eq!(normal_expect, &normal_syntax);
+        make_enum_member_rusty(enum_name, member_name, false, &mut buf);
+        assert_eq!(normal_expect, buf);
     }
 }

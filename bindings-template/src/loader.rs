@@ -44,4 +44,4 @@ pub unsafe fn load_dynamic(
     Ok(ptr)
 }
 
-struct Entry {}
+pub struct Entry {}

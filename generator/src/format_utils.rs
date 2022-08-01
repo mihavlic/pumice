@@ -51,8 +51,9 @@ impl<W: Write> FormatWriter<W> {
     }
     pub fn write_char(&mut self, c: char) {
         // match situations where the state doesn't change and nothing is written
-        if (c.is_whitespace() && (self.state == State::Whitespace || self.state == State::Newline))
-            || (c == '\n' && self.state == State::Newline)
+        if c.is_whitespace()
+            && c != '\n'
+            && (self.state == State::Whitespace || self.state == State::Newline)
         {
             return;
         }
@@ -238,7 +239,7 @@ impl<'a> Display for Pathed<'a, &Type> {
 }
 
 fn fmt_symbol_path(
-    name: UniqueStr,
+    mut name: UniqueStr,
     ctx: &Context,
     current_section: u32,
     f: &mut Formatter<'_>,
@@ -250,8 +251,12 @@ fn fmt_symbol_path(
         s.void, s.int, s.char, s.float, s.double,
         // stdint.h types are always renamed to their rust-native counterparts
         s.uint8_t, s.uint16_t, s.uint32_t, s.uint64_t, s.int8_t, s.int16_t, s.int32_t, s.int64_t, s.size_t => {};
-        s.usize, s.u8, s.u16, s.u32, s.u64, s.i8, s.i16, s.i32, s.i64 => unreachable!("Rust-native types shouldn't every be used by our code!");
+        s.usize, s.u8, s.u16, s.u32, s.u64, s.i8, s.i16, s.i32, s.i64 => unreachable!("Rust-native types shouldn't ever be used by our code!");
         @ {
+            if let Some((actual, _)) = ctx.reg.flag_bits_to_flags(name) {
+                name = actual;
+            }
+
             let section_idx = ctx
                 .get_item_section_idx(name)
                 .unwrap();
@@ -285,8 +290,8 @@ pub fn section_get_path(section: &Section) -> &'static [&'static str] {
 #[test]
 fn test_format_writer() {
     #[rustfmt::skip]
-    let raw =
-r#"
+    let raw =r#"\
+
 struct {
             a;
 a;
@@ -298,10 +303,12 @@ fn test(a: usize) {
 "#;
 
     #[rustfmt::skip]
-    let expect =
-r#"struct {
+    let expect = r#"\
+
+struct {
     a;
     a;
+
 }
 fn test(a: usize) {
     // comment

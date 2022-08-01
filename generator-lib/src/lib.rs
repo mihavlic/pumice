@@ -609,13 +609,11 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
                         continue;
                     }
 
-                    let category = t.attribute("category");
-
                     if try_alias(t, reg) {
                         continue;
                     }
 
-                    match category {
+                    match t.attribute("category") {
                         // <type name="vk_platform" category="include">#include "vk_platform.h"</type>
                         // <type category="include" name="X11/Xlib.h"/>
                         Some("include") => {
@@ -924,13 +922,21 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
                             members.push((variant_name, val));
                         }
 
+                        let bitmask = category == "bitmask";
+
                         let mut name = n.intern("name", reg);
                         let mut ty = None;
 
                         // see the comment in the match case for <types category="bitmask">
-                        if let Some((flags_name, flags_ty)) = reg.flag_bits_to_flags(name) {
-                            name = flags_name;
-                            ty = Some(flags_ty);
+
+                        if bitmask {
+                            if let Some((flags_name, flags_ty)) = reg.flag_bits_to_flags(name) {
+                                name = flags_name;
+                                ty = Some(flags_ty);
+                            } else {
+                                assert!(members.is_empty());
+                                continue;
+                            }
                         }
 
                         reg.add_symbol(
@@ -941,7 +947,7 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
                                 //   https://www.reddit.com/r/vulkan/comments/4710rm/comment/d09gprb/
                                 //   https://github.com/KhronosGroup/Vulkan-Docs/issues/124#issuecomment-192878892
                                 ty: ty.unwrap_or_else(|| "int32_t".intern(&reg)),
-                                bitmask: category == "bitmask",
+                                bitmask,
                                 members,
                             },
                         );

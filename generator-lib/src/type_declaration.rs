@@ -119,6 +119,9 @@ pub enum TyToken {
 pub struct Type(pub SmallVec<[TyToken; 1]>);
 
 impl Type {
+    pub fn from_only_basetype(basetype: UniqueStr) -> Self {
+        Self(smallvec::smallvec![TyToken::BaseType(basetype)])
+    }
     pub fn try_only_basetype(&self) -> Option<UniqueStr> {
         // FIXME if it is valid to have only a const basetype then this function does not work
         if self.0.len() == 1 {
@@ -129,8 +132,12 @@ impl Type {
 
         None
     }
-    pub fn from_only_basetype(basetype: UniqueStr) -> Self {
-        Self(smallvec::smallvec![TyToken::BaseType(basetype)])
+    pub fn get_basetype(&self) -> UniqueStr {
+        if let TyToken::BaseType(s) = self.0.last().unwrap() {
+            *s
+        } else {
+            unreachable!()
+        }
     }
 }
 

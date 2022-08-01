@@ -1,6 +1,6 @@
 use std::{
     alloc::Layout,
-    cell::{RefCell, UnsafeCell},
+    cell::{Ref, RefCell, RefMut, UnsafeCell},
     collections::HashMap,
     fmt::{Debug, Display},
     hash::Hash,
@@ -10,10 +10,11 @@ use std::{
 
 /// Yikes this is good code
 
-#[derive(Clone)]
 struct StringHeader {
-    ptr: NonNull<u8>,
-    len: u32,
+    current: NonNull<u8>,
+    current_len: u32,
+    original: NonNull<u8>,
+    original_len: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -28,12 +29,49 @@ impl UniqueStr {
         let header = self.get_header();
 
         unsafe {
-            let bytes = std::slice::from_raw_parts(header.ptr.as_ptr(), header.len as usize);
+            let bytes =
+                std::slice::from_raw_parts(header.current.as_ptr(), header.current_len as usize);
             std::str::from_utf8_unchecked(bytes)
         }
     }
+    pub fn resolve_original(&self) -> &str {
+        let header = self.get_header();
+
+        unsafe {
+            let bytes =
+                std::slice::from_raw_parts(header.original.as_ptr(), header.original_len as usize);
+            std::str::from_utf8_unchecked(bytes)
+        }
+    }
+    pub fn is_original(&self) -> bool {
+        let s = self.get_header();
+        s.current == s.original
+    }
     pub fn rename(&self, to: UniqueStr) {
-        *self.get_header_mut() = to.get_header().clone();
+        let s = self.get_header_mut();
+        let to = to.get_header();
+
+        // do we want renames to be infectious in this way?
+        s.current = to.current;
+        s.current_len = to.current_len;
+    }
+    pub fn total_rename(&self, to: UniqueStr) {
+        let s = self.get_header_mut();
+        let to = to.get_header();
+
+        s.current = to.current;
+        s.current_len = to.current_len;
+        s.original = to.original;
+        s.original_len = to.original_len;
+    }
+    pub fn rename_trim_prefix(&self, bytes_len: usize) {
+        let s = self.get_header_mut();
+
+        s.current = unsafe { NonNull::new(s.current.as_ptr().add(bytes_len)).unwrap() };
+        s.current_len = s
+            .current_len
+            .checked_sub(bytes_len.try_into().unwrap())
+            .unwrap();
     }
     fn get_header(&self) -> &StringHeader {
         #[cfg(debug_assertions)]
@@ -212,9 +250,12 @@ impl StringInterner {
             };
 
             let header = allocator.alloc_block_for::<StringHeader>();
+            let nonull = NonNull::new(text).unwrap();
             header.write(StringHeader {
-                ptr: NonNull::new(text).unwrap(),
-                len: len as u32,
+                current: nonull,
+                current_len: len as u32,
+                original: nonull,
+                original_len: len as u32,
             });
 
             let nonnull = NonNull::new(header).unwrap();
@@ -227,11 +268,21 @@ impl StringInterner {
             }
         }
     }
+    pub fn get_all_strings(&self) -> Vec<UniqueStr> {
+        self.map
+            .iter()
+            .map(|(_, &ptr)| UniqueStr {
+                ptr,
+                #[cfg(debug_assertions)]
+                guard: self.guard,
+            })
+            .collect()
+    }
 }
 
 impl Drop for StringInterner {
     fn drop(&mut self) {
-        // somehow rust is smart enough to run destcructors for the other fields here?
+        // somehow rust is smart enough to run destructors for the other fields here?
         // if I ptr::drop_in_place the fields I get cool crashes
         unsafe {
             #[cfg(debug_assertions)]
@@ -248,6 +299,12 @@ impl Interner {
     }
     pub fn intern(&self, str: &str) -> UniqueStr {
         self.0.borrow_mut().intern(str)
+    }
+    pub fn borrow(&self) -> Ref<StringInterner> {
+        self.0.borrow()
+    }
+    pub fn borrow_mut(&self) -> RefMut<StringInterner> {
+        self.0.borrow_mut()
     }
 }
 

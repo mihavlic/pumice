@@ -36,7 +36,7 @@ fn main() {
     let ctx = Context::new(reg);
 
     if workarounds {
-        write!(reg_file, "{:#?}", &ctx.reg()).unwrap();
+        write!(reg_file, "{:#?}", &ctx.reg).unwrap();
     }
 
     let mut own_file = BufWriter::new(
@@ -47,11 +47,11 @@ fn main() {
         .unwrap(),
     );
 
-    for (i, section) in ctx.item_ownership().iter().enumerate() {
-        let name = ctx.reg().symbols[i].0;
+    for (i, section) in ctx.symbol_ownership.iter().enumerate() {
+        let name = ctx.reg.symbols[i].0;
         let section = match *section {
             INVALID_SECTION => "INVALID".intern(&ctx),
-            other => ctx.sections()[other as usize].name,
+            other => ctx.sections[other as usize].name,
         };
 
         writeln!(own_file, "{}: {}", name.resolve(), section.resolve()).unwrap();
