@@ -208,7 +208,8 @@ pub fn write_bindings(
         );
         let mut exts = BufWriter::new(File::create(out_dir.join("src/extensions/mod.rs"))?);
 
-        writeln!(&mut lib, "\npub mod extensions;\n")?;
+        // the formatter converts \r into un-ignorable newlines
+        write!(&mut lib, "\rpub mod extensions;\r\r")?;
 
         let mut features = ctx
             .reg
@@ -878,8 +879,8 @@ fn make_enum_member_rusty(
     // workaround for identifiers starting with a digit, see above
     let mut prev_char = None;
 
-    let enum_str = enum_name.resolve();
-    let member_str = member_name.resolve();
+    let enum_str = enum_name.resolve_original();
+    let member_str = member_name.resolve_original();
 
     // we skip "Flags" as they are part of the enum boilerplate but don't occur in the member, see above
     let mut enum_chunks = CamelCaseSplit::new(enum_str)

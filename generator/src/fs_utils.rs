@@ -26,6 +26,7 @@ pub fn copy_dir_recursive<U: AsRef<Path>, V: AsRef<Path>>(
         } else {
             output_root.join(&src)
         };
+
         if fs::metadata(&dest).is_err() {
             // println!(" mkdir: {:?}", dest);
             fs::create_dir_all(&dest)?;

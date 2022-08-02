@@ -49,10 +49,11 @@ impl<W: Write> FormatWriter<W> {
             state: State::Newline,
         }
     }
-    pub fn write_char(&mut self, c: char) {
+    pub fn write_char(&mut self, mut c: char) {
         // match situations where the state doesn't change and nothing is written
+        // '\r' is (ab)used as a sort of different newline that doesn't get eaten
         if c.is_whitespace()
-            && c != '\n'
+            && c != '\r'
             && (self.state == State::Whitespace || self.state == State::Newline)
         {
             return;
@@ -73,10 +74,12 @@ impl<W: Write> FormatWriter<W> {
         }
 
         match c {
+            '\r' => {
+                c = '\n';
+                self.state = State::Newline;
+            }
             '\n' => {
-                if self.state != State::Newline {
-                    self.state = State::Newline;
-                }
+                self.state = State::Newline;
             }
             _ if c.is_whitespace() => {
                 // State::Newline cannot be overriden by State::Whitespace
