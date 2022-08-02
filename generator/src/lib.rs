@@ -11,9 +11,12 @@ use generator_lib::{
     interner::{Intern, UniqueStr},
     smallvec::SmallVec,
     type_declaration::{TyToken, Type},
-    CommandParameter, ConstantValue, EnumValue, Registry, StructMember, Symbol, SymbolBody,
+    CommandParameter, ConstantValue, FeatureExtensionItem, InterfaceItem, Registry, StructMember,
+    Symbol, SymbolBody,
 };
+use ownership::skip_conf_conditions;
 use std::{
+    cell::Cell,
     collections::HashMap,
     error::Error,
     fmt::{Display, Write},
@@ -94,6 +97,7 @@ common_types! {
 
 pub struct Context {
     pub reg: Registry,
+    pub conf: GenConfig,
     pub symbol_ownership: Vec<u32>,
     pub sections: Vec<Section>,
     // previously we had sorted the sections vector and then binary searched thta
@@ -105,7 +109,7 @@ pub struct Context {
 }
 
 impl Context {
-    pub fn new(reg: Registry) -> Self {
+    pub fn new(conf: GenConfig, reg: Registry) -> Self {
         let sections_len = reg.features.len() + reg.extensions.len();
 
         let mut s = Self {
@@ -115,6 +119,7 @@ impl Context {
             strings: CommonStrings::new(&reg),
             types: CommonTypes::new(&reg),
             reg,
+            conf,
         };
 
         {
@@ -162,11 +167,11 @@ impl Context {
             Some(&self.sections[index as usize])
         }
     }
-    pub fn find_section_idx(&self, name: UniqueStr) -> u32 {
-        *self.section_map.get(&name).unwrap()
+    pub fn find_section_idx(&self, name: UniqueStr) -> Option<u32> {
+        self.section_map.get(&name).cloned()
     }
-    pub fn find_section(&self, name: UniqueStr) -> &Section {
-        &self.sections[self.find_section_idx(name) as usize]
+    pub fn find_section(&self, name: UniqueStr) -> Option<&Section> {
+        Some(&self.sections[self.find_section_idx(name)? as usize])
     }
     pub fn remove_symbol(&mut self, index: u32) {
         self.reg.remove_symbol(index);
@@ -186,12 +191,23 @@ pub fn write_bindings(
     ctx: &mut Context,
     glue: &dyn AsRef<Path>,
     out: &dyn AsRef<Path>,
-    conf: &GenConfig,
 ) -> Result<(), Box<dyn Error>> {
-    apply_renames(&ctx);
+    let enum_supplements = generate_enum_extends(ctx);
+
+    apply_renames(&ctx, &enum_supplements);
 
     let out_dir = out.as_ref().to_path_buf();
     let mut cur_dir = PathBuf::new();
+
+    for entry in std::fs::read_dir(&out_dir)? {
+        let path = entry?.path();
+
+        if path.is_dir() {
+            std::fs::remove_dir_all(path)?;
+        } else {
+            std::fs::remove_file(path)?;
+        }
+    }
 
     std::fs::create_dir_all(out_dir.join("src/extensions"))?;
 
@@ -208,14 +224,11 @@ pub fn write_bindings(
         );
         let mut exts = BufWriter::new(File::create(out_dir.join("src/extensions/mod.rs"))?);
 
-        // the formatter converts \r into un-ignorable newlines
-        write!(&mut lib, "\rpub mod extensions;\r\r")?;
-
         let mut features = ctx
             .reg
             .features
             .iter()
-            .filter(|f| conf.is_feature_used(f.name))
+            .filter(|f| ctx.conf.is_feature_used(f.name))
             .map(|f| f.name)
             .collect::<Vec<_>>();
 
@@ -225,15 +238,20 @@ pub fn write_bindings(
             .reg
             .extensions
             .iter()
-            .filter(|e| conf.is_extension_used(e.name))
+            .filter(|e| ctx.conf.is_extension_used(e.name))
             .map(|e| e.name)
             .collect::<Vec<_>>();
 
         extensions.sort_by(|a, b| a.resolve().cmp(b.resolve()));
 
+        write!(&mut lib, "\r")?;
+
         for feature in features {
             writeln!(&mut lib, "pub mod {};", feature)?;
         }
+
+        // the formatter converts \r into un-ignorable newlines
+        write!(&mut lib, "\rpub mod extensions;\r\r")?;
 
         for extension in extensions {
             writeln!(&mut exts, "pub mod {};", extension)?;
@@ -247,8 +265,8 @@ pub fn write_bindings(
             let section = ctx.get_section(section_idx).unwrap();
 
             let used = match section.kind {
-                SectionKind::Feature(_) => conf.is_feature_used(section.name),
-                SectionKind::Extension(_) => conf.is_extension_used(section.name),
+                SectionKind::Feature(_) => ctx.conf.is_feature_used(section.name),
+                SectionKind::Extension(_) => ctx.conf.is_extension_used(section.name),
             };
 
             if used {
@@ -290,10 +308,76 @@ pub fn write_bindings(
         let writer = section_writer.as_mut().unwrap();
         let Symbol(name, body) = &ctx.reg.symbols[index];
 
-        write_item(*name, body, writer, &mut derives, section, &ctx)?;
+        write_item(
+            *name,
+            body,
+            writer,
+            &mut derives,
+            &enum_supplements,
+            section,
+            &ctx,
+        )?;
     }
 
     Ok(())
+}
+
+fn generate_enum_extends(
+    ctx: &Context,
+) -> HashMap<UniqueStr, Vec<(UniqueStr, Vec<(UniqueStr, &ConstantValue)>)>> {
+    let mut enum_supplements: HashMap<
+        // destination enum name
+        UniqueStr,
+        //   source extension name, Vec<variant name, variant value>
+        Vec<(UniqueStr, Vec<(UniqueStr, &ConstantValue)>)>,
+    > = HashMap::new();
+
+    for &extension_name in ctx.conf.extensions.iter() {
+        for children in &ctx.reg.get_extension(extension_name).unwrap().children {
+            match children {
+                FeatureExtensionItem::Comment(_) => {}
+                FeatureExtensionItem::Require {
+                    profile,
+                    api,
+                    extension,
+                    feature,
+                    items,
+                } => {
+                    if !skip_conf_conditions(api, *extension, None, *feature, *profile, &ctx.conf) {
+                        for item in items {
+                            match item {
+                                InterfaceItem::Simple { .. } => {}
+                                InterfaceItem::Extend {
+                                    name,
+                                    mut extends,
+                                    value: method,
+                                } => {
+                                    if let Some((actual, _)) = ctx.reg.flag_bits_to_flags(extends) {
+                                        extends = actual;
+                                    }
+
+                                    let entry =
+                                        enum_supplements.entry(extends).or_insert(Vec::new());
+
+                                    let add = (*name, method);
+
+                                    if let Some((_, vec)) =
+                                        entry.iter_mut().find(|(ext, _)| *ext == extension_name)
+                                    {
+                                        vec.push(add);
+                                    } else {
+                                        entry.push((extension_name, vec![add]));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                FeatureExtensionItem::Remove { .. } => unimplemented!(),
+            }
+        }
+    }
+    enum_supplements
 }
 
 fn write_item<W: Write>(
@@ -301,6 +385,7 @@ fn write_item<W: Write>(
     body: &SymbolBody,
     writer: &mut FormatWriter<W>,
     derives: &mut DeriveData,
+    supplements: &HashMap<UniqueStr, Vec<(UniqueStr, Vec<(UniqueStr, &ConstantValue)>)>>,
     section: u32,
     ctx: &Context,
 ) -> std::fmt::Result {
@@ -420,6 +505,7 @@ fn write_item<W: Write>(
             write!(writer, "pub const {}: {} = ", name, path!(&ty))?;
 
             match val {
+                ConstantValue::Bitpos(p) => writeln!(writer, "1 << {};", p),
                 ConstantValue::Literal(i) => writeln!(writer, "{};", i),
                 ConstantValue::Expression(e) => writeln!(writer, "{};", e),
                 ConstantValue::Symbol(s) => writeln!(writer, "{};", path!(*s)),
@@ -441,23 +527,43 @@ fn write_item<W: Write>(
                 name, path!(&ty)
             )?;
 
+            let supl = supplements.get(&name);
+
             // skip generating empty impl blocks
-            if members.is_empty() {
+            if members.is_empty() && supl.map(|v| v.is_empty()).unwrap_or(true) {
                 return Ok(());
             }
 
-            let members = Separated::statements(members.iter(), |(name, val), f| {
-                let name = name;
+            let member_iter = members.iter().map(|a| (name, a.0, &a.1));
+            let supl_iter = supl
+                .into_iter()
+                .flatten()
+                .flat_map(|(ext, vec)| vec.iter().map(|a| (*ext, a.0, a.1)));
+
+            let chain = member_iter.chain(supl_iter);
+            // name is not a name of an extension, but we just need a filler UniqueStr which will never be printed to jumpstart this
+            let state = Cell::new(name);
+
+            let members = Separated::statements(chain, |(ext, name, val), f| {
+                if state.get() != ext {
+                    format_args!("// {}\n", ext).fmt(f)?;
+                    state.set(ext);
+                }
+
                 match val {
-                    EnumValue::Bitpos(pos) => {
+                    ConstantValue::Bitpos(pos) => {
                         format_args!("pub const {}: Self = Self(1 << {})", name, pos).fmt(f)
                     }
-                    EnumValue::Value(val) => {
+                    ConstantValue::Literal(val) => {
                         format_args!("pub const {}: Self = Self({})", name, val).fmt(f)
                     }
-                    EnumValue::Alias(alias) => {
+                    ConstantValue::Expression(str) => {
+                        format_args!("pub const {}: Self = Self({})", name, str).fmt(f)
+                    }
+                    ConstantValue::Symbol(alias) => {
                         format_args!("pub const {}: Self = Self::{}", name, alias).fmt(f)
                     }
+                    ConstantValue::String(_) => unreachable!(),
                 }
             });
 
@@ -517,7 +623,10 @@ pub fn is_std_type(ty: UniqueStr, ctx: &Context) -> bool {
     )
 }
 
-fn apply_renames(ctx: &Context) {
+fn apply_renames(
+    ctx: &Context,
+    supplements: &HashMap<UniqueStr, Vec<(UniqueStr, Vec<(UniqueStr, &ConstantValue)>)>>,
+) {
     let renames = &[
         // rust-native integer types
         ("uint8_t", "u8"),
@@ -625,6 +734,15 @@ fn apply_renames(ctx: &Context) {
                 name.rename(buf.intern(&ctx));
             }
             _ => {}
+        }
+    }
+
+    for (enum_name, ext_variants) in supplements {
+        for (_, variants) in ext_variants {
+            for &(name, _) in variants {
+                make_enum_member_rusty(*enum_name, name, true, &mut buf);
+                name.rename(buf.intern(&ctx));
+            }
         }
     }
 }
@@ -735,7 +853,7 @@ fn merge_bitfield_members<'a>(
 fn resolve_alias<'a>(alias: UniqueStr, reg: &'a Registry) -> (UniqueStr, &'a SymbolBody) {
     let mut next = alias;
     loop {
-        let symbol = reg.find_symbol(next).unwrap();
+        let symbol = reg.get_symbol(next).unwrap();
         match symbol {
             &SymbolBody::Alias(of) => {
                 next = of;
@@ -754,7 +872,7 @@ fn get_underlying_type(name: UniqueStr, ctx: &Context) -> Type {
             return Type::from_only_basetype(symbol);
         }
 
-        let top = ctx.find_symbol(symbol).unwrap();
+        let top = ctx.get_symbol(symbol).unwrap();
         match top {
             SymbolBody::Alias(of) => symbol = *of,
             SymbolBody::Enum { ty, .. } => symbol = *ty,
@@ -764,6 +882,7 @@ fn get_underlying_type(name: UniqueStr, ctx: &Context) -> Type {
                     symbol = *ty;
                 } else {
                     match val {
+                        ConstantValue::Bitpos(_) => unreachable!(),
                         ConstantValue::Literal(_) | ConstantValue::Expression(_) => {
                             return Type::from_only_basetype(ctx.strings.uint32_t)
                         }

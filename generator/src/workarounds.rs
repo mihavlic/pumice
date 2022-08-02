@@ -48,7 +48,10 @@ pub fn apply_workarounds(ctx: &mut Context) {
     };
 
     let ownership = |arg: &str| -> Workaround {
-        Workaround::SetOwnership(ctx.find_section_idx(arg.intern(ctx)))
+        Workaround::SetOwnership(
+            ctx.find_section_idx(arg.intern(ctx))
+                .unwrap_or_else(|| panic!("No such section '{}'", arg)),
+        )
     };
 
     #[rustfmt::skip]

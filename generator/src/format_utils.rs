@@ -307,11 +307,9 @@ fn test(a: usize) {
 
     #[rustfmt::skip]
     let expect = r#"\
-
 struct {
     a;
     a;
-
 }
 fn test(a: usize) {
     // comment

@@ -21,8 +21,8 @@ impl DeriveData {
         let mut symbol_force_copy = vec![false; ctx.reg.symbols.len()];
 
         // due to rust trying to somehow make unions make safe, there is an uncertainty on how
-        // destructors should work with them, currently only Copy types can be in them, thus we declare
-        // all their constituents Copy
+        // destructors should work with them, currently only Copy types can be in them, thus we
+        // declare all their constituents Copy
         // TODO perhaps it's better to manually implement Copy only for the direct constituents?
         for Symbol(name, body) in &ctx.reg.symbols {
             match body {

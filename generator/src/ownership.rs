@@ -1,5 +1,8 @@
+use std::collections::HashSet;
+
 use generator_lib::{
-    interner::UniqueStr, FeatureExtensionItem, InterfaceItem, Registry, SymbolBody,
+    configuration::GenConfig, interner::UniqueStr, Extension, Feature, FeatureExtensionItem,
+    InterfaceItem, Registry, SymbolBody,
 };
 
 use crate::{is_std_type, resolve_alias, Context, Section, SectionKind, INVALID_SECTION};
@@ -12,7 +15,7 @@ pub fn resolve_ownership(ctx: &mut Context) {
     // iterate through the sections and the items in their `require` tags
     // if the item doesn't have ownership, set it to the current section
     for (i, section) in ctx.sections.iter().enumerate() {
-        for mut symbol in section_used_symbols(section, &ctx.reg) {
+        for mut symbol in section_used_symbols(section, &ctx.conf, &ctx.reg) {
             if let Some((flags_name, _)) = ctx.flag_bits_to_flags(symbol) {
                 symbol = flags_name;
             }
@@ -72,24 +75,119 @@ pub fn resolve_ownership(ctx: &mut Context) {
 
 fn section_used_symbols<'a>(
     section: &'a Section,
+    conf: &'a GenConfig,
     reg: &'a Registry,
 ) -> impl Iterator<Item = UniqueStr> + 'a {
     let children = match section.kind {
-        SectionKind::Feature(idx) => reg.features[idx as usize].children.as_slice(),
-        SectionKind::Extension(idx) => reg.extensions[idx as usize].children.as_slice(),
+        SectionKind::Feature(idx) => {
+            let Feature {
+                name,
+                api,
+                protect,
+                children,
+                ..
+            } = &reg.features[idx as usize];
+
+            if skip_conf_conditions(api, None, *protect, Some(*name), None, conf) {
+                None
+            } else {
+                Some(children.as_slice())
+            }
+        }
+        SectionKind::Extension(idx) => {
+            let Extension {
+                name,
+                protect,
+                supported,
+                children,
+                ..
+            } = &reg.extensions[idx as usize];
+
+            if skip_conf_conditions(supported, Some(*name), *protect, None, None, conf) {
+                None
+            } else {
+                Some(children.as_slice())
+            }
+        }
     };
     children
-        .iter()
+        .into_iter()
+        .flat_map(|a| a.iter())
         .filter_map(|item| match item {
             FeatureExtensionItem::Comment(_) => None,
-            FeatureExtensionItem::Require { items, .. } => Some(items),
+            FeatureExtensionItem::Require {
+                items,
+                profile,
+                api,
+                extension,
+                feature,
+            } => {
+                if skip_conf_conditions(api, *extension, None, *feature, *profile, conf) {
+                    None
+                } else {
+                    Some(items)
+                }
+            }
             FeatureExtensionItem::Remove { .. } => unimplemented!(),
         })
         .flat_map(move |a| {
             a.iter().filter_map(move |s| match s {
                 InterfaceItem::Simple { name, .. } => Some(*name),
-                // an owning section will not be extending its own enum, it will have defined the variants imediatelly
+                // an owning section will not be extending its own enum, it will have defined the variants immediately
                 InterfaceItem::Extend { .. } => None,
             })
         })
+}
+
+pub fn skip_conf_conditions(
+    api: &[UniqueStr],
+    extension: Option<UniqueStr>,
+    protect: Option<UniqueStr>,
+    feature: Option<UniqueStr>,
+    profile: Option<UniqueStr>,
+    conf: &GenConfig,
+) -> bool {
+    if multiple_match_skip(api, &conf.apis) {
+        return true;
+    }
+
+    if let Some(extension) = extension {
+        if !conf.is_extension_used(extension) {
+            return true;
+        }
+    }
+
+    if let Some(protect) = protect {
+        if !conf.is_protect_used(protect) {
+            return true;
+        }
+    }
+
+    if let Some(feature) = feature {
+        if feature != conf.feature {
+            return true;
+        }
+    }
+
+    if let Some(profile) = profile {
+        if Some(profile) != conf.profile {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn multiple_match_skip(extensions: &[UniqueStr], set: &HashSet<UniqueStr>) -> bool {
+    if extensions.is_empty() {
+        return false;
+    }
+
+    for extension in extensions {
+        if set.contains(extension) {
+            return false;
+        }
+    }
+
+    true
 }

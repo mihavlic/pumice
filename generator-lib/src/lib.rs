@@ -53,7 +53,7 @@ pub enum SymbolBody {
     Enum {
         bitmask: bool,
         ty: UniqueStr,
-        members: Vec<(UniqueStr, EnumValue)>,
+        members: Vec<(UniqueStr, ConstantValue)>,
     },
     Handle {
         object_type: UniqueStr,
@@ -84,18 +84,10 @@ pub struct StructMember {
     pub bitfield: Option<u8>,
 }
 
-#[derive(Debug, Clone)]
-pub enum EnumValue {
-    Bitpos(u32),
-    // i32 is fine, see https://github.com/KhronosGroup/Vulkan-Docs/issues/124#issuecomment-192878892
-    Value(i32),
-    Alias(UniqueStr),
-}
-
 #[derive(Debug)]
 pub struct Feature {
     pub name: UniqueStr,
-    pub api: UniqueStr,
+    pub api: Vec<UniqueStr>,
     pub number: UniqueStr,
     pub sortorder: Option<u32>,
     pub protect: Option<UniqueStr>,
@@ -214,19 +206,9 @@ pub enum FeatureExtensionItem {
 }
 
 #[derive(Debug, Clone)]
-pub enum ExtendMethod {
-    Bitpos(u32),
-    // extnumber, offset, is positive direction, the notion of a direction when offset could have been negative is stupid
-    BitposExtnumber { extnumber: u32, offset: i32 },
-    // value can in fact be whatever
-    Value(String),
-    Alias(UniqueStr),
-}
-
-#[derive(Debug, Clone)]
 pub enum ConstantValue {
-    // erupt uses u32 for these constants so we will too
-    Literal(u32),
+    Bitpos(u32),
+    Literal(i64),
     Expression(String),
     Symbol(UniqueStr),
     String(String),
@@ -239,13 +221,11 @@ pub enum InterfaceItem {
     // even though it can already be scoped by the parent <require>, why??
     Simple {
         name: UniqueStr,
-        api: Option<UniqueStr>,
     },
     Extend {
         name: UniqueStr,
         extends: UniqueStr,
-        api: Option<UniqueStr>,
-        method: ExtendMethod,
+        value: ConstantValue,
     },
 }
 
@@ -365,10 +345,34 @@ impl Registry {
         }
 
         let &(index, ty) = self.item_map.get(&name)?;
-        assert!(ty == ItemKind::Symbol);
+        if ty != ItemKind::Symbol {
+            return None;
+        }
         Some(index)
     }
-    pub fn find_symbol(&self, name: UniqueStr) -> Option<&SymbolBody> {
+    pub fn get_feature_index(&self, name: UniqueStr) -> Option<u32> {
+        let &(index, ty) = self.item_map.get(&name)?;
+        if ty != ItemKind::Feature {
+            return None;
+        }
+        Some(index)
+    }
+    pub fn get_feature(&self, name: UniqueStr) -> Option<&Feature> {
+        let item = self.get_feature_index(name)?;
+        Some(&self.features[item as usize])
+    }
+    pub fn get_extension_index(&self, name: UniqueStr) -> Option<u32> {
+        let &(index, ty) = self.item_map.get(&name)?;
+        if ty != ItemKind::Extension {
+            return None;
+        }
+        Some(index)
+    }
+    pub fn get_extension(&self, name: UniqueStr) -> Option<&Extension> {
+        let item = self.get_extension_index(name)?;
+        Some(&self.extensions[item as usize])
+    }
+    pub fn get_symbol(&self, name: UniqueStr) -> Option<&SymbolBody> {
         let item = self.get_symbol_index(name)?;
         Some(&self.symbols[item as usize].1)
     }
@@ -983,11 +987,11 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConf
                             // <enum bitpos="0" name="VK_QUEUE_GRAPHICS_BIT" comment="..."/>
                             // <enum name="VK_STENCIL_FRONT_AND_BACK" alias="VK_STENCIL_FACE_FRONT_AND_BACK"/>
                             let val = if let Some(value) = e.attribute("value") {
-                                EnumValue::Value(parse_detect_radix(value))
+                                ConstantValue::Literal(parse_detect_radix(value) as i64)
                             } else if let Some(bitpos) = e.attribute("bitpos") {
-                                EnumValue::Bitpos(bitpos.parse().unwrap())
+                                ConstantValue::Bitpos(bitpos.parse().unwrap())
                             } else if let Some(alias) = e.attribute("alias") {
-                                EnumValue::Alias(alias.intern(reg))
+                                ConstantValue::Symbol(alias.intern(reg))
                             } else {
                                 unreachable!()
                             };
@@ -1114,7 +1118,7 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConf
                 let children = convert_section_children(n, None, conf, reg);
                 reg.add_feature(Feature {
                     name: n.intern("name", reg),
-                    api: n.intern("api", reg),
+                    api: parse_comma_separated(n.attribute("api"), reg),
                     number: n.intern("number", reg),
                     sortorder: n.attribute("sortorder").map(|s| s.parse().unwrap()),
                     protect: n.attribute("protect").map(|s| s.intern(reg)),
@@ -1330,7 +1334,7 @@ fn convert_spirv_enable(n: Node, int: &Interner) -> Vec<SpirvEnable> {
 
 fn convert_section_children(
     n: Node,
-    ext_number: Option<u32>,
+    inherited_extnumber: Option<u32>,
     conf: Option<&GenConfig>,
     reg: &mut Registry,
 ) -> Vec<FeatureExtensionItem> {
@@ -1357,42 +1361,56 @@ fn convert_section_children(
                     let name = item.intern("name", reg);
                     let iitem = match tag_name {
                         "type" | "command" => {
+                            assert!(child.attribute("api").is_none());
+
                             // QUIRK extensions can introduce aliases, in pursuit of consistency we add them to "the soup"
                             // though this doesn't seem to be excersized in the registry
                             if let Some(value) = item.attribute("alias") {
                                 reg.add_symbol(name, SymbolBody::Alias(value.intern(reg)));
                             }
 
-                            InterfaceItem::Simple { name, api: None }
+                            InterfaceItem::Simple { name }
                         }
                         "enum" => {
                             // I don't think this is applicable here as it is already in a <require> which has its own api property
                             // however the spec says "used to address subtle incompatibilities"
                             // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html#_enum_tags
+                            // todo convert potential usage in a separate <require> block, that should have the same semantics
                             assert!(child.attribute("api").is_none());
 
                             if let Some(extends) = item.attribute("extends") {
+                                // This was so incredibly hard to find! It took like 40 minutes!
+                                // https://registry.khronos.org/vulkan/specs/1.3/styleguide.html#_assigning_extension_token_values
                                 let method = if let Some(offset) = item.attribute("offset") {
-                                    let offset = offset.parse::<i32>().unwrap();
+                                    let offset = offset.parse::<i64>().unwrap();
                                     let extnumber = item
                                         .attribute("extnumber")
-                                        .map(|s| s.parse::<u32>().unwrap());
-                                    let dir = item.attribute("dir");
+                                        .map(|s| s.parse().unwrap())
+                                        .or(inherited_extnumber)
+                                        .unwrap()
+                                        as i64;
 
-                                    ExtendMethod::BitposExtnumber {
-                                        // if this is a feature which itself (as opposed to an extension) doesn't have an extumber, extnumber is always defined
-                                        extnumber: extnumber.or(ext_number).unwrap(),
-                                        offset: if dir == Some("-") { -offset } else { offset }
-                                            as i32,
+                                    // enum_offset(extension_number, offset) = base_value + (extension_number - 1) × range_size + offset
+                                    let mut offset = 1000000000 + (extnumber - 1) * 1000 + offset;
+
+                                    if item.attribute("dir") == Some("-") {
+                                        offset = -offset;
                                     }
+
+                                    ConstantValue::Literal(offset)
                                 } else if let Some(bitpos) = item.attribute("bitpos") {
-                                    let bitpos = bitpos.parse::<u32>().unwrap();
-                                    // extends can't be None right? how can a global constant be a bitpos? if yes then copy the EnumSpec::Value case and set value to a bitshifted 1?
-                                    ExtendMethod::Bitpos(bitpos)
+                                    let bitpos = bitpos.parse().unwrap();
+                                    ConstantValue::Bitpos(bitpos)
                                 } else if let Some(value) = item.attribute("value") {
-                                    ExtendMethod::Value(value.to_owned())
+                                    if let Ok(int) = value.parse() {
+                                        ConstantValue::Literal(int)
+                                    } else {
+                                        let mut val = value.to_owned();
+                                        numeric_expression_rustify(&mut val);
+                                        ConstantValue::Expression(val)
+                                    }
                                 } else if let Some(value) = item.attribute("alias") {
-                                    ExtendMethod::Alias(value.intern(reg))
+                                    ConstantValue::Symbol(value.intern(reg))
                                 } else {
                                     unreachable!()
                                 };
@@ -1400,8 +1418,7 @@ fn convert_section_children(
                                 InterfaceItem::Extend {
                                     name,
                                     extends: extends.intern(reg),
-                                    api: None,
-                                    method,
+                                    value: method,
                                 }
                             } else {
                                 if let Some(val) = item.attribute("value") {
@@ -1411,7 +1428,7 @@ fn convert_section_children(
                                     reg.add_symbol(name, SymbolBody::Alias(value.intern(reg)));
                                 }
 
-                                InterfaceItem::Simple { name, api: None }
+                                InterfaceItem::Simple { name }
                             }
                         }
                         _ => unimplemented!(),

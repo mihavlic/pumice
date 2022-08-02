@@ -1,10 +1,14 @@
 use std::{
+    collections::HashSet,
     fs::File,
     io::{BufWriter, Write},
 };
 
+use dependencies::get_sections;
 use generator::{Context, INVALID_SECTION};
-use generator_lib::{interner::Intern, process_registry_xml, Registry};
+use generator_lib::{configuration::GenConfig, interner::Intern, process_registry_xml, Registry};
+
+mod dependencies;
 
 fn main() {
     let mut reg_file = BufWriter::new(
@@ -41,7 +45,17 @@ fn main() {
         write!(reg_file, "{:#?}", &reg).unwrap();
     }
 
-    let ctx = Context::new(reg);
+    let (feature, extensions) = get_sections(Option::<std::iter::Once<_>>::None, &reg);
+
+    let conf = GenConfig {
+        extensions,
+        feature,
+        profile: None,
+        apis: HashSet::from(["vulkan".intern(&reg)]),
+        protect: HashSet::new(),
+    };
+
+    let ctx = Context::new(conf, reg);
 
     if workarounds {
         write!(reg_file, "{:#?}", &ctx.reg).unwrap();
