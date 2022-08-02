@@ -22,11 +22,19 @@ fn main() {
     let mut reg = Registry::new();
 
     if vk {
-        process_registry_xml(&mut reg, &std::fs::read_to_string("./vk.xml").unwrap());
+        process_registry_xml(
+            &mut reg,
+            &std::fs::read_to_string("./vk.xml").unwrap(),
+            None,
+        );
     }
 
     if video {
-        process_registry_xml(&mut reg, &std::fs::read_to_string("./video.xml").unwrap());
+        process_registry_xml(
+            &mut reg,
+            &std::fs::read_to_string("./video.xml").unwrap(),
+            None,
+        );
     }
 
     if !workarounds {

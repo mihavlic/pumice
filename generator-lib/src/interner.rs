@@ -55,15 +55,6 @@ impl UniqueStr {
         s.current = to.current;
         s.current_len = to.current_len;
     }
-    pub fn total_rename(&self, to: UniqueStr) {
-        let s = self.get_header_mut();
-        let to = to.get_header();
-
-        s.current = to.current;
-        s.current_len = to.current_len;
-        s.original = to.original;
-        s.original_len = to.original_len;
-    }
     pub fn rename_trim_prefix(&self, bytes_len: usize) {
         let s = self.get_header_mut();
 

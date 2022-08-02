@@ -1,5 +1,5 @@
 use generator_lib::{
-    interner::UniqueStr, FeatureExtensionItem, InterfaceItem, ItemKind, Registry, SymbolBody,
+    interner::UniqueStr, FeatureExtensionItem, InterfaceItem, Registry, SymbolBody,
 };
 
 use crate::{is_std_type, resolve_alias, Context, Section, SectionKind, INVALID_SECTION};
@@ -92,43 +92,4 @@ fn section_used_symbols<'a>(
                 InterfaceItem::Extend { .. } => None,
             })
         })
-}
-
-// call fn for every direct dependency of the section
-pub fn foreach_dependency<F: FnMut(Section)>(section: &Section, mut f: F, reg: &Registry) {
-    match section.kind {
-        SectionKind::Feature(idx) => {
-            let number = reg.features[idx as usize].number.resolve();
-            for (i, feature) in reg.features.iter().enumerate() {
-                // we want to output all lower feature levels (essentially the vulkan version) than the one selected
-                // thankfully this order is still valid on textual numbers
-                // ie: "1.0" < "1.1" < "1.2"
-                if feature.number.resolve() < number {
-                    f(Section {
-                        name: feature.name,
-                        kind: SectionKind::Feature(i as u32),
-                    })
-                }
-            }
-        }
-        SectionKind::Extension(idx) => {
-            let extension = &reg.extensions[idx as usize];
-            if let Some(core) = extension.requires_core {
-                let index = reg.features.iter().position(|f| f.number == core).unwrap();
-                f(Section {
-                    name: reg.features[index].name,
-                    kind: SectionKind::Feature(index as u32),
-                });
-            }
-            for &name in &extension.requires {
-                let &(index, kind) = reg.get_item_entry(name).unwrap();
-                let kind = match kind {
-                    ItemKind::Feature => SectionKind::Feature(index),
-                    ItemKind::Extension => SectionKind::Extension(index),
-                    _ => unreachable!(),
-                };
-                f(Section { name, kind });
-            }
-        }
-    }
 }

@@ -7,12 +7,14 @@ use std::{
     ops::Deref,
 };
 
+use configuration::GenConfig;
 use interner::{Intern, Interner, UniqueStr};
 use roxmltree::Node;
 use type_declaration::{parse_type_decl, Type};
 
 pub extern crate smallvec;
 
+pub mod configuration;
 pub mod interner;
 pub mod type_declaration;
 
@@ -95,6 +97,7 @@ pub struct Feature {
     pub name: UniqueStr,
     pub api: UniqueStr,
     pub number: UniqueStr,
+    pub sortorder: Option<u32>,
     pub protect: Option<UniqueStr>,
     pub children: Vec<FeatureExtensionItem>,
 }
@@ -495,7 +498,7 @@ impl Debug for Registry {
 }
 
 trait NodeUtils<'a> {
-    fn intern(&self, attribute: &str, reg: &Interner) -> UniqueStr;
+    fn intern(&self, attribute: &str, int: &Interner) -> UniqueStr;
     fn owned(&self, attribute: &str) -> String;
     fn get(&'a self, attribute: &str) -> &'a str;
     fn child_text(&'a self, child: &str) -> &'a str;
@@ -503,8 +506,8 @@ trait NodeUtils<'a> {
 }
 
 impl<'a, 'b> NodeUtils<'b> for Node<'a, 'b> {
-    fn intern(&self, attribute: &str, reg: &Interner) -> UniqueStr {
-        self.attribute(attribute).unwrap().intern(reg)
+    fn intern(&self, attribute: &str, int: &Interner) -> UniqueStr {
+        self.attribute(attribute).unwrap().intern(int)
     }
     fn owned(&self, attribute: &str) -> String {
         self.attribute(attribute).unwrap().to_owned()
@@ -569,7 +572,65 @@ fn node_collect_text(n: Node, buf: &mut String) {
     }
 }
 
-pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
+fn api_guard_skip(node: Node, conf: Option<&GenConfig>, int: &Interner) -> bool {
+    if let Some(conf) = conf {
+        if let Some(str) = node.attribute("api") {
+            for api in iter_comma_separated(str, int) {
+                if conf.is_api_used(api) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+    false
+}
+
+fn try_skip(n: Node, conf: Option<&GenConfig>, int: &Interner) -> bool {
+    if let Some(conf) = conf {
+        let apis = n.attribute("api").or_else(|| n.attribute("supported"));
+        if let Some(str) = apis {
+            let mut tmp = false;
+            for api in iter_comma_separated(str, int) {
+                if conf.is_api_used(api) {
+                    tmp = true;
+                    break;
+                }
+            }
+            if tmp == false {
+                return true;
+            }
+        }
+
+        if let Some(protect) = n.attribute("protect").map(|s| s.intern(int)) {
+            if !conf.is_protect_used(protect) {
+                return true;
+            }
+        }
+
+        if let Some(profile) = n.attribute("profile").map(|s| s.intern(int)) {
+            if !conf.is_profile_used(profile) {
+                return true;
+            }
+        }
+
+        let tag_name = n.tag_name().name();
+        if tag_name == "feature" {
+            let name = n.intern("name", int);
+            if !conf.is_feature_used(name) {
+                return true;
+            }
+        } else if tag_name == "extension" {
+            let name = n.intern("name", int);
+            if !conf.is_extension_used(name) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConfig>) {
     let doc = roxmltree::Document::parse(xml).unwrap();
 
     let r = doc
@@ -606,6 +667,10 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
             "types" => {
                 for t in node_iter_children(n) {
                     if t.tag_name().name() == "comment" {
+                        continue;
+                    }
+
+                    if api_guard_skip(t, conf, reg) {
                         continue;
                     }
 
@@ -849,6 +914,10 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
                                     _ => unreachable!(),
                                 }
 
+                                if api_guard_skip(member, conf, reg) {
+                                    continue;
+                                }
+
                                 buf.clear();
                                 node_collect_text(member, &mut buf);
                                 let (name, ty, bitfield) = parse_type_decl(&buf, reg);
@@ -902,6 +971,10 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
                                 "enum" => {}
                                 "comment" | "unused" => continue, // I don't think tracking unused values is ever useful
                                 _ => unreachable!(),
+                            }
+
+                            if api_guard_skip(e, conf, reg) {
+                                continue;
                             }
 
                             let variant_name = e.intern("name", reg);
@@ -959,6 +1032,10 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
                 for c in node_iter_children(n) {
                     assert_eq!(c.tag_name().name(), "command");
 
+                    if api_guard_skip(c, conf, reg) {
+                        continue;
+                    }
+
                     // <command name="vkResetQueryPoolEXT" alias="vkResetQueryPool"/>
                     if try_alias(c, reg) {
                         continue;
@@ -988,6 +1065,10 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
                             "param" => {}
                             "implicitexternsyncparams" => continue,
                             _ => unreachable!(),
+                        }
+
+                        if api_guard_skip(p, conf, reg) {
+                            continue;
                         }
 
                         buf.clear();
@@ -1026,11 +1107,16 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
             //         <type name="VK_NULL_HANDLE"/>
             //     </require>
             "feature" => {
-                let children = convert_section_children(n, None, reg);
+                if try_skip(n, conf, reg) {
+                    continue;
+                }
+
+                let children = convert_section_children(n, None, conf, reg);
                 reg.add_feature(Feature {
                     name: n.intern("name", reg),
                     api: n.intern("api", reg),
                     number: n.intern("number", reg),
+                    sortorder: n.attribute("sortorder").map(|s| s.parse().unwrap()),
                     protect: n.attribute("protect").map(|s| s.intern(reg)),
                     children,
                 });
@@ -1046,27 +1132,21 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
             //             <type name="VkSurfaceKHR"/>
             //             <type name="VkSurfaceTransformFlagBitsKHR"/>
             //             <type name="VkPresentModeKHR"/>
-            //             <typ
             "extensions" => {
                 for e in node_iter_children(n) {
+                    if try_skip(n, conf, reg) {
+                        continue;
+                    }
+
                     let name = e.intern("name", reg);
+                    let protect = n.attribute("protect").map(|s| s.intern(reg));
 
-                    // this is in fact an extension, it needs to have a number
-                    // video.xml does not have this number yay!
                     let extnumber = e.attribute("number").map(|s| s.parse().unwrap());
+                    let children = convert_section_children(e, extnumber, conf, reg);
 
-                    let deprecatedby = e.attribute("deprecatedby").and_then(|s| {
-                        // thanks VK_NV_glsl_shader
-                        if s.is_empty() {
-                            None
-                        } else {
-                            Some(s.intern(reg))
-                        }
-                    });
-
-                    let children = convert_section_children(e, extnumber, reg);
                     reg.add_extension(Extension {
                         name,
+                        // video.xml does not have this number yay!
                         number: extnumber.unwrap_or(0),
                         sortorder: e.attribute("sortorder").map(|s| s.parse().unwrap()),
                         author: e.attribute("author").map(|s| s.to_owned()),
@@ -1074,11 +1154,11 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str) {
                         ext_type: e.attribute("type").map(|s| s.intern(reg)),
                         requires: parse_comma_separated(e.attribute("requires"), reg),
                         requires_core: e.attribute("requiresCore").map(|s| s.intern(reg)),
-                        protect: e.attribute("protect").map(|s| s.intern(reg)),
+                        protect,
                         platform: e.attribute("platform").map(|s| s.intern(reg)),
                         supported: parse_comma_separated(e.attribute("supported"), reg),
                         promotedto: e.attribute("promotedto").map(|s| s.intern(reg)),
-                        deprecatedby,
+                        deprecatedby: e.attribute("deprecatedby").map(|s| s.intern(reg)),
                         obsoletedby: e.attribute("obsoletedby").map(|s| s.intern(reg)),
                         provisional: e.attribute("provisional") == Some("true"),
                         specialuse: parse_comma_separated(e.attribute("specialuse"), reg),
@@ -1251,10 +1331,15 @@ fn convert_spirv_enable(n: Node, int: &Interner) -> Vec<SpirvEnable> {
 fn convert_section_children(
     n: Node,
     ext_number: Option<u32>,
+    conf: Option<&GenConfig>,
     reg: &mut Registry,
 ) -> Vec<FeatureExtensionItem> {
     let mut converted = Vec::new();
     for child in node_iter_children(n) {
+        if try_skip(child, conf, reg) {
+            continue;
+        }
+
         if let Some(comment) = child.attribute("comment") {
             converted.push(FeatureExtensionItem::Comment(comment.to_owned()));
         }
@@ -1283,7 +1368,7 @@ fn convert_section_children(
                         "enum" => {
                             // I don't think this is applicable here as it is already in a <require> which has its own api property
                             // however the spec says "used to address subtle incompatibilities"
-                            // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html#_pub enum_tags
+                            // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html#_enum_tags
                             assert!(child.attribute("api").is_none());
 
                             if let Some(extends) = item.attribute("extends") {
@@ -1374,10 +1459,18 @@ fn convert_section_children(
     converted
 }
 
+fn iter_comma_separated<'a>(
+    str: &'a str,
+    int: &'a Interner,
+) -> impl Iterator<Item = UniqueStr> + 'a {
+    str.split_terminator(',').map(|s| s.intern(int))
+}
+
 fn parse_comma_separated(str: Option<&str>, int: &Interner) -> Vec<UniqueStr> {
-    match str {
-        Some(s) => s.split_terminator(',').map(|s| s.intern(int)).collect(),
-        None => Vec::new(),
+    if let Some(str) = str {
+        iter_comma_separated(str, int).collect()
+    } else {
+        Vec::new()
     }
 }
 

@@ -7,13 +7,12 @@ use crate::{
 use derives::DeriveData;
 use fs_utils::copy_dir_recursive;
 use generator_lib::{
+    configuration::GenConfig,
     interner::{Intern, UniqueStr},
-    process_registry_xml,
     smallvec::SmallVec,
     type_declaration::{TyToken, Type},
     CommandParameter, ConstantValue, EnumValue, Registry, StructMember, Symbol, SymbolBody,
 };
-use ownership::foreach_dependency;
 use std::{
     collections::HashMap,
     error::Error,
@@ -30,7 +29,6 @@ mod fs_utils;
 mod ownership;
 mod workarounds;
 
-#[derive(Clone)]
 pub enum SectionKind {
     Feature(u32),
     Extension(u32),
@@ -38,7 +36,6 @@ pub enum SectionKind {
 
 pub const INVALID_SECTION: u32 = u32::MAX;
 
-#[derive(Clone)]
 pub struct Section {
     pub name: UniqueStr,
     pub kind: SectionKind,
@@ -86,7 +83,7 @@ common_strings! {
     void, int, char, float, double,
     size_t, uint8_t, uint16_t, uint32_t, uint64_t, int8_t, int16_t, int32_t, int64_t,
     usize, u8, u16, u32, u64, i8, i16, i32, i64,
-    vk_platform
+    vk_platform, disabled
 }
 
 common_types! {
@@ -186,22 +183,12 @@ impl Deref for Context {
 }
 
 pub fn write_bindings(
-    vk_xml: &str,
-    video_xml: &str,
+    ctx: &mut Context,
     glue: &dyn AsRef<Path>,
     out: &dyn AsRef<Path>,
-    sections: &[&str],
+    conf: &GenConfig,
 ) -> Result<(), Box<dyn Error>> {
-    let mut reg = Registry::new();
-
-    process_registry_xml(&mut reg, vk_xml);
-    process_registry_xml(&mut reg, video_xml);
-
-    let ctx = Context::new(reg);
-
     apply_renames(&ctx);
-
-    let selected_sections = fill_missing_sections(sections, &ctx);
 
     let out_dir = out.as_ref().to_path_buf();
     let mut cur_dir = PathBuf::new();
@@ -223,28 +210,48 @@ pub fn write_bindings(
 
         writeln!(&mut lib, "\npub mod extensions;\n")?;
 
-        let mut sections = selected_sections
+        let mut features = ctx
+            .reg
+            .features
             .iter()
-            .map(|&s| ctx.find_section(s))
+            .filter(|f| conf.is_feature_used(f.name))
+            .map(|f| f.name)
             .collect::<Vec<_>>();
 
-        sections.sort_by_key(|s| s.name.resolve());
+        features.sort_by(|a, b| a.resolve().cmp(b.resolve()));
 
-        for section in sections {
-            match section.kind {
-                SectionKind::Feature(_) => writeln!(&mut lib, "pub mod {};", section.name)?,
-                SectionKind::Extension(_) => writeln!(&mut exts, "pub mod {};", section.name)?,
-            }
+        let mut extensions = ctx
+            .reg
+            .extensions
+            .iter()
+            .filter(|e| conf.is_extension_used(e.name))
+            .map(|e| e.name)
+            .collect::<Vec<_>>();
+
+        extensions.sort_by(|a, b| a.resolve().cmp(b.resolve()));
+
+        for feature in features {
+            writeln!(&mut lib, "pub mod {};", feature)?;
+        }
+
+        for extension in extensions {
+            writeln!(&mut exts, "pub mod {};", extension)?;
         }
     }
 
     // (item index, section index)
     let mut items = Vec::new();
     for (i, &Symbol(name, _)) in ctx.reg.symbols.iter().enumerate() {
-        if let Some(section) = ctx.get_item_section_idx(name) {
-            let name = ctx.get_section(section).unwrap().name;
-            if selected_sections.binary_search(&name).is_ok() {
-                items.push((i, section));
+        if let Some(section_idx) = ctx.get_item_section_idx(name) {
+            let section = ctx.get_section(section_idx).unwrap();
+
+            let used = match section.kind {
+                SectionKind::Feature(_) => conf.is_feature_used(section.name),
+                SectionKind::Extension(_) => conf.is_extension_used(section.name),
+            };
+
+            if used {
+                items.push((i, section_idx));
             }
         }
     }
@@ -497,43 +504,6 @@ fn write_item<W: Write>(
     }
 
     Ok(())
-}
-
-fn fill_missing_sections(sections: &[&str], ctx: &Context) -> Vec<UniqueStr> {
-    let mut selected_sections = Vec::new();
-    if sections.contains(&"@all") {
-        let disabled = "disabled".intern(ctx);
-        selected_sections.extend(ctx.reg.features.iter().map(|a| a.name));
-        selected_sections.extend(
-            ctx.reg
-                .extensions
-                .iter()
-                .filter(|a| a.supported.get(0) != Some(&disabled))
-                .map(|a| a.name),
-        );
-    } else {
-        selected_sections.extend(sections.iter().map(|str| str.intern(ctx)));
-        add_dependent_sections(&mut selected_sections, ctx);
-    }
-    selected_sections.sort_unstable();
-    selected_sections
-}
-
-pub fn add_dependent_sections(selected_sections: &mut Vec<UniqueStr>, ctx: &Context) {
-    let mut i = 0;
-    while i < selected_sections.len() {
-        let section = ctx.find_section(selected_sections[i]);
-        foreach_dependency(
-            section,
-            |s| {
-                if !selected_sections.contains(&s.name) {
-                    selected_sections.push(s.name);
-                }
-            },
-            &ctx.reg,
-        );
-        i += 1;
-    }
 }
 
 // whether the type is provided from the rust standard library and as such has no entry in the Registry
@@ -968,9 +938,9 @@ fn make_enum_member_rusty(
 
 // Since C is such a lovely language, some types have different semantics when they are used as a function argument.
 // For example, consider:
-//  void vkCmdSetBlendConstants(VkCommandBuffer commandBuffer, const float blendConstants[4]) {}
-// there `const float [4]` actually means (in rust) `*const [float; 4]`
-// this break our codegen and must be converted out
+//   void vkCmdSetBlendConstants(VkCommandBuffer commandBuffer, const float blendConstants[4]) {}
+// the `const float [4]` actually means (in rust) `*const [float; 4]`
+// this means that types in function arguments must be specially handled
 fn convert_type_in_fun_ctx(ty: &Type) -> Type {
     // arr 4, const, float
     let mut out = SmallVec::new();
