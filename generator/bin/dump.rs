@@ -5,8 +5,10 @@ use std::{
 };
 
 use dependencies::get_sections;
-use generator::{Context, INVALID_SECTION};
-use generator_lib::{configuration::GenConfig, interner::Intern, process_registry_xml, Registry};
+use generator::Context;
+use generator_lib::{
+    configuration::GenConfig, interner::Intern, process_registry_xml, Registry, Symbol,
+};
 
 mod dependencies;
 
@@ -53,6 +55,7 @@ fn main() {
         profile: None,
         apis: HashSet::from(["vulkan".intern(&reg)]),
         protect: HashSet::new(),
+        pass_all: true,
     };
 
     let ctx = Context::new(conf, reg);
@@ -69,13 +72,13 @@ fn main() {
         .unwrap(),
     );
 
-    for (i, section) in ctx.symbol_ownership.iter().enumerate() {
-        let name = ctx.reg.symbols[i].0;
-        let section = match *section {
-            INVALID_SECTION => "INVALID".intern(&ctx),
-            other => ctx.sections[other as usize].name,
+    for &Symbol(name, _) in &ctx.reg.symbols {
+        let section = if let Some(section) = ctx.symbol_get_section(name) {
+            section.name.resolve()
+        } else {
+            "INVALID"
         };
 
-        writeln!(own_file, "{}: {}", name.resolve(), section.resolve()).unwrap();
+        writeln!(own_file, "{}: {}", name.resolve(), section).unwrap();
     }
 }

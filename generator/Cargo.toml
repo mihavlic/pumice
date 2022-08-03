@@ -12,4 +12,7 @@ name = "dump"
 path = "./bin/dump.rs"
 
 [dependencies]
-generator-lib = { path = "../generator-lib" }
+generator_lib = { path = "../generator_lib" }
+format_macro = { path = "../format_macro" }
+prettyplease = { version = "0.1" }
+syn = { version = "1.0", default-features = false, features = ["full", "parsing"]}

@@ -21,6 +21,8 @@ pub struct GenConfig {
     /// "preprocessor" tokens that may further adjust the emitted items
     /// it seems to only ever be "VK_ENABLE_BETA_EXTENSIONS"
     pub protect: HashSet<UniqueStr>,
+    /// if true passes everything as if enabled
+    pub pass_all: bool,
 }
 
 impl GenConfig {
@@ -31,6 +33,7 @@ impl GenConfig {
         apis: &[&str],
         protect: &[&str],
         int: &Interner,
+        pass_all: bool,
     ) -> Self {
         Self {
             extensions: extensions.iter().map(|s| s.intern(int)).collect(),
@@ -38,21 +41,37 @@ impl GenConfig {
             profile: profile.map(|s| s.intern(int)),
             apis: apis.iter().map(|s| s.intern(int)).collect(),
             protect: protect.iter().map(|s| s.intern(int)).collect(),
+            pass_all,
         }
     }
     pub fn is_extension_used(&self, name: UniqueStr) -> bool {
+        if self.pass_all {
+            return true;
+        }
         self.extensions.contains(&name)
     }
     pub fn is_feature_used(&self, name: UniqueStr) -> bool {
+        if self.pass_all {
+            return true;
+        }
         name.resolve_original() <= self.feature.resolve_original()
     }
     pub fn is_profile_used(&self, name: UniqueStr) -> bool {
+        if self.pass_all {
+            return true;
+        }
         self.profile.map(|p| p == name).unwrap_or(false)
     }
     pub fn is_api_used(&self, name: UniqueStr) -> bool {
+        if self.pass_all {
+            return true;
+        }
         self.apis.contains(&name)
     }
     pub fn is_protect_used(&self, name: UniqueStr) -> bool {
+        if self.pass_all {
+            return true;
+        }
         self.protect.contains(&name)
     }
 }
@@ -68,6 +87,7 @@ fn test_gen_config() {
         &["vulkan"],
         &["VK_ENABLE_BETA_EXTENSIONS"],
         &int,
+        false
     );
 
     assert_eq!(conf.is_extension_used("VK_KHR_surface".intern(&int)), true);

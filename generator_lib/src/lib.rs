@@ -449,14 +449,14 @@ impl Registry {
             &mut self.item_map,
         );
     }
-    pub fn remove_symbol(&mut self, idx: u32) {
-        let i = idx as usize;
+    pub fn remove_symbol(&mut self, name: UniqueStr) {
+        let (index, kind) = self.item_map.remove(&name).unwrap();
+        assert_eq!(kind, ItemKind::Symbol);
 
-        let Symbol(name, _) = self.symbols.remove(i);
-        self.item_map.remove(&name).unwrap();
+        self.symbols.remove(index as usize);
 
         // need to adjust all the following indexes in the item_map because we've just deleted an element
-        for Symbol(name, _) in &self.symbols[i..] {
+        for Symbol(name, _) in &self.symbols[index as usize..] {
             self.item_map.get_mut(name).unwrap().0 -= 1;
         }
     }

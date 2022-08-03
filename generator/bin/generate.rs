@@ -25,8 +25,12 @@ fn main() {
         .unwrap_or_else(|_| panic!("Failed to read {}", video_xml.to_string_lossy()));
     process_registry_xml(&mut reg, &video_xml, None);
 
-    let selected = sections.to_str().unwrap().split(',').map(|s| s.trim());
-    let (feature, extensions) = get_sections(Some(selected), &reg);
+    let selected = if sections == "@all" {
+        None
+    } else {
+        Some(sections.to_str().unwrap().split(',').map(|s| s.trim()))
+    };
+    let (feature, extensions) = get_sections(selected, &reg);
 
     let conf = GenConfig {
         extensions,
@@ -34,6 +38,7 @@ fn main() {
         profile: None,
         apis: HashSet::from(["vulkan".intern(&reg)]),
         protect: HashSet::new(),
+        pass_all: false,
     };
 
     let mut ctx = Context::new(conf, reg);

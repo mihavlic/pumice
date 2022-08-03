@@ -1,14 +1,11 @@
 [package]
-name = "slag-sys"
+name = "format_macro"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[features]
-default = ["loaded"]
-linked = []
-loaded = ["libloading"]
+[lib]
+proc-macro = true
 
 [dependencies]
-libloading = { version = "0.7", optional = true }

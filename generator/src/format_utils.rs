@@ -1,6 +1,7 @@
 use std::{
-    fmt::{Display, Formatter, Write},
+    fmt::{Display, Write},
     iter,
+    path::{Path, PathBuf},
 };
 
 use generator_lib::{
@@ -10,156 +11,133 @@ use generator_lib::{
 
 use crate::{Context, Section};
 
-use super::switch;
-
-#[derive(PartialEq, Eq)]
-enum State {
-    Start,
-    Whitespace,
-    Newline,
+pub struct SectionWriter<'a> {
+    pub buf: String,
+    pub section: u32,
+    pub ctx: &'a Context,
+    pub path: PathBuf,
+    pub ends_whitespace: bool,
 }
 
-// a state machine that does some simple formatting on text that is written to it
-pub struct FormatWriter<W: Write> {
-    inner: W,
-    indent: usize,
-    state: State,
-}
-
-impl<W: Write> Write for FormatWriter<W> {
+impl<'a> std::fmt::Write for SectionWriter<'a> {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        for char in s.chars() {
-            self.write_char(char);
+        if let Some(last) = s.chars().last() {
+            self.ends_whitespace = last.is_ascii_whitespace();
         }
-        Ok(())
-    }
-    fn write_char(&mut self, c: char) -> std::fmt::Result {
-        self.write_char(c);
-        Ok(())
+        self.buf.write_str(s)
     }
 }
 
-const IDENT_STR: &'static str = "    ";
-
-impl<W: Write> FormatWriter<W> {
-    pub fn new(writer: W) -> Self {
+impl<'a> SectionWriter<'a> {
+    pub fn new(section: u32, path: impl AsRef<Path>, ctx: &'a Context) -> Self {
         Self {
-            inner: writer,
-            indent: 0,
-            state: State::Newline,
+            buf: String::new(),
+            section,
+            ctx,
+            path: path.as_ref().to_path_buf(),
+            ends_whitespace: true,
         }
     }
-    pub fn write_char(&mut self, mut c: char) {
-        // match situations where the state doesn't change and nothing is written
-        // '\r' is (ab)used as a sort of different newline that doesn't get eaten
-        if c.is_whitespace()
-            && c != '\r'
-            && (self.state == State::Whitespace || self.state == State::Newline)
-        {
-            return;
-        }
-
-        match c {
-            '{' => {
-                self.indent += 1;
-                self.state = State::Start;
-            }
-            '}' => {
-                // if this number underverflows during a release build it will
-                // result in 2^64 indents being printed and, well, that's not good
-                self.indent = self.indent.saturating_sub(1);
-                self.state = State::Start;
-            }
-            _ => {}
-        }
-
-        match c {
-            '\r' => {
-                c = '\n';
-                self.state = State::Newline;
-            }
-            '\n' => {
-                self.state = State::Newline;
-            }
-            _ if c.is_whitespace() => {
-                // State::Newline cannot be overriden by State::Whitespace
-                if self.state != State::Newline {
-                    self.state = State::Whitespace;
-                    // we delay printing the indentation to the next character in case it's
-                    // a brace that would modify the indentation before itself
-                }
-            }
-            _ => {
-                if self.state == State::Newline {
-                    for _ in 0..self.indent {
-                        self.write_raw(IDENT_STR);
-                    }
-                }
-                self.state = State::Start;
-            }
-        }
-
-        self.write_char_raw(c);
+    pub fn from_file(
+        path: impl AsRef<Path>,
+        section: u32,
+        ctx: &'a Context,
+    ) -> std::io::Result<Self> {
+        Ok(Self {
+            buf: std::fs::read_to_string(&path)?,
+            section,
+            ctx,
+            path: path.as_ref().to_path_buf(),
+            ends_whitespace: true,
+        })
     }
-    pub fn flush_newline(&mut self) {
-        if self.state != State::Newline {
-            self.write_char('\n');
-        }
-    }
-    pub fn write_char_raw(&mut self, c: char) {
-        self.inner.write_char(c).unwrap();
-    }
-    pub fn write_raw(&mut self, s: &str) {
-        self.inner.write_str(s).unwrap();
-    }
-    #[allow(dead_code)]
-    pub fn get_inner_writer(&self) -> &W {
-        &self.inner
-    }
-    #[allow(dead_code)]
-    pub fn to_inner_writer(self) -> W {
-        self.inner
-    }
-}
-
-pub struct WriteWriteAdapter<W: std::io::Write>(pub W);
-
-impl<W: std::io::Write> Write for WriteWriteAdapter<W> {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        match self.0.write(s.as_bytes()) {
-            Ok(_) => Ok(()),
-            Err(_) => Err(std::fmt::Error),
-        }
-    }
-}
-
-#[macro_export]
-macro_rules! code2 {
-    ($buf:expr, $($code:literal)+ $(@ $($tail:tt)*)?) => {
-        {
-            let result = std::fmt::Write::write_fmt(
-                $buf,
-                format_args!(
-                    concat!($($code, "\n"),+),
-                    $(
-                        $(
-                            $tail
-                        )*
-                    )?
+    pub fn save(&self) -> std::io::Result<()> {
+        std::fs::write(&self.path, &self.buf).unwrap();
+        let file = syn::parse_file(&self.buf)
+            .map_err(|e| {
+                panic!(
+                    "Failed to parse file '{}'\nErr: {}",
+                    self.path.to_string_lossy(),
+                    e
                 )
-            );
-            if result.is_ok() {
-                $buf.flush_newline();
-            }
-            result
+            })
+            .unwrap();
+        let out = prettyplease::unparse(&file);
+        std::fs::write(&self.path, out)
+    }
+    pub fn separate_idents(&mut self) {
+        if !self.ends_whitespace {
+            self.buf.push(' ');
+            self.ends_whitespace = true;
         }
+    }
+}
+
+impl<'a> Drop for SectionWriter<'a> {
+    fn drop(&mut self) {
+        self.save().unwrap();
+    }
+}
+
+pub trait ExtendedFormat {
+    fn efmt(self, writer: &mut SectionWriter) -> std::fmt::Result;
+}
+
+impl<T: Display> ExtendedFormat for T {
+    fn efmt(self, writer: &mut SectionWriter) -> std::fmt::Result {
+        write!(writer, "{}", self)
+    }
+}
+
+pub struct Fun<T: FnOnce(&mut SectionWriter<'_>) -> std::fmt::Result>(pub T);
+
+impl<T: FnOnce(&mut SectionWriter<'_>) -> std::fmt::Result> ExtendedFormat for Fun<T> {
+    fn efmt(self, writer: &mut SectionWriter) -> std::fmt::Result {
+        (self.0)(writer)
+    }
+}
+
+pub struct Cond<T>(pub bool, pub T);
+
+impl<T: ExtendedFormat> ExtendedFormat for Cond<T> {
+    fn efmt(self, writer: &mut SectionWriter<'_>) -> std::fmt::Result {
+        let Cond(cond, t) = self;
+        if cond {
+            t.efmt(writer)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+pub struct Iter<T, I: IntoIterator<Item = T>, F: Fn(&mut SectionWriter<'_>, T)>(pub I, pub F);
+
+impl<T, I: IntoIterator<Item = T>, F: Fn(&mut SectionWriter<'_>, T)> ExtendedFormat
+    for Iter<T, I, F>
+{
+    fn efmt(self, writer: &mut SectionWriter<'_>) -> std::fmt::Result {
+        for it in self.0 {
+            (self.1)(writer, it);
+        }
+        Ok(())
+    }
+}
+
+pub struct Concat<'a, const S: usize>(pub [&'a dyn Display; S]);
+
+impl<'a, const S: usize> ExtendedFormat for &Concat<'a, S> {
+    fn efmt(self, writer: &mut SectionWriter) -> std::fmt::Result {
+        for it in self.0 {
+            write!(writer, "{}", it)?;
+        }
+        Ok(())
     }
 }
 
 pub struct Separated<
     'a,
-    T: Iterator + Clone,
-    F: Fn(<T as Iterator>::Item, &mut Formatter<'_>) -> std::fmt::Result,
+    T: Iterator,
+    F: Fn(&mut SectionWriter<'_>, <T as Iterator>::Item) -> std::fmt::Result,
 > {
     iter: T,
     fun: F,
@@ -168,11 +146,8 @@ pub struct Separated<
     sep_last: bool,
 }
 
-impl<
-        'a,
-        T: Iterator + Clone,
-        F: Fn(<T as Iterator>::Item, &mut Formatter<'_>) -> std::fmt::Result,
-    > Separated<'a, T, F>
+impl<'a, T: Iterator, F: Fn(&mut SectionWriter<'_>, <T as Iterator>::Item) -> std::fmt::Result>
+    Separated<'a, T, F>
 {
     pub fn new(iter: T, fun: F, separator: &'a str, separator_last: bool) -> Self {
         Self {
@@ -183,60 +158,87 @@ impl<
         }
     }
     pub fn args(iter: T, fun: F) -> Self {
-        Self::new(iter, fun, ", ", false)
-    }
-    pub fn members(iter: T, fun: F) -> Self {
-        Self::new(iter, fun, ",\n", false)
+        Self::new(iter, fun, ",", false)
     }
     pub fn statements(iter: T, fun: F) -> Self {
-        Self::new(iter, fun, ";\n", true)
+        Self::new(iter, fun, ";", true)
     }
 }
 
-impl<
-        'a,
-        T: Iterator + Clone,
-        F: Fn(<T as Iterator>::Item, &mut Formatter<'_>) -> std::fmt::Result,
-    > Display for Separated<'a, T, F>
+impl<'a, T: Iterator>
+    Separated<'a, T, fn(&mut SectionWriter<'_>, <T as Iterator>::Item) -> std::fmt::Result>
+where
+    <T as Iterator>::Item: ExtendedFormat,
 {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let mut iter = self.iter.clone().peekable();
+    pub fn display(iter: T, separator: &'a str) -> Self {
+        Self::new(
+            iter,
+            |w: &mut SectionWriter<'_>, a: <T as Iterator>::Item| a.efmt(w),
+            separator,
+            false,
+        )
+    }
+}
+
+impl<'a, T: Iterator, F: Fn(&mut SectionWriter<'_>, <T as Iterator>::Item) -> std::fmt::Result>
+    ExtendedFormat for Separated<'a, T, F>
+{
+    fn efmt(self, writer: &mut SectionWriter) -> std::fmt::Result {
+        let mut iter = self.iter.peekable();
 
         while let Some(next) = iter.next() {
-            (self.fun)(next, f)?;
+            (self.fun)(writer, next)?;
 
             if iter.peek().is_some() || self.sep_last {
-                f.write_str(self.sep)?;
+                writer.write_str(self.sep)?;
             }
         }
         Ok(())
     }
 }
 
-pub struct Pathed<'a, T>(pub T, pub &'a Context, pub u32);
+pub struct Import<T>(pub T);
 
-impl<'a> Display for Pathed<'a, UniqueStr> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        fmt_symbol_path(self.0, self.1, self.2, f)
+#[macro_export]
+macro_rules! import {
+    ($e:expr) => {
+        $crate::format_utils::Import($e)
+    };
+}
+
+pub use import;
+
+#[macro_export]
+macro_rules! string {
+    ($e:expr) => {
+        $crate::format_utils::Concat([&'"', $e, &'"'])
+    };
+}
+
+pub use string;
+
+impl ExtendedFormat for Import<UniqueStr> {
+    fn efmt(self, writer: &mut SectionWriter) -> std::fmt::Result {
+        fmt_symbol_path(self.0, &writer.ctx, writer.section, &mut writer.buf)
     }
 }
 
-impl<'a> Display for Pathed<'a, &Type> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+impl ExtendedFormat for Import<&Type> {
+    fn efmt(self, w: &mut SectionWriter) -> std::fmt::Result {
         fmt_type_tokens_impl(
             &self.0 .0,
-            &(|s, f| fmt_symbol_path(s, self.1, self.2, f)),
+            &(|s, f: &mut String| fmt_symbol_path(s, &w.ctx, w.section, f)),
             &(|s, f| {
                 // the array size is either a number literal or a constant potentially defined elsewhere
                 let str = s.resolve();
                 if str.parse::<u64>().is_ok() {
                     f.write_str(str)
                 } else {
-                    fmt_symbol_path(s, self.1, self.2, f)?;
+                    fmt_symbol_path(s, &w.ctx, w.section, f)?;
                     f.write_str(" as usize")
                 }
             }),
-            f,
+            &mut w.buf,
         )
     }
 }
@@ -245,10 +247,10 @@ fn fmt_symbol_path(
     mut name: UniqueStr,
     ctx: &Context,
     current_section: u32,
-    f: &mut Formatter<'_>,
+    f: &mut impl Write,
 ) -> std::fmt::Result {
     let s = &ctx.strings;
-    switch!(
+    crate::switch!(
         name;
         // these ffi types are imported into every module
         s.void, s.int, s.char, s.float, s.double,
@@ -261,20 +263,20 @@ fn fmt_symbol_path(
             }
 
             let section_idx = ctx
-                .get_item_section_idx(name)
-                .unwrap();
+                .symbol_get_section_idx(name)
+                .unwrap_or_else(|| panic!("{}", name));
 
             if section_idx != current_section {
                 f.write_str("crate::")?;
 
-                let section = ctx.get_section(section_idx).unwrap();
+                let section = &ctx.sections[section_idx as usize];
                 let section_name = section.name.resolve();
 
                 for path in section_get_path(section)
                     .iter()
                     .chain(iter::once(&section_name))
                 {
-                    format_args!("{}::", path).fmt(f)?;
+                    write!(f, "{}::", path)?;
                 }
             }
         }
@@ -290,34 +292,63 @@ pub fn section_get_path(section: &Section) -> &'static [&'static str] {
     }
 }
 
-#[test]
-fn test_format_writer() {
-    #[rustfmt::skip]
-    let raw =r#"\
-
-struct {
-            a;
-a;
-
+pub fn section_get_path_str(section: &Section) -> &'static str {
+    match section.kind {
+        crate::SectionKind::Feature(_) => "",
+        crate::SectionKind::Extension(_) => "/extensions",
+    }
 }
-fn test(a: usize) {
-    // comment
-}
-"#;
 
-    #[rustfmt::skip]
-    let expect = r#"\
-struct {
-    a;
-    a;
-}
-fn test(a: usize) {
-    // comment
-}
-"#;
+// #[test]
+// fn test_code3() {
+//     let mut str = String::new();
+//     let mut writer = SectionWriter::new(&mut str);
 
-    let mut writer = FormatWriter::new(String::new());
-    writer.write_str(raw).unwrap();
+//     code3!(writer,
+//         "aa" "aa",
+//         "bb" 3 "aa",
+//         Cond(false, 3) Fun(|f| f.write_str("Hi!"))
+//     );
 
-    assert_eq!(writer.get_inner_writer(), expect);
-}
+//     let expect = "aaaa\nbb3aa\nHi!\n";
+//     assert_eq!(str, expect);
+// }
+
+// #[test]
+// fn test_format_writer() {
+//     let raw = r#"\
+
+// struct {
+//             a;
+// a;
+
+// }
+// fn test(a: usize) {
+//     // comment
+// }{
+//     {
+//         a
+//         }
+// }
+// "#;
+
+//     let expect = r#"\
+// struct {
+//     a;
+//     a;
+// }
+// fn test(a: usize) {
+//     // comment
+// }{
+//     {
+//         a
+//     }
+// }
+// "#;
+
+//     let mut string = String::new();
+//     let mut writer = SectionWriter::new(&mut string);
+//     writer.write_str(raw).unwrap();
+
+//     assert_eq!(&string, expect);
+// }

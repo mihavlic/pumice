@@ -1,9 +1,6 @@
+use crate::vk;
 use std::ffi::c_void;
 use std::os::raw::c_char;
-
-mod vk {
-    pub type Instance = u64;
-}
 
 #[cfg(feature = "linked")]
 extern "system" {
@@ -44,4 +41,33 @@ pub unsafe fn load_dynamic(
     Ok(ptr)
 }
 
-pub struct Entry {}
+pub trait FunctionLoad {
+    unsafe fn load(&self, name: *const c_char) -> *const c_void;
+}
+
+pub trait EntryLoad: FunctionLoad {}
+
+pub trait InstanceLoad: FunctionLoad {}
+
+pub trait DeviceLoad: FunctionLoad {}
+
+pub struct EntryLoader {
+    vkGetInstanceProcAddr: extern "system" fn(vk::Instance, name: *const c_char) -> *const c_void,
+}
+
+impl FunctionLoad for EntryLoader {
+    unsafe fn load(&self, name: *const c_char) -> *const c_void {
+        // in this one instance it is correct to pass in null
+        (self.vkGetInstanceProcAddr)(std::mem::transmute(0u64), name)
+    }
+}
+
+pub struct InstanceLoader {
+    vkGetInstanceProcAddr: extern "system" fn(vk::Instance, name: *const c_char) -> *const c_void,
+    instance: vk::Instance,
+}
+
+pub struct Device {
+    vkGetDeviceProcAddr: extern "system" fn(vk::Device, name: *const c_char) -> *const c_void,
+    device: vk::Device,
+}

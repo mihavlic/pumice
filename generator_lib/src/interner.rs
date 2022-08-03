@@ -275,8 +275,8 @@ impl Drop for StringInterner {
     fn drop(&mut self) {
         // somehow rust is smart enough to run destructors for the other fields here?
         // if I ptr::drop_in_place the fields I get cool crashes
+        #[cfg(debug_assertions)]
         unsafe {
-            #[cfg(debug_assertions)]
             self.guard.write(false);
         }
     }

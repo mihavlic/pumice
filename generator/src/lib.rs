@@ -1,10 +1,11 @@
 use crate::{
-    format_utils::{section_get_path, FormatWriter, Pathed, Separated, WriteWriteAdapter},
+    format_utils::{section_get_path, Concat, ExtendedFormat, Fun, Iter, SectionWriter, Separated},
     ownership::resolve_ownership,
     workarounds::apply_workarounds,
 };
 
 use derives::DeriveData;
+use format_macro::code;
 use fs_utils::copy_dir_recursive;
 use generator_lib::{
     configuration::GenConfig,
@@ -19,25 +20,24 @@ use std::{
     cell::Cell,
     collections::HashMap,
     error::Error,
-    fmt::{Display, Write},
-    fs::{File, OpenOptions},
-    io::BufWriter,
+    fmt::Write,
     ops::Deref,
     path::{Path, PathBuf},
 };
 
-mod derives;
-mod format_utils;
-mod fs_utils;
-mod ownership;
-mod workarounds;
+pub mod derives;
+pub mod format_utils;
+pub mod fs_utils;
+pub mod ownership;
+pub mod workarounds;
+
+pub const PLATFORM_TYPES_IMPORT: &str =
+    "use crate::{cstr, dispatchable_handle, non_dispatchable_handle, util::{char, double, float, int, void}};";
 
 pub enum SectionKind {
     Feature(u32),
     Extension(u32),
 }
-
-pub const INVALID_SECTION: u32 = u32::MAX;
 
 pub struct Section {
     pub name: UniqueStr,
@@ -46,6 +46,7 @@ pub struct Section {
 
 macro_rules! common_strings {
     ($($string:ident),+) => {
+        #[allow(non_snake_case)]
         pub struct CommonStrings {
             $(
                 pub $string: UniqueStr,
@@ -86,7 +87,9 @@ common_strings! {
     void, int, char, float, double,
     size_t, uint8_t, uint16_t, uint32_t, uint64_t, int8_t, int16_t, int32_t, int64_t,
     usize, u8, u16, u32, u64, i8, i16, i32, i64,
-    vk_platform, disabled
+    vk_platform, disabled,
+    VkDevice, VkCommandBuffer, VkQueue,
+    VkInstance, VkPhysicalDevice
 }
 
 common_types! {
@@ -98,11 +101,12 @@ common_types! {
 pub struct Context {
     pub reg: Registry,
     pub conf: GenConfig,
-    pub symbol_ownership: Vec<u32>,
+    pub symbol_ownership: HashMap<UniqueStr, u32>,
     pub sections: Vec<Section>,
     // previously we had sorted the sections vector and then binary searched thta
     // however the ownership algorithm is order sensitive and this may potentially
     // cause issues later, instead we now have a hashmap
+    // (section name, section's index in self.sections)
     pub section_map: HashMap<UniqueStr, u32>,
     pub strings: CommonStrings,
     pub types: CommonTypes,
@@ -113,7 +117,7 @@ impl Context {
         let sections_len = reg.features.len() + reg.extensions.len();
 
         let mut s = Self {
-            symbol_ownership: vec![INVALID_SECTION; reg.symbols.len()],
+            symbol_ownership: HashMap::new(),
             sections: Vec::with_capacity(sections_len),
             section_map: HashMap::with_capacity(sections_len),
             strings: CommonStrings::new(&reg),
@@ -150,33 +154,31 @@ impl Context {
 
         s
     }
-    pub fn get_item_section_idx(&self, name: UniqueStr) -> Option<u32> {
-        let index = self.get_symbol_index(name)?;
-        let section = self.symbol_ownership[index as usize];
-
-        if section == INVALID_SECTION {
-            None
-        } else {
-            Some(section)
-        }
-    }
-    pub fn get_section(&self, index: u32) -> Option<&Section> {
-        if index == INVALID_SECTION {
-            None
-        } else {
-            Some(&self.sections[index as usize])
-        }
-    }
-    pub fn find_section_idx(&self, name: UniqueStr) -> Option<u32> {
+    pub fn get_section_idx(&self, name: UniqueStr) -> Option<u32> {
         self.section_map.get(&name).cloned()
     }
-    pub fn find_section(&self, name: UniqueStr) -> Option<&Section> {
-        Some(&self.sections[self.find_section_idx(name)? as usize])
+    pub fn get_section(&self, name: UniqueStr) -> Option<&Section> {
+        self.sections.get(self.get_section_idx(name)? as usize)
     }
-    pub fn remove_symbol(&mut self, index: u32) {
-        self.reg.remove_symbol(index);
-        self.symbol_ownership.remove(index as usize);
+    pub fn symbol_get_section_idx(&self, name: UniqueStr) -> Option<u32> {
+        self.symbol_ownership.get(&name).cloned()
     }
+    pub fn symbol_get_section(&self, name: UniqueStr) -> Option<&Section> {
+        self.sections
+            .get(self.symbol_get_section_idx(name)? as usize)
+    }
+    pub fn remove_symbol(&mut self, name: UniqueStr) {
+        self.reg.remove_symbol(name);
+        self.symbol_ownership.remove(&name);
+    }
+    // pub fn register_new_symbol(&mut self, name: UniqueStr, section: UniqueStr) {
+    //     assert!(self.get_symbol_index(name).is_none());
+    //     assert!(self.get_symbol_section_idx(name).is_none());
+
+    //     self.symbol_ownership
+    //         .insert(name, self.sections.len() as u32);
+    //     self.sections.push(section);
+    // }
 }
 
 impl Deref for Context {
@@ -185,6 +187,27 @@ impl Deref for Context {
     fn deref(&self) -> &Self::Target {
         &self.reg
     }
+}
+
+pub enum CommandKind {
+    Entry,
+    Instance,
+    Device,
+}
+
+pub fn get_command_kind(params: &[CommandParameter], ctx: &Context) -> CommandKind {
+    // idea shamelessly stolen from erupt
+    if let Some(param) = params.get(0) {
+        if let Some(basetype) = param.ty.try_only_basetype() {
+            let s = &ctx.strings;
+            switch!( basetype;
+                s.VkInstance, s.VkPhysicalDevice => return CommandKind::Instance;
+                s.VkDevice, s.VkCommandBuffer, s.VkQueue => return CommandKind::Device;
+                @ {}
+            )
+        }
+    }
+    CommandKind::Entry
 }
 
 pub fn write_bindings(
@@ -201,7 +224,6 @@ pub fn write_bindings(
 
     for entry in std::fs::read_dir(&out_dir)? {
         let path = entry?.path();
-
         if path.is_dir() {
             std::fs::remove_dir_all(path)?;
         } else {
@@ -213,56 +235,70 @@ pub fn write_bindings(
 
     copy_dir_recursive(glue, out)?;
 
+    let mut features = ctx
+        .reg
+        .features
+        .iter()
+        .filter(|f| ctx.conf.is_feature_used(f.name))
+        .map(|f| f.name)
+        .collect::<Vec<_>>();
+
+    features.sort_by(|a, b| a.resolve().cmp(b.resolve()));
+
+    let mut extensions = ctx
+        .reg
+        .extensions
+        .iter()
+        .filter(|e| ctx.conf.is_extension_used(e.name))
+        .map(|e| e.name)
+        .collect::<Vec<_>>();
+
+    extensions.sort_by(|a, b| a.resolve().cmp(b.resolve()));
+
     {
-        use std::io::Write;
+        let mut lib = SectionWriter::from_file(out_dir.join("src/lib.rs"), u32::MAX, &ctx)?;
+        let mut exts = SectionWriter::new(u32::MAX, out_dir.join("src/extensions/mod.rs"), &ctx);
 
-        let mut lib = BufWriter::new(
-            OpenOptions::new()
-                .write(true)
-                .append(true)
-                .open(out_dir.join("src/lib.rs"))?,
+        code!(
+            lib,
+            // #LF
+            pub mod extensions;
+            pub mod tables;
+            pub mod vk;
+            // #LF
+            #(Iter(&features, |w, t| code!(w, pub(crate) mod #t;)))
         );
-        let mut exts = BufWriter::new(File::create(out_dir.join("src/extensions/mod.rs"))?);
 
-        let mut features = ctx
-            .reg
-            .features
-            .iter()
-            .filter(|f| ctx.conf.is_feature_used(f.name))
-            .map(|f| f.name)
-            .collect::<Vec<_>>();
+        code!(
+            exts,
+            #(Iter(&extensions, |w, t| code!(w, pub(crate) mod #t;)))
+        );
+    }
 
-        features.sort_by(|a, b| a.resolve().cmp(b.resolve()));
+    {
+        let mut vk = SectionWriter::new(u32::MAX, out_dir.join("src/vk.rs"), &ctx);
 
-        let mut extensions = ctx
-            .reg
-            .extensions
-            .iter()
-            .filter(|e| ctx.conf.is_extension_used(e.name))
-            .map(|e| e.name)
-            .collect::<Vec<_>>();
-
-        extensions.sort_by(|a, b| a.resolve().cmp(b.resolve()));
-
-        write!(&mut lib, "\r")?;
-
-        for feature in features {
-            writeln!(&mut lib, "pub mod {};", feature)?;
+        for feature in &features {
+            code!(
+                vk,
+                ##[doc(no_inline)]
+                pub use crate::#feature::*;
+            );
         }
-
-        // the formatter converts \r into un-ignorable newlines
-        write!(&mut lib, "\rpub mod extensions;\r\r")?;
-
-        for extension in extensions {
-            writeln!(&mut exts, "pub mod {};", extension)?;
+        for extension in &extensions {
+            code!(
+                vk,
+                ##[doc(no_inline)]
+                pub use crate::extensions::#extension::*;
+            );
         }
     }
 
     // (item index, section index)
     let mut items = Vec::new();
     for (i, &Symbol(name, _)) in ctx.reg.symbols.iter().enumerate() {
-        if let Some(section_idx) = ctx.get_item_section_idx(name) {
-            let section = ctx.get_section(section_idx).unwrap();
+        if let Some(section_idx) = ctx.symbol_get_section_idx(name) {
+            let section = &ctx.sections[section_idx as usize];
 
             let used = match section.kind {
                 SectionKind::Feature(_) => ctx.conf.is_feature_used(section.name),
@@ -277,46 +313,190 @@ pub fn write_bindings(
 
     items.sort_by_key(|i| i.1);
 
+    {
+        let mut tables = SectionWriter::new(u32::MAX, out_dir.join("src/tables.rs"), &ctx);
+
+        code!(
+            tables,
+            #("/// Oh, yes. Little Bobby Tables we call him.\n")
+            #PLATFORM_TYPES_IMPORT
+            use std::mem::MaybeUninit;
+        );
+
+        // name of function, actual not alias symbol of function
+        let mut entry = Vec::new();
+        let mut instance = Vec::new();
+        let mut device = Vec::new();
+
+        for &(index, _) in &items {
+            let &Symbol(name, ref body) = &ctx.reg.symbols[index];
+            if let SymbolBody::Command { params, .. } = body {
+                match get_command_kind(&params, ctx) {
+                    CommandKind::Entry => entry.push((name, name)),
+                    CommandKind::Instance => instance.push((name, name)),
+                    CommandKind::Device => device.push((name, name)),
+                }
+            } else if let &SymbolBody::Alias(of) = body {
+                if is_std_type(of, ctx) {
+                    continue;
+                }
+                let (of, body) = resolve_alias(of, ctx);
+                if let SymbolBody::Command { params, .. } = body {
+                    match get_command_kind(&params, ctx) {
+                        CommandKind::Entry => entry.push((name, of)),
+                        CommandKind::Instance => instance.push((name, of)),
+                        CommandKind::Device => device.push((name, of)),
+                    }
+                }
+            }
+        }
+
+        let variations = [
+            (&entry, "Entry", "ENTRY"),
+            (&instance, "Instance", "INSTANCE"),
+            (&device, "Device", "DEVICE"),
+        ];
+
+        for &(_, name, caps_name) in &variations {
+            let table_type = Concat([&"Table", &name]);
+            let table_const = Concat([&"GLOBAL_", &caps_name, &"_TABLE"]);
+            code!(
+                tables,
+                ##[cfg(feature = "global_commands")]
+                pub static mut #table_const: #table_type = #table_type::new_empty();
+            );
+        }
+
+        tables.write_char('\n')?;
+
+        for &(commands, name, _) in &variations {
+            let table_name = Concat([&"Table", &name]);
+
+            let fields = Fun(|w| {
+                for &(name, true_name) in commands {
+                    if name != true_name {
+                        continue;
+                    }
+
+                    if let SymbolBody::Command {
+                        return_type,
+                        params,
+                    } = ctx.get_symbol(name).unwrap()
+                    {
+                        let preamble = Fun(|w| {
+                            fmt_command_preamble(
+                                w,
+                                "",
+                                params.iter().map(|p| p.name),
+                                params.iter().map(|p| &p.ty),
+                                true,
+                                "",
+                                return_type,
+                                ctx,
+                            )
+                        });
+
+                        code!(
+                            w,
+                            pub #name: Option<extern "system" #preamble>,
+                        )
+                    } else {
+                        unreachable!()
+                    }
+                }
+                Ok(())
+            });
+
+            let inits = Separated::args(
+                commands
+                    .iter()
+                    .filter(|(name, true_name)| name == true_name),
+                |w, (name, _)| {
+                    code!(w, #name: None);
+                    Ok(())
+                },
+            );
+
+            let functions = Fun(|w| {
+                for &(name, true_name) in commands {
+                    if let SymbolBody::Command {
+                        return_type,
+                        params,
+                    } = ctx.get_symbol(true_name).unwrap()
+                    {
+                        let preamble = Fun(|w| {
+                            fmt_command_preamble(
+                                w,
+                                name.resolve(),
+                                params.iter().map(|p| p.name),
+                                params.iter().map(|p| &p.ty),
+                                true,
+                                "&self, ",
+                                return_type,
+                                ctx,
+                            )
+                        });
+                        let params = Separated::display(params.iter().map(|p| p.name), ",");
+
+                        code!(
+                            w,
+                            pub unsafe #preamble {
+                                (self.#true_name.unwrap())(
+                                    #params
+                                )
+                            }
+                        );
+                    } else {
+                        unreachable!()
+                    }
+                }
+                Ok(())
+            });
+
+            code!(
+                tables,
+                pub struct #table_name {
+                    #fields
+                }
+                impl #table_name {
+                    pub const fn new_empty() -> Self {
+                        Self {
+                           #inits
+                        }
+                    }
+                    #functions
+                }
+            );
+        }
+    }
+
     let mut derives = DeriveData::new(&ctx);
 
-    let mut prev_section = INVALID_SECTION;
+    let mut prev_section = u32::MAX;
     let mut section_writer = None;
 
-    for &(index, section) in &items {
-        if section != prev_section {
-            let section = ctx.get_section(section).unwrap();
+    for &(symbol_index, section_index) in &items {
+        if section_index != prev_section {
+            let section = &ctx.sections[section_index as usize];
 
             cur_dir.clone_from(&out_dir);
             cur_dir.push("src");
-            cur_dir.extend(section_get_path(&section));
+            cur_dir.extend(section_get_path(section));
             cur_dir.push(section.name.resolve());
             cur_dir.set_extension("rs");
 
-            let file = File::create(&cur_dir)?;
+            let mut writer = SectionWriter::new(section_index, &cur_dir, &ctx);
 
-            let mut writer = FormatWriter::new(WriteWriteAdapter(BufWriter::new(file)));
-
-            code2!(
-                &mut writer,
-                "use crate::{{char, cstr, double, float, int, void}};\n"
-            )?;
+            code!(writer, #PLATFORM_TYPES_IMPORT);
 
             section_writer = Some(writer);
         }
-        prev_section = section;
+        prev_section = section_index;
 
         let writer = section_writer.as_mut().unwrap();
-        let Symbol(name, body) = &ctx.reg.symbols[index];
+        let Symbol(name, body) = &ctx.reg.symbols[symbol_index];
 
-        write_item(
-            *name,
-            body,
-            writer,
-            &mut derives,
-            &enum_supplements,
-            section,
-            &ctx,
-        )?;
+        write_item(*name, body, writer, &mut derives, &enum_supplements, &ctx);
     }
 
     Ok(())
@@ -332,9 +512,22 @@ fn generate_enum_extends(
         Vec<(UniqueStr, Vec<(UniqueStr, &ConstantValue)>)>,
     > = HashMap::new();
 
-    for &extension_name in ctx.conf.extensions.iter() {
-        for children in &ctx.reg.get_extension(extension_name).unwrap().children {
-            match children {
+    let features = ctx
+        .reg
+        .features
+        .iter()
+        .filter(|f| ctx.conf.is_feature_used(f.name))
+        .map(|f| f.name);
+    let extensions = ctx.conf.extensions.iter().cloned();
+
+    for section_name in features.chain(extensions) {
+        let children = match ctx.get_section(section_name).unwrap().kind {
+            SectionKind::Feature(idx) => &ctx.reg.features[idx as usize].children,
+            SectionKind::Extension(idx) => &ctx.reg.extensions[idx as usize].children,
+        };
+
+        for item in children {
+            match item {
                 FeatureExtensionItem::Comment(_) => {}
                 FeatureExtensionItem::Require {
                     profile,
@@ -347,10 +540,10 @@ fn generate_enum_extends(
                         for item in items {
                             match item {
                                 InterfaceItem::Simple { .. } => {}
-                                InterfaceItem::Extend {
+                                &InterfaceItem::Extend {
                                     name,
                                     mut extends,
-                                    value: method,
+                                    ref value,
                                 } => {
                                     if let Some((actual, _)) = ctx.reg.flag_bits_to_flags(extends) {
                                         extends = actual;
@@ -359,14 +552,25 @@ fn generate_enum_extends(
                                     let entry =
                                         enum_supplements.entry(extends).or_insert(Vec::new());
 
-                                    let add = (*name, method);
+                                    let add = (name, value);
+
+                                    // we deduplicate the variants here, because khronos was so nice to willingly put
+                                    // duplicates in the registry, like VK_STRUCTURE_TYPE_DEVICE_GROUP_PRESENT_CAPABILITIES_KHR
+                                    if entry
+                                        .iter()
+                                        .flat_map(|(_, vec)| vec)
+                                        .find(|&&(n, _)| n == name)
+                                        .is_some()
+                                    {
+                                        continue;
+                                    }
 
                                     if let Some((_, vec)) =
-                                        entry.iter_mut().find(|(ext, _)| *ext == extension_name)
+                                        entry.iter_mut().find(|(ext, _)| *ext == section_name)
                                     {
                                         vec.push(add);
                                     } else {
-                                        entry.push((extension_name, vec![add]));
+                                        entry.push((section_name, vec![add]));
                                     }
                                 }
                             }
@@ -380,21 +584,14 @@ fn generate_enum_extends(
     enum_supplements
 }
 
-fn write_item<W: Write>(
+fn write_item(
     name: UniqueStr,
     body: &SymbolBody,
-    writer: &mut FormatWriter<W>,
+    writer: &mut SectionWriter<'_>,
     derives: &mut DeriveData,
     supplements: &HashMap<UniqueStr, Vec<(UniqueStr, Vec<(UniqueStr, &ConstantValue)>)>>,
-    section: u32,
     ctx: &Context,
-) -> std::fmt::Result {
-    macro_rules! path {
-        ($var:expr) => {
-            Pathed($var, &ctx, section)
-        };
-    }
-
+) {
     macro_rules! select {
         ($cond:expr, $true:expr, $false:expr) => {
             if $cond {
@@ -415,37 +612,33 @@ fn write_item<W: Write>(
                     }
                     SymbolBody::Constant { .. } => {
                         let ty = get_underlying_type(target.0, &ctx);
-                        code2!(
+                        code!(
                             writer,
-                            "pub const {}: {} = {};"
-                            @ name, path!(&ty), path!(target.0)
-                        )?;
-                        return Ok(());
+                            pub const #name: #import!(&ty) = #import!(target.0);
+                        );
+                        return;
                     }
-                    SymbolBody::Command { .. } => {
-                        code2!(
-                            writer,
-                            "// TODO alias of command '{}'"
-                            @ name
-                        )?;
-                        return Ok(());
+                    SymbolBody::Command {
+                        return_type,
+                        params,
+                    } => {
+                        fmt_global_command(writer, name, target.0, params, return_type, ctx);
+                        return;
                     }
                     _ => {}
                 }
             };
 
-            code2!(
+            code!(
                 writer,
-                "pub type {} = {};"
-                @ name, path!(of)
-            )?;
+                pub type #name = #import!(of);
+            );
         }
         SymbolBody::Redeclaration(ty) => {
-            code2!(
+            code!(
                 writer,
-                "pub type {} = {};"
-                @ name, path!(ty)
-            )?;
+                pub type #name = #import!(ty);
+            );
         }
         // there is nothing to do with defines in rust, just skip them
         SymbolBody::Define { .. } => {}
@@ -455,27 +648,39 @@ fn write_item<W: Write>(
         SymbolBody::Basetype { .. } => {
             unreachable!("[{}] Cannot process C preprocessor code, this type should be manually replaced in a workaround.", name);
         }
-        SymbolBody::Handle { dispatchable, .. } => {
-            let default = if *dispatchable { "" } else { ", Default" };
-            code2!(
-                writer,
-                "#[repr(transparent)]"
-                "#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash{})]"
-                "pub struct {}(u64);"
-                @ default, name
-            )?;
-        }
-        SymbolBody::Funcpointer {
-            ret: return_type,
-            args,
+        &SymbolBody::Handle {
+            object_type,
+            dispatchable,
         } => {
-            let args =
-                Separated::args(args.iter(), |(_, ty), f| convert_type_in_fun_ctx(ty).fmt(f));
-            code2!(
+            let raw = name.resolve_original();
+            let handle = select!(
+                dispatchable,
+                "non_dispatchable_handle",
+                "dispatchable_handle"
+            );
+
+            code!(
                 writer,
-                "pub type {} = unsafe extern \"system\" fn({}) -> {};"
-                @ name, args, path!(return_type)
-            )?;
+                #(handle)!(
+                    #name, #object_type, #string!(&raw),
+                    "[Vulkan Manual Page](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/#raw.html)"
+                );
+            );
+        }
+        SymbolBody::Funcpointer { ret, args } => {
+            let preamble = Fun(|w| {
+                fmt_command_preamble(
+                    w,
+                    "",
+                    args.iter().map(|p| p.0),
+                    args.iter().map(|p| &p.1),
+                    true,
+                    "",
+                    ret,
+                    ctx,
+                )
+            });
+            code!(writer, pub type #name = unsafe extern "system" #preamble;);
         }
         SymbolBody::Struct { union, members } => {
             let keyword = match union {
@@ -483,55 +688,56 @@ fn write_item<W: Write>(
                 false => "struct",
             };
             let members = merge_bitfield_members(&members, &ctx);
-            let members = Separated::members(members.iter(), |&(name, ty), f| {
-                format_args!("{}: {}", name, path!(ty)).fmt(f)
+            let members = Separated::args(members.iter(), |w, &(name, ty)| {
+                code!(w, #name: #import!(ty));
+                Ok(())
             });
-            code2!(
+            let copy = select!(derives.is_copy(name, ctx), ", Copy", "");
+            let eq = select!(derives.is_eq(name, ctx), ", PartialEq, Eq, Hash", "");
+
+            code!(
                 writer,
-                "#[derive(Clone{}{})]"
-                "#[repr(C)]"
-                "pub {} {} {{"
-                "    {}"
-                "}}"
-                @
-                select!(derives.is_copy(name, ctx), ", Copy", ""),
-                select!(derives.is_eq(name, ctx), ", PartialEq, Eq, Hash", ""),
-                keyword, name, members
-            )?;
+                ##[derive(Clone #copy #eq)]
+                ##[repr(C)]
+                pub #keyword #name {
+                    #members
+                }
+            );
         }
         SymbolBody::Constant { val, .. } => {
             let ty = get_underlying_type(name, &ctx);
 
-            write!(writer, "pub const {}: {} = ", name, path!(&ty))?;
-
-            match val {
-                ConstantValue::Bitpos(p) => writeln!(writer, "1 << {};", p),
-                ConstantValue::Literal(i) => writeln!(writer, "{};", i),
-                ConstantValue::Expression(e) => writeln!(writer, "{};", e),
-                ConstantValue::Symbol(s) => writeln!(writer, "{};", path!(*s)),
-                ConstantValue::String(s) => {
-                    writeln!(writer, "cstr!(\"{}\");", s)
+            let val = Fun(|w| {
+                use ConstantValue::*;
+                match val {
+                    Bitpos(p) => code!(w, 1 << #p),
+                    Literal(i) => code!(w, #i),
+                    Expression(e) => code!(w, #e),
+                    Symbol(s) => code!(w, #import!(*s)),
+                    String(s) => code!(w, #(Concat([&"cstr!(\"", &s, &"\")"]))),
                 }
-            }?;
+                Ok(())
+            });
+
+            code!(writer, pub const #name: #import!(&ty) = #val;)
         }
         SymbolBody::Enum { ty, members, .. } => {
             let ty = get_underlying_type(*ty, &ctx);
 
-            code2!(
-                writer,
-                "#[derive(Clone, Copy, PartialEq{}{})]"
-                "pub struct {}({});"
-                @
-                select!(derives.is_eq(name, ctx), ", Eq, Hash", ""),
-                select!(derives.is_default(name, ctx), ", Default", ""),
-                name, path!(&ty)
-            )?;
+            let eq = select!(derives.is_eq(name, ctx), ", Eq, Hash", "");
+            let default = select!(derives.is_default(name, ctx), ", Default", "");
 
             let supl = supplements.get(&name);
 
+            code!(
+                writer,
+                ##[derive(Clone, Copy, PartialEq #eq #default)]
+                pub struct #name(#import!(&ty));
+            );
+
             // skip generating empty impl blocks
             if members.is_empty() && supl.map(|v| v.is_empty()).unwrap_or(true) {
-                return Ok(());
+                return;
             }
 
             let member_iter = members.iter().map(|a| (name, a.0, &a.1));
@@ -544,72 +750,109 @@ fn write_item<W: Write>(
             // name is not a name of an extension, but we just need a filler UniqueStr which will never be printed to jumpstart this
             let state = Cell::new(name);
 
-            let members = Separated::statements(chain, |(ext, name, val), f| {
+            let members = Separated::statements(chain, |w, (ext, name, val)| {
                 if state.get() != ext {
-                    format_args!("// {}\n", ext).fmt(f)?;
+                    write!(w, "// {ext}\n")?;
                     state.set(ext);
                 }
 
+                use ConstantValue::*;
                 match val {
-                    ConstantValue::Bitpos(pos) => {
-                        format_args!("pub const {}: Self = Self(1 << {})", name, pos).fmt(f)
-                    }
-                    ConstantValue::Literal(val) => {
-                        format_args!("pub const {}: Self = Self({})", name, val).fmt(f)
-                    }
-                    ConstantValue::Expression(str) => {
-                        format_args!("pub const {}: Self = Self({})", name, str).fmt(f)
-                    }
-                    ConstantValue::Symbol(alias) => {
-                        format_args!("pub const {}: Self = Self::{}", name, alias).fmt(f)
-                    }
-                    ConstantValue::String(_) => unreachable!(),
+                    Bitpos(pos) => code!(w, pub const #name: Self = Self(1 << #pos)),
+                    Literal(val) => code!(w, pub const #name: Self = Self(#val)),
+                    Expression(str) => code!(w, pub const #name: Self = Self(#str)),
+                    Symbol(alias) => code!(w, pub const #name: Self = Self::#alias),
+                    String(_) => unreachable!(),
                 }
+                Ok(())
             });
 
-            code2!(
+            code!(
                 writer,
-                "impl {} {{"
-                "    {}"
-                "}}"
-                @ name, members
-            )?;
+                impl #name {
+                    #members
+                }
+            );
         }
         SymbolBody::Command {
             return_type,
             params,
         } => {
-            let return_type = convert_type_in_fun_ctx(return_type);
+            fmt_global_command(writer, name, name, params, return_type, ctx);
+        }
+    }
+}
 
-            let args = Separated::args(params.iter(), |param, f| {
-                format_args!(
-                    "{}: {}",
-                    param.name,
-                    path!(&convert_type_in_fun_ctx(&param.ty))
-                )
-                .fmt(f)
-            });
+fn fmt_global_command(
+    writer: &mut SectionWriter<'_>,
+    name: UniqueStr,
+    fptr_name: UniqueStr,
+    params: &Vec<CommandParameter>,
+    return_type: &Type,
+    ctx: &Context,
+) {
+    let preamble = Fun(|w| {
+        fmt_command_preamble(
+            w,
+            name.resolve(),
+            params.iter().map(|p| p.name),
+            params.iter().map(|p| &p.ty),
+            true,
+            "",
+            return_type,
+            ctx,
+        )
+    });
+    let table = match get_command_kind(&params, ctx) {
+        CommandKind::Entry => "GLOBAL_ENTRY_TABLE",
+        CommandKind::Instance => "GLOBAL_INSTANCE_TABLE",
+        CommandKind::Device => "GLOBAL_DEVICE_TABLE",
+    };
+    let params = Separated::display(params.iter().map(|p| p.name), ",");
 
-            // uhh ... we're not allocating a string anymore though
-            let mut _tmp = None;
-            let (ret1, ret2): (&str, &dyn Display) = loop {
-                if let Some(ty) = return_type.try_only_basetype() {
-                    if ty == ctx.strings.void {
-                        break (&"", &"");
-                    }
-                }
-                _tmp = Some(path!(&return_type));
-                break (&" -> ", _tmp.as_ref().unwrap());
-            };
+    code!(
+        writer,
+        ##[cfg(feature = "global_commands")]
+        pub unsafe #preamble {
+            (crate::tables::#table.#fptr_name.unwrap())(
+                #params
+            )
+        }
+    );
+}
 
-            code2!(
-                writer,
-                "pub fn {}({}){}{} {{ todo!() }}"
-                @ name, args, ret1, ret2
-            )?;
+fn fmt_command_preamble<'a>(
+    writer: &mut SectionWriter,
+    name: &str,
+    param_names: impl Iterator<Item = UniqueStr> + Clone,
+    param_types: impl Iterator<Item = &'a Type> + Clone,
+    output_names: bool,
+    self_str: &str,
+    return_type: &Type,
+    ctx: &Context,
+) -> std::fmt::Result {
+    let return_type = convert_type_in_fun_ctx(return_type);
+
+    let iter = param_names.into_iter().zip(param_types.into_iter());
+    let args = Separated::args(iter, |w, (name, ty)| {
+        let ty = convert_type_in_fun_ctx(ty);
+        if output_names {
+            code!(w, #name: #import!(&ty));
+        } else {
+            code!(w, #import!(&ty));
+        }
+        Ok(())
+    });
+
+    code!(writer, fn #name(#self_str #args));
+
+    if let Some(ty) = return_type.try_only_basetype() {
+        if ty == ctx.strings.void {
+            return Ok(());
         }
     }
 
+    code!(writer, -> #import!(&return_type));
     Ok(())
 }
 
@@ -723,7 +966,10 @@ fn apply_renames(
                     camel_to_snake(name.resolve(), &mut buf);
                     name.rename(buf.intern(&ctx));
                 }
-                name.rename(name.resolve().strip_prefix("PFN_vk").unwrap().intern(ctx));
+                buf.clear();
+                let strip = name.resolve().strip_prefix("PFN_vk").unwrap();
+                write!(buf, "Pfn{}", strip).unwrap();
+                name.rename(buf.intern(ctx));
             }
             SymbolBody::Command { params, .. } => {
                 for &CommandParameter { name, .. } in params {

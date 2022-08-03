@@ -1,9 +1,10 @@
 [workspace]
 members = [
-    "bindings-template",
     "generator",
-    "generator-lib",
+    "generator_lib",
+    "format_macro"
 ]
 exclude = [
     "slag",
+    "bindings_template"
 ]

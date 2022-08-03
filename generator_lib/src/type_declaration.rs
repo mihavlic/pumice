@@ -161,13 +161,14 @@ fn fmt_type_tokens_simple(tokens: &[TyToken], f: &mut std::fmt::Formatter) -> st
 }
 
 pub fn fmt_type_tokens_impl<
-    F1: Fn(UniqueStr, &mut std::fmt::Formatter<'_>) -> std::fmt::Result,
-    F2: Fn(UniqueStr, &mut std::fmt::Formatter<'_>) -> std::fmt::Result,
+    T: std::fmt::Write,
+    F1: Fn(UniqueStr, &mut T) -> std::fmt::Result,
+    F2: Fn(UniqueStr, &mut T) -> std::fmt::Result,
 >(
     tokens: &[TyToken],
     on_ident: &F1,
     on_arr: &F2,
-    f: &mut std::fmt::Formatter<'_>,
+    f: &mut T,
 ) -> std::fmt::Result {
     for (i, token) in tokens.iter().enumerate() {
         match token {

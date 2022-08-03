@@ -5,7 +5,7 @@ use generator_lib::{
     InterfaceItem, Registry, SymbolBody,
 };
 
-use crate::{is_std_type, resolve_alias, Context, Section, SectionKind, INVALID_SECTION};
+use crate::{is_std_type, resolve_alias, Context, Section, SectionKind};
 
 // given that the registry is modelled as a global soup of types and functions from which the subsequent categories pick a subset
 // we would like to split the definition into multiple files so that commit diffs aren't enormous, editor doesn't choke, and things are more organised
@@ -15,38 +15,35 @@ pub fn resolve_ownership(ctx: &mut Context) {
     // iterate through the sections and the items in their `require` tags
     // if the item doesn't have ownership, set it to the current section
     for (i, section) in ctx.sections.iter().enumerate() {
-        for mut symbol in section_used_symbols(section, &ctx.conf, &ctx.reg) {
-            if let Some((flags_name, _)) = ctx.flag_bits_to_flags(symbol) {
-                symbol = flags_name;
+        for mut name in section_used_symbols(section, &ctx.conf, &ctx.reg) {
+            if let Some((flags_name, _)) = ctx.flag_bits_to_flags(name) {
+                name = flags_name;
             }
 
-            if let Some(index) = ctx.get_symbol_index(symbol) {
-                let entry = &mut ctx.symbol_ownership[index as usize];
-                if *entry == INVALID_SECTION {
-                    *entry = i as u32;
-                }
+            if ctx.get_symbol_index(name).is_some() {
+                ctx.symbol_ownership.entry(name).or_insert(i as u32);
             } else {
                 // QUIRK
                 //   types like uint8_t and such are removed from the registry as they are always replaced by references into the standard library
                 //   video.xml puts the name of its header which obviously is not a symbol in the <require> tag of its extension
-                if is_std_type(symbol, ctx) {
+                if is_std_type(name, ctx) {
                     continue;
                 }
-                panic!("[{}] Unknown symbol.", symbol);
+                panic!("[{}] Unknown symbol.", name);
             }
         }
     }
 
     // validate ownerships
-    for (i, item) in ctx.symbols.iter().enumerate() {
+    for symbol in &ctx.reg.symbols {
         // some BitmaskBits are left unowned if they contain no members :(
-        if let SymbolBody::Enum { bitmask, .. } = item.1 {
+        if let SymbolBody::Enum { bitmask, .. } = symbol.1 {
             if bitmask {
                 continue;
             }
         }
 
-        if let SymbolBody::Alias(of) = item.1 {
+        if let SymbolBody::Alias(of) = symbol.1 {
             // std types are not in the registry, see workarounds.rs
             if is_std_type(of, &ctx) {
                 break;
@@ -60,12 +57,12 @@ pub fn resolve_ownership(ctx: &mut Context) {
             }
         }
 
-        match item.1 {
-            SymbolBody::Included { .. } => unreachable!("[{}] Types included from headers are opaque and as such must be resolved by other means before this stage.", item.0.resolve()),
+        match symbol.1 {
+            SymbolBody::Included { .. } => unreachable!("[{}] Types included from headers are opaque and as such must be resolved by other means before this stage.", symbol.0.resolve()),
             _ => {
                 assert!(
-                    ctx.symbol_ownership[i] != INVALID_SECTION,
-                    "[{}] Concrete types should have valid ownership assigned at this point.", item.0.resolve()
+                    ctx.symbol_ownership.contains_key(&symbol.0),
+                    "[{}] Concrete types should have valid ownership assigned at this point.", symbol.0.resolve()
 
                 )
             }
@@ -164,13 +161,13 @@ pub fn skip_conf_conditions(
     }
 
     if let Some(feature) = feature {
-        if feature != conf.feature {
+        if !conf.is_feature_used(feature) {
             return true;
         }
     }
 
     if let Some(profile) = profile {
-        if Some(profile) != conf.profile {
+        if !conf.is_profile_used(profile) {
             return true;
         }
     }

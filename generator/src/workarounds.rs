@@ -1,7 +1,7 @@
 use generator_lib::{
     interner::{Intern, UniqueStr},
     type_declaration::parse_type_decl,
-    FeatureExtensionItem, InterfaceItem, Symbol, SymbolBody,
+    ConstantValue, FeatureExtensionItem, InterfaceItem, Symbol, SymbolBody,
 };
 
 use crate::Context;
@@ -9,6 +9,7 @@ use crate::Context;
 enum Workaround {
     Remove,
     Replace(SymbolBody),
+    ReplaceRequireExtendValue(ConstantValue),
     SetOwnership(u32),
 }
 
@@ -49,9 +50,13 @@ pub fn apply_workarounds(ctx: &mut Context) {
 
     let ownership = |arg: &str| -> Workaround {
         Workaround::SetOwnership(
-            ctx.find_section_idx(arg.intern(ctx))
+            ctx.get_section_idx(arg.intern(ctx))
                 .unwrap_or_else(|| panic!("No such section '{}'", arg)),
         )
+    };
+
+    let alias_extend = |arg: &str| -> Workaround {
+        Workaround::ReplaceRequireExtendValue(ConstantValue::Symbol(arg.intern(ctx)))
     };
 
     #[rustfmt::skip]
@@ -68,6 +73,9 @@ pub fn apply_workarounds(ctx: &mut Context) {
         (Workaround::Remove, "VK_STD_VULKAN_VIDEO_CODEC_H264_ENCODE_SPEC_VERSION"),
         (Workaround::Remove, "VK_STD_VULKAN_VIDEO_CODEC_H265_DECODE_SPEC_VERSION"),
         (Workaround::Remove, "VK_STD_VULKAN_VIDEO_CODEC_H265_ENCODE_SPEC_VERSION"),
+        // VK_PIPELINE_CREATE_DISPATCH_BASE is a typo without the BIT, yet VK_PIPELINE_CREATE_DISPATCH_BASE_KHR is derived off it
+        (Workaround::Remove, "VK_PIPELINE_CREATE_DISPATCH_BASE"),
+        (alias_extend("VK_PIPELINE_CREATE_DISPATCH_BASE_BIT"), "VK_PIPELINE_CREATE_DISPATCH_BASE_KHR"),
         // symbols commented as typos in vk.xml, they are messy and at worst break our renaming schemes 
         (Workaround::Remove, "VK_STENCIL_FRONT_AND_BACK"),
         (Workaround::Remove, "VK_COLORSPACE_SRGB_NONLINEAR_KHR"),
@@ -178,16 +186,19 @@ pub fn apply_workarounds(ctx: &mut Context) {
         for (_, method) in sorted_get_all(*name, &workarounds).unwrap_or(&[]) {
             match method {
                 Workaround::Remove => {
-                    ctx.remove_symbol(i as u32);
+                    // borrowchk
+                    let name = *name;
+                    ctx.remove_symbol(name);
                     continue 'outer;
                 }
                 Workaround::Replace(with) => {
                     // FIXME technically the clone here is unneccessary as each workaround will be applied only once
                     *body = with.clone();
                 }
-                Workaround::SetOwnership(idx) => {
-                    ctx.symbol_ownership[i] = *idx;
+                Workaround::SetOwnership(section_idx) => {
+                    ctx.symbol_ownership.insert(*name, *section_idx);
                 }
+                Workaround::ReplaceRequireExtendValue(_) => {}
             }
         }
 
@@ -214,14 +225,33 @@ fn prune_feature_extension(
 ) {
     for child in children {
         match child {
-            FeatureExtensionItem::Require { items, .. } => prune_leaf_vec(
-                items,
-                |item| match item {
-                    InterfaceItem::Simple { name, .. } => *name,
-                    InterfaceItem::Extend { name, .. } => *name,
-                },
-                workarounds,
-            ),
+            FeatureExtensionItem::Require { items, .. } => {
+                let mut i = 0;
+                while i < items.len() {
+                    let name = match &items[i] {
+                        InterfaceItem::Simple { name, .. } => *name,
+                        InterfaceItem::Extend { name, .. } => *name,
+                    };
+
+                    if let Ok(j) = workarounds.binary_search_by_key(&name, |s| s.0) {
+                        match &workarounds[j].1 {
+                            Workaround::Remove => {
+                                items.remove(i);
+                                continue;
+                            }
+                            Workaround::ReplaceRequireExtendValue(val) => {
+                                if let InterfaceItem::Extend { value, .. } = &mut items[i] {
+                                    *value = val.clone();
+                                } else {
+                                    unreachable!()
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    i += 1;
+                }
+            }
             _ => {}
         }
     }
