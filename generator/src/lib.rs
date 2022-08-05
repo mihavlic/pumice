@@ -1,5 +1,5 @@
 use crate::{
-    format_utils::{section_get_path, Concat, ExtendedFormat, Fun, Iter, SectionWriter, Separated},
+    format_utils::{section_get_path, ExtendedFormat, Fun, Iter, SectionWriter, Separated},
     ownership::resolve_ownership,
     workarounds::apply_workarounds,
 };
@@ -94,8 +94,7 @@ common_strings! {
 
 common_types! {
     cstring:  "const char *",
-    void:     "void",
-    void_ptr: "void *"
+    void:     "void"
 }
 
 pub struct Context {
@@ -171,14 +170,6 @@ impl Context {
         self.reg.remove_symbol(name);
         self.symbol_ownership.remove(&name);
     }
-    // pub fn register_new_symbol(&mut self, name: UniqueStr, section: UniqueStr) {
-    //     assert!(self.get_symbol_index(name).is_none());
-    //     assert!(self.get_symbol_section_idx(name).is_none());
-
-    //     self.symbol_ownership
-    //         .insert(name, self.sections.len() as u32);
-    //     self.sections.push(section);
-    // }
 }
 
 impl Deref for Context {
@@ -215,9 +206,27 @@ pub fn write_bindings(
     glue: &dyn AsRef<Path>,
     out: &dyn AsRef<Path>,
 ) -> Result<(), Box<dyn Error>> {
-    let enum_supplements = generate_enum_extends(ctx);
+    let added_variants = get_enum_added_variants(ctx);
 
-    apply_renames(&ctx, &enum_supplements);
+    // (item index, section index)
+    // all the items that we will be generating
+    let mut items = Vec::new();
+    for (i, &Symbol(name, _)) in ctx.reg.symbols.iter().enumerate() {
+        if let Some(section_idx) = ctx.symbol_get_section_idx(name) {
+            let section = &ctx.sections[section_idx as usize];
+
+            let used = match section.kind {
+                SectionKind::Feature(_) => ctx.conf.is_feature_used(section.name),
+                SectionKind::Extension(_) => ctx.conf.is_extension_used(section.name),
+            };
+
+            if used {
+                items.push((i, section_idx));
+            }
+        }
+    }
+
+    apply_renames(&items, &added_variants, &ctx);
 
     let out_dir = out.as_ref().to_path_buf();
     let mut cur_dir = PathBuf::new();
@@ -256,16 +265,15 @@ pub fn write_bindings(
     extensions.sort_by(|a, b| a.resolve().cmp(b.resolve()));
 
     {
-        let mut lib = SectionWriter::from_file(out_dir.join("src/lib.rs"), u32::MAX, &ctx)?;
-        let mut exts = SectionWriter::new(u32::MAX, out_dir.join("src/extensions/mod.rs"), &ctx);
+        let mut lib = SectionWriter::new(u32::MAX, out_dir.join("src/lib.rs"), true, &ctx);
+        let mut exts =
+            SectionWriter::new(u32::MAX, out_dir.join("src/extensions/mod.rs"), false, &ctx);
 
         code!(
             lib,
-            // #LF
             pub mod extensions;
             pub mod tables;
             pub mod vk;
-            // #LF
             #(Iter(&features, |w, t| code!(w, pub(crate) mod #t;)))
         );
 
@@ -276,7 +284,7 @@ pub fn write_bindings(
     }
 
     {
-        let mut vk = SectionWriter::new(u32::MAX, out_dir.join("src/vk.rs"), &ctx);
+        let mut vk = SectionWriter::new(u32::MAX, out_dir.join("src/vk.rs"), false, &ctx);
 
         for feature in &features {
             code!(
@@ -294,27 +302,10 @@ pub fn write_bindings(
         }
     }
 
-    // (item index, section index)
-    let mut items = Vec::new();
-    for (i, &Symbol(name, _)) in ctx.reg.symbols.iter().enumerate() {
-        if let Some(section_idx) = ctx.symbol_get_section_idx(name) {
-            let section = &ctx.sections[section_idx as usize];
-
-            let used = match section.kind {
-                SectionKind::Feature(_) => ctx.conf.is_feature_used(section.name),
-                SectionKind::Extension(_) => ctx.conf.is_extension_used(section.name),
-            };
-
-            if used {
-                items.push((i, section_idx));
-            }
-        }
-    }
-
     items.sort_by_key(|i| i.1);
 
     {
-        let mut tables = SectionWriter::new(u32::MAX, out_dir.join("src/tables.rs"), &ctx);
+        let mut tables = SectionWriter::new(u32::MAX, out_dir.join("src/tables.rs"), false, &ctx);
 
         code!(
             tables,
@@ -358,8 +349,9 @@ pub fn write_bindings(
         ];
 
         for &(_, name, caps_name) in &variations {
-            let table_type = Concat([&"Table", &name]);
-            let table_const = Concat([&"GLOBAL_", &caps_name, &"_TABLE"]);
+            let table_type = cat!(name, "Table");
+            let table_const = cat!("GLOBAL_", caps_name, "_TABLE");
+
             code!(
                 tables,
                 ##[cfg(feature = "global_commands")]
@@ -367,10 +359,8 @@ pub fn write_bindings(
             );
         }
 
-        tables.write_char('\n')?;
-
         for &(commands, name, _) in &variations {
-            let table_name = Concat([&"Table", &name]);
+            let table_name = cat!("Table", name);
 
             let fields = Fun(|w| {
                 for &(name, true_name) in commands {
@@ -485,7 +475,7 @@ pub fn write_bindings(
             cur_dir.push(section.name.resolve());
             cur_dir.set_extension("rs");
 
-            let mut writer = SectionWriter::new(section_index, &cur_dir, &ctx);
+            let mut writer = SectionWriter::new(section_index, &cur_dir, false, &ctx);
 
             code!(writer, #PLATFORM_TYPES_IMPORT);
 
@@ -496,13 +486,13 @@ pub fn write_bindings(
         let writer = section_writer.as_mut().unwrap();
         let Symbol(name, body) = &ctx.reg.symbols[symbol_index];
 
-        write_item(*name, body, writer, &mut derives, &enum_supplements, &ctx);
+        write_item(*name, body, writer, &mut derives, &added_variants, &ctx);
     }
 
     Ok(())
 }
 
-fn generate_enum_extends(
+fn get_enum_added_variants(
     ctx: &Context,
 ) -> HashMap<UniqueStr, Vec<(UniqueStr, Vec<(UniqueStr, &ConstantValue)>)>> {
     let mut enum_supplements: HashMap<
@@ -662,8 +652,8 @@ fn write_item(
             code!(
                 writer,
                 #(handle)!(
-                    #name, #object_type, #string!(&raw),
-                    "[Vulkan Manual Page](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/#raw.html)"
+                    #name, #object_type, #string!(raw),
+                    #cat!("\"[Vulkan Manual Page](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/", raw, ".html)\"")
                 );
             );
         }
@@ -714,7 +704,7 @@ fn write_item(
                     Literal(i) => code!(w, #i),
                     Expression(e) => code!(w, #e),
                     Symbol(s) => code!(w, #import!(*s)),
-                    String(s) => code!(w, #(Concat([&"cstr!(\"", &s, &"\")"]))),
+                    String(s) => code!(w, #cat!("cstr!(\"", s, "\")")),
                 }
                 Ok(())
             });
@@ -846,10 +836,8 @@ fn fmt_command_preamble<'a>(
 
     code!(writer, fn #name(#self_str #args));
 
-    if let Some(ty) = return_type.try_only_basetype() {
-        if ty == ctx.strings.void {
-            return Ok(());
-        }
+    if return_type == ctx.types.void {
+        return Ok(());
     }
 
     code!(writer, -> #import!(&return_type));
@@ -867,8 +855,9 @@ pub fn is_std_type(ty: UniqueStr, ctx: &Context) -> bool {
 }
 
 fn apply_renames(
+    symbols: &[(usize, u32)],
+    added_variants: &HashMap<UniqueStr, Vec<(UniqueStr, Vec<(UniqueStr, &ConstantValue)>)>>,
     ctx: &Context,
-    supplements: &HashMap<UniqueStr, Vec<(UniqueStr, Vec<(UniqueStr, &ConstantValue)>)>>,
 ) {
     let renames = &[
         // rust-native integer types
@@ -920,7 +909,9 @@ fn apply_renames(
         extension.name.rename(buf.intern(ctx));
     }
 
-    'outer: for Symbol(name, _) in &ctx.reg.symbols {
+    'outer: for &(i, _) in symbols {
+        let Symbol(name, _) = &ctx.reg.symbols[i];
+
         let str = name.resolve();
         if str.len() >= 3 {
             let amount = loop {
@@ -947,11 +938,25 @@ fn apply_renames(
         }
     }
 
-    for Symbol(name, body) in &ctx.reg.symbols {
+    for &(i, _) in symbols {
+        let &Symbol(name, ref body) = &ctx.reg.symbols[i];
+
         match body {
+            &SymbolBody::Alias(of) => {
+                if !is_std_type(of, &ctx) {
+                    let (_, body) = resolve_alias(of, &ctx);
+                    match body {
+                        SymbolBody::Command { .. } => {
+                            camel_to_snake(name.resolve(), &mut buf);
+                            name.rename(buf.intern(&ctx));
+                        }
+                        _ => {}
+                    }
+                };
+            }
             SymbolBody::Enum { members, .. } => {
                 for &(member_name, ..) in members {
-                    make_enum_member_rusty(*name, member_name, true, &mut buf);
+                    make_enum_member_rusty(name, member_name, true, &mut buf);
                     member_name.rename(buf.intern(&ctx));
                 }
             }
@@ -983,7 +988,7 @@ fn apply_renames(
         }
     }
 
-    for (enum_name, ext_variants) in supplements {
+    for (enum_name, ext_variants) in added_variants {
         for (_, variants) in ext_variants {
             for &(name, _) in variants {
                 make_enum_member_rusty(*enum_name, name, true, &mut buf);
@@ -1099,7 +1104,9 @@ fn merge_bitfield_members<'a>(
 fn resolve_alias<'a>(alias: UniqueStr, reg: &'a Registry) -> (UniqueStr, &'a SymbolBody) {
     let mut next = alias;
     loop {
-        let symbol = reg.get_symbol(next).unwrap();
+        let symbol = reg
+            .get_symbol(next)
+            .unwrap_or_else(|| panic!("'{}' Not in registry", { next }));
         match symbol {
             &SymbolBody::Alias(of) => {
                 next = of;

@@ -1,5 +1,6 @@
 use std::{
     fmt::{Display, Write},
+    fs::OpenOptions,
     iter,
     path::{Path, PathBuf},
 };
@@ -17,6 +18,7 @@ pub struct SectionWriter<'a> {
     pub ctx: &'a Context,
     pub path: PathBuf,
     pub ends_whitespace: bool,
+    pub append: bool,
 }
 
 impl<'a> std::fmt::Write for SectionWriter<'a> {
@@ -29,41 +31,41 @@ impl<'a> std::fmt::Write for SectionWriter<'a> {
 }
 
 impl<'a> SectionWriter<'a> {
-    pub fn new(section: u32, path: impl AsRef<Path>, ctx: &'a Context) -> Self {
+    pub fn new(section: u32, path: impl AsRef<Path>, append: bool, ctx: &'a Context) -> Self {
         Self {
             buf: String::new(),
             section,
             ctx,
             path: path.as_ref().to_path_buf(),
             ends_whitespace: true,
+            append,
         }
     }
-    pub fn from_file(
-        path: impl AsRef<Path>,
-        section: u32,
-        ctx: &'a Context,
-    ) -> std::io::Result<Self> {
-        Ok(Self {
-            buf: std::fs::read_to_string(&path)?,
-            section,
-            ctx,
-            path: path.as_ref().to_path_buf(),
-            ends_whitespace: true,
-        })
-    }
     pub fn save(&self) -> std::io::Result<()> {
-        std::fs::write(&self.path, &self.buf).unwrap();
-        let file = syn::parse_file(&self.buf)
+        // std::fs::write(&self.path, &self.buf)?;
+
+        let syn_file = syn::parse_file(&self.buf)
             .map_err(|e| {
                 panic!(
-                    "Failed to parse file '{}'\nErr: {}",
+                    "Failed to parse syn file intended for '{}'\nErr: {}",
                     self.path.to_string_lossy(),
                     e
                 )
             })
             .unwrap();
-        let out = prettyplease::unparse(&file);
-        std::fs::write(&self.path, out)
+
+        let mut file = if self.append {
+            OpenOptions::new()
+                .append(true)
+                .write(true)
+                .open(&self.path)?
+        } else {
+            std::fs::File::create(&self.path)?
+        };
+
+        use std::io::Write;
+        let out = prettyplease::unparse(&syn_file);
+        file.write_all(out.as_bytes())
     }
     pub fn separate_idents(&mut self) {
         if !self.ends_whitespace {
@@ -211,11 +213,20 @@ pub use import;
 #[macro_export]
 macro_rules! string {
     ($e:expr) => {
-        $crate::format_utils::Concat([&'"', $e, &'"'])
+        $crate::format_utils::Concat([&'"', &$e, &'"'])
     };
 }
 
 pub use string;
+
+#[macro_export]
+macro_rules! cat {
+    ($($e:expr),+) => {
+        $crate::format_utils::Concat([$(& $e),+])
+    };
+}
+
+pub use cat;
 
 impl ExtendedFormat for Import<UniqueStr> {
     fn efmt(self, writer: &mut SectionWriter) -> std::fmt::Result {
@@ -298,57 +309,3 @@ pub fn section_get_path_str(section: &Section) -> &'static str {
         crate::SectionKind::Extension(_) => "/extensions",
     }
 }
-
-// #[test]
-// fn test_code3() {
-//     let mut str = String::new();
-//     let mut writer = SectionWriter::new(&mut str);
-
-//     code3!(writer,
-//         "aa" "aa",
-//         "bb" 3 "aa",
-//         Cond(false, 3) Fun(|f| f.write_str("Hi!"))
-//     );
-
-//     let expect = "aaaa\nbb3aa\nHi!\n";
-//     assert_eq!(str, expect);
-// }
-
-// #[test]
-// fn test_format_writer() {
-//     let raw = r#"\
-
-// struct {
-//             a;
-// a;
-
-// }
-// fn test(a: usize) {
-//     // comment
-// }{
-//     {
-//         a
-//         }
-// }
-// "#;
-
-//     let expect = r#"\
-// struct {
-//     a;
-//     a;
-// }
-// fn test(a: usize) {
-//     // comment
-// }{
-//     {
-//         a
-//     }
-// }
-// "#;
-
-//     let mut string = String::new();
-//     let mut writer = SectionWriter::new(&mut string);
-//     writer.write_str(raw).unwrap();
-
-//     assert_eq!(&string, expect);
-// }

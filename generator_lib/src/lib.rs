@@ -350,6 +350,10 @@ impl Registry {
         }
         Some(index)
     }
+    pub fn get_symbol(&self, name: UniqueStr) -> Option<&SymbolBody> {
+        let item = self.get_symbol_index(name)?;
+        Some(&self.symbols[item as usize].1)
+    }
     pub fn get_feature_index(&self, name: UniqueStr) -> Option<u32> {
         let &(index, ty) = self.item_map.get(&name)?;
         if ty != ItemKind::Feature {
@@ -371,10 +375,6 @@ impl Registry {
     pub fn get_extension(&self, name: UniqueStr) -> Option<&Extension> {
         let item = self.get_extension_index(name)?;
         Some(&self.extensions[item as usize])
-    }
-    pub fn get_symbol(&self, name: UniqueStr) -> Option<&SymbolBody> {
-        let item = self.get_symbol_index(name)?;
-        Some(&self.symbols[item as usize].1)
     }
     pub fn add_symbol(&mut self, name: UniqueStr, body: SymbolBody) {
         let entry = self.item_map.entry(name);
