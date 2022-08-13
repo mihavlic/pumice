@@ -139,6 +139,13 @@ impl Type {
             unreachable!()
         }
     }
+    pub fn get_basetype_mut(&mut self) -> &mut UniqueStr {
+        if let TyToken::BaseType(s) = self.0.last_mut().unwrap() {
+            s
+        } else {
+            unreachable!()
+        }
+    }
 }
 
 impl Display for Type {

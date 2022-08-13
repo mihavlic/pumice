@@ -43,6 +43,8 @@ fn main() {
         );
     }
 
+    reg.finalize();
+
     if !workarounds {
         write!(reg_file, "{:#?}", &reg).unwrap();
     }
@@ -55,7 +57,6 @@ fn main() {
         profile: None,
         apis: HashSet::from(["vulkan".intern(&reg)]),
         protect: HashSet::new(),
-        pass_all: true,
     };
 
     let ctx = Context::new(conf, reg);

@@ -1,7 +1,9 @@
+use std::fmt::Write;
+
 use generator_lib::{
     interner::{Intern, UniqueStr},
     type_declaration::parse_type_decl,
-    ConstantValue, FeatureExtensionItem, InterfaceItem, Symbol, SymbolBody,
+    ConstantValue, FeatureExtensionItem, InterfaceItem, RedeclarationMethod, Symbol, SymbolBody,
 };
 
 use crate::Context;
@@ -45,7 +47,13 @@ pub fn apply_workarounds(ctx: &mut Context) {
         |arg: &str| -> Workaround { Workaround::Replace(SymbolBody::Alias(arg.intern(ctx))) };
 
     let redeclare = |arg: &str| -> Workaround {
-        Workaround::Replace(SymbolBody::Redeclaration(parse_type_decl(arg, ctx).1))
+        Workaround::Replace(SymbolBody::Redeclaration(RedeclarationMethod::Type(
+            parse_type_decl(arg, ctx).1,
+        )))
+    };
+
+    let redeclare_custom = |arg: fn(&mut dyn Write) -> std::fmt::Result| -> Workaround {
+        Workaround::Replace(SymbolBody::Redeclaration(RedeclarationMethod::Custom(arg)))
     };
 
     let ownership = |arg: &str| -> Workaround {
@@ -61,18 +69,83 @@ pub fn apply_workarounds(ctx: &mut Context) {
 
     #[rustfmt::skip]
     let mut workarounds = [
+        // useless macros that break our useless macro hacks
+        (Workaround::Remove, "VK_DEFINE_HANDLE"),
+        (Workaround::Remove, "VK_USE_64_BIT_PTR_DEFINES"),
+        (Workaround::Remove, "VK_NULL_HANDLE"),
+        (Workaround::Remove, "VK_DEFINE_NON_DISPATCHABLE_HANDLE"),
+        // deprecated version packing macros
+        (Workaround::Remove, "VK_MAKE_VERSION"),
+        (Workaround::Remove, "VK_VERSION_MAJOR"),
+        (Workaround::Remove, "VK_VERSION_MINOR"),
+        (Workaround::Remove, "VK_VERSION_PATCH"),
+        (Workaround::Remove, "VK_API_VERSION"),
+        (
+            redeclare_custom(|w| 
+                write!(w,
+                    "pub const fn make_api_version(variant: u32, major: u32, minor: u32, patch: u32) -> u32 {{
+                        (variant << 29) | (major << 22) | (minor << 12) | patch
+                    }}"
+                )
+            ),
+            "VK_MAKE_API_VERSION"
+        ),
+        (
+            redeclare_custom(|w| 
+                write!(w,
+                    "pub const fn api_version_variant(version: u32) -> u32 {{
+                        version >> 29
+                    }}"
+                )
+            ),
+            "VK_API_VERSION_VARIANT"
+        ),
+        (
+            redeclare_custom(|w| 
+                write!(w,
+                    "pub const fn api_version_major(version: u32) -> u32 {{
+                        (version >> 22) & 0x7f
+                    }}"
+                )
+            ),
+            "VK_API_VERSION_MAJOR"
+        ),
+        (
+            redeclare_custom(|w| 
+                write!(w,
+                    "pub const fn api_version_minor(version: u32) -> u32 {{
+                        (version >> 12) & 0x3ff
+                    }}"
+                )
+            ),
+            "VK_API_VERSION_MINOR"
+        ),
+        (
+            redeclare_custom(|w| 
+                write!(w,
+                    "pub const fn api_version_patch(version: u32) -> u32 {{
+                        version & 0xfff
+                    }}"
+                )
+            ),
+            "VK_API_VERSION_PATCH"
+        ),
+        (
+            redeclare_custom(|w| 
+                write!(w,
+                    "pub const fn make_video_std_version(major: u32, minor: u32, patch: u32) -> u32 {{
+                        (major << 22) | (minor << 12) | patch
+                    }}"
+                )
+            ),
+            "VK_MAKE_VIDEO_STD_VERSION"
+        ),
         // vk_platform is in <require> tags??
         (Workaround::Remove, "vk_platform"),
         // for some reason the video.xml extensions have requires that contain headers, which are not symbols!
         (Workaround::Remove, "vk_video/vulkan_video_codecs_common.h"),
         (Workaround::Remove, "vk_video/vulkan_video_codec_h264std.h"),
         (Workaround::Remove, "vk_video/vulkan_video_codec_h265std.h"),
-        // constants that require evaluating preprocessor macros to be valid and frankly I don't care about version numbers
-        // FIXME start evaluating preprocessor macros
-        (Workaround::Remove, "VK_STD_VULKAN_VIDEO_CODEC_H264_DECODE_SPEC_VERSION"),
-        (Workaround::Remove, "VK_STD_VULKAN_VIDEO_CODEC_H264_ENCODE_SPEC_VERSION"),
-        (Workaround::Remove, "VK_STD_VULKAN_VIDEO_CODEC_H265_DECODE_SPEC_VERSION"),
-        (Workaround::Remove, "VK_STD_VULKAN_VIDEO_CODEC_H265_ENCODE_SPEC_VERSION"),
         // VK_PIPELINE_CREATE_DISPATCH_BASE is a typo without the BIT, yet VK_PIPELINE_CREATE_DISPATCH_BASE_KHR is derived off it
         (Workaround::Remove, "VK_PIPELINE_CREATE_DISPATCH_BASE"),
         (alias_extend("VK_PIPELINE_CREATE_DISPATCH_BASE_BIT"), "VK_PIPELINE_CREATE_DISPATCH_BASE_KHR"),
@@ -215,6 +288,20 @@ pub fn apply_workarounds(ctx: &mut Context) {
     }
 
     for ext in &mut ctx.reg.extensions {
+        if let Ok(j) = workarounds.binary_search_by_key(&ext.name, |s| s.0) {
+            match &workarounds[j].1 {
+                Workaround::Remove => {
+                    // extension have by now been turned into section in a specific order
+                    // thus we can't just remove it, best we can do is disable it
+                    // todo this is not ideal
+                    let supported = &mut ext.supported;
+                    supported.clear();
+                    supported.push(ctx.strings.disabled);
+                    continue;
+                }
+                _ => {}
+            }
+        }
         prune_feature_extension(&mut ext.children, &workarounds);
     }
 }

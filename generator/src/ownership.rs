@@ -15,11 +15,7 @@ pub fn resolve_ownership(ctx: &mut Context) {
     // iterate through the sections and the items in their `require` tags
     // if the item doesn't have ownership, set it to the current section
     for (i, section) in ctx.sections.iter().enumerate() {
-        for mut name in section_used_symbols(section, &ctx.conf, &ctx.reg) {
-            if let Some((flags_name, _)) = ctx.flag_bits_to_flags(name) {
-                name = flags_name;
-            }
-
+        for name in section_used_symbols(section, &ctx.conf, &ctx.reg) {
             if ctx.get_symbol_index(name).is_some() {
                 ctx.symbol_ownership.entry(name).or_insert(i as u32);
             } else {

@@ -1,7 +1,7 @@
 use generator_lib::{
     interner::UniqueStr,
     type_declaration::{TyToken, Type},
-    Symbol, SymbolBody,
+    RedeclarationMethod, Symbol, SymbolBody,
 };
 
 use crate::{is_std_type, Context};
@@ -48,8 +48,8 @@ impl DeriveData {
     pub fn is_eq<'a>(&mut self, name: UniqueStr, ctx: &Context) -> bool {
         symbol_is_hashable(name, &mut self.eq, ctx)
     }
-    pub fn is_default<'a>(&mut self, name: UniqueStr, ctx: &Context) -> bool {
-        symbol_is_default(name, &mut self.default, ctx)
+    pub fn is_zeroable<'a>(&mut self, name: UniqueStr, ctx: &Context) -> bool {
+        symbol_is_zeroable(name, &mut self.default, ctx)
     }
 }
 
@@ -75,9 +75,13 @@ pub fn broadcast_to_constituents(
 
     match &ctx.symbols[index].1 {
         SymbolBody::Alias(of) => broadcast_to_constituents(*of, symbol_overlay, to, ctx),
-        SymbolBody::Redeclaration(ty) => {
-            broadcast_to_constituents(ty.get_basetype(), symbol_overlay, to, ctx)
-        }
+        SymbolBody::Redeclaration(method) => match method {
+            RedeclarationMethod::Type(ty) => {
+                broadcast_to_constituents(ty.get_basetype(), symbol_overlay, to, ctx)
+            }
+            // as of now only used for functions that take primitive types
+            RedeclarationMethod::Custom(_) => {}
+        },
         SymbolBody::Enum { ty, .. } => broadcast_to_constituents(*ty, symbol_overlay, to, ctx),
         SymbolBody::Struct { members, .. } => {
             for member in members {
@@ -122,7 +126,10 @@ pub fn logical_and_constituents<
         SymbolBody::Alias(of) => {
             logical_and_constituents(*of, on_leaf, on_type, symbol_overlay, ctx)
         }
-        SymbolBody::Redeclaration(ty) => on_type(ty, symbol_overlay),
+        SymbolBody::Redeclaration(method) => match method {
+            RedeclarationMethod::Type(ty) => on_type(ty, symbol_overlay),
+            RedeclarationMethod::Custom(_) => unreachable!(),
+        },
         SymbolBody::Struct { members, .. } => {
             let early = on_leaf(symbol);
             if early == true {
@@ -197,7 +204,7 @@ pub fn type_is_hashable(ty: &Type, symbol_overlay: &mut [Option<bool>], ctx: &Co
     }
 }
 
-pub fn symbol_is_default(
+pub fn symbol_is_zeroable(
     name: UniqueStr,
     symbol_overlay: &mut [Option<bool>],
     ctx: &Context,
@@ -205,13 +212,10 @@ pub fn symbol_is_default(
     logical_and_constituents(
         name,
         |body| match &body.1 {
-            // should unions be default by being zeroed?
-            SymbolBody::Struct { union, .. } => *union == false,
-            SymbolBody::Enum { members, .. } => members
-                .iter()
-                .any(|(name, _)| name.resolve().contains("UNDEFINED")),
-            SymbolBody::Handle { dispatchable, .. } => *dispatchable == false,
-            SymbolBody::Funcpointer { .. } => true,
+            SymbolBody::Struct { .. } => true,
+            SymbolBody::Enum { .. } => true,
+            SymbolBody::Handle { .. } => true,
+            SymbolBody::Funcpointer { .. } => false,
             _ => unreachable!(),
         },
         |ty, overlay| {
@@ -219,7 +223,7 @@ pub fn symbol_is_default(
                 if is_std_type(ty, ctx) {
                     return true;
                 }
-                symbol_is_default(ty, overlay, ctx)
+                symbol_is_zeroable(ty, overlay, ctx)
             } else {
                 true
             }

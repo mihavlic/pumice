@@ -41,7 +41,9 @@
             "args": [
                 "${workspaceRoot}/vk.xml",
                 "${workspaceRoot}/video.xml",
-                "${workspaceRoot}/generated/bindings"
+                "${workspaceRoot}/bindings_template",
+                "${workspaceRoot}/slag",
+                "VK_VERSION_1_0, VK_KHR_surface, VK_KHR_dynamic_rendering, VK_KHR_get_physical_device_properties2"
             ],
             "cwd": "${workspaceFolder}",
         },

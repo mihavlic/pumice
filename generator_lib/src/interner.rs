@@ -43,6 +43,12 @@ impl UniqueStr {
             std::str::from_utf8_unchecked(bytes)
         }
     }
+    pub fn eq_resolve(&self, other: UniqueStr) -> bool {
+        let s = self.get_header();
+        let other = other.get_header();
+
+        s.current == other.current
+    }
     pub fn is_original(&self) -> bool {
         let s = self.get_header();
         s.current == s.original
@@ -163,7 +169,7 @@ impl BumpAllocator {
             //   https://doc.rust-lang.org/std/primitive.pointer.html#method.add
             //   "Both the starting and resulting pointer must be either in bounds or one byte past the end of the same allocated object."
             // So it is fine to dangle, it just can't dangle too much, thanks?
-            // This is left for posterity, by now I've fixed it.
+            // This is left for posterity, by it's fixed now.
 
             let start_offset = self.head_offset + start.add(self.head_offset).align_offset(align);
             let end_offset = start_offset + size;

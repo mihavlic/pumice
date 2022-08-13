@@ -3,6 +3,7 @@ use std::{
     fs::OpenOptions,
     iter,
     path::{Path, PathBuf},
+    thread::panicking,
 };
 
 use generator_lib::{
@@ -42,10 +43,9 @@ impl<'a> SectionWriter<'a> {
         }
     }
     pub fn save(&self) -> std::io::Result<()> {
-        // std::fs::write(&self.path, &self.buf)?;
-
         let syn_file = syn::parse_file(&self.buf)
             .map_err(|e| {
+                std::fs::write(&self.path, &self.buf).unwrap();
                 panic!(
                     "Failed to parse syn file intended for '{}'\nErr: {}",
                     self.path.to_string_lossy(),
@@ -77,7 +77,9 @@ impl<'a> SectionWriter<'a> {
 
 impl<'a> Drop for SectionWriter<'a> {
     fn drop(&mut self) {
-        self.save().unwrap();
+        if !panicking() {
+            self.save().unwrap();
+        }
     }
 }
 
@@ -99,7 +101,7 @@ impl<T: FnOnce(&mut SectionWriter<'_>) -> std::fmt::Result> ExtendedFormat for F
     }
 }
 
-pub struct Cond<T>(pub bool, pub T);
+pub struct Cond<T: ExtendedFormat>(pub bool, pub T);
 
 impl<T: ExtendedFormat> ExtendedFormat for Cond<T> {
     fn efmt(self, writer: &mut SectionWriter<'_>) -> std::fmt::Result {
@@ -138,22 +140,25 @@ impl<'a, const S: usize> ExtendedFormat for &Concat<'a, S> {
 
 pub struct Separated<
     'a,
-    T: Iterator,
-    F: Fn(&mut SectionWriter<'_>, <T as Iterator>::Item) -> std::fmt::Result,
+    T: IntoIterator,
+    F: Fn(&mut SectionWriter<'_>, <T as IntoIterator>::Item) -> std::fmt::Result,
 > {
-    iter: T,
+    iter: T::IntoIter,
     fun: F,
     sep: &'a str,
     // whether to add a separator after the last element
     sep_last: bool,
 }
 
-impl<'a, T: Iterator, F: Fn(&mut SectionWriter<'_>, <T as Iterator>::Item) -> std::fmt::Result>
-    Separated<'a, T, F>
+impl<
+        'a,
+        T: IntoIterator,
+        F: Fn(&mut SectionWriter<'_>, <T as IntoIterator>::Item) -> std::fmt::Result,
+    > Separated<'a, T, F>
 {
     pub fn new(iter: T, fun: F, separator: &'a str, separator_last: bool) -> Self {
         Self {
-            iter,
+            iter: iter.into_iter(),
             fun,
             sep: separator,
             sep_last: separator_last,
@@ -167,23 +172,26 @@ impl<'a, T: Iterator, F: Fn(&mut SectionWriter<'_>, <T as Iterator>::Item) -> st
     }
 }
 
-impl<'a, T: Iterator>
-    Separated<'a, T, fn(&mut SectionWriter<'_>, <T as Iterator>::Item) -> std::fmt::Result>
+impl<'a, T: IntoIterator>
+    Separated<'a, T, fn(&mut SectionWriter<'_>, <T as IntoIterator>::Item) -> std::fmt::Result>
 where
-    <T as Iterator>::Item: ExtendedFormat,
+    <T as IntoIterator>::Item: ExtendedFormat,
 {
     pub fn display(iter: T, separator: &'a str) -> Self {
         Self::new(
             iter,
-            |w: &mut SectionWriter<'_>, a: <T as Iterator>::Item| a.efmt(w),
+            |w: &mut SectionWriter<'_>, a: <T as IntoIterator>::Item| a.efmt(w),
             separator,
             false,
         )
     }
 }
 
-impl<'a, T: Iterator, F: Fn(&mut SectionWriter<'_>, <T as Iterator>::Item) -> std::fmt::Result>
-    ExtendedFormat for Separated<'a, T, F>
+impl<
+        'a,
+        T: IntoIterator,
+        F: Fn(&mut SectionWriter<'_>, <T as IntoIterator>::Item) -> std::fmt::Result,
+    > ExtendedFormat for Separated<'a, T, F>
 {
     fn efmt(self, writer: &mut SectionWriter) -> std::fmt::Result {
         let mut iter = self.iter.peekable();
@@ -220,6 +228,15 @@ macro_rules! string {
 pub use string;
 
 #[macro_export]
+macro_rules! cstring {
+    ($e:expr) => {
+        $crate::format_utils::Concat([&"cstr!(\"", &$e, &"\")"])
+    };
+}
+
+pub use cstring;
+
+#[macro_export]
 macro_rules! cat {
     ($($e:expr),+) => {
         $crate::format_utils::Concat([$(& $e),+])
@@ -227,6 +244,31 @@ macro_rules! cat {
 }
 
 pub use cat;
+
+#[macro_export]
+macro_rules! doc_comment {
+    ($($e:expr),+) => {
+        $crate::format_utils::Concat([&"///", $(& $e),+, &'\n'])
+    };
+}
+
+pub use doc_comment;
+
+#[macro_export]
+macro_rules! doc_boilerplate {
+    ($name:expr) => {
+        $crate::format_utils::Fun(|w| {
+            let original = $name.resolve_original();
+            writeln!(w,"/// [{}](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/{}.html)", original, original)?;
+            if !$name.is_original() {
+                writeln!(w,r#"#[doc(alias = "{}")]"#, original)?;
+            }
+            Ok(())
+        })
+    };
+}
+
+pub use doc_boilerplate;
 
 impl ExtendedFormat for Import<UniqueStr> {
     fn efmt(self, writer: &mut SectionWriter) -> std::fmt::Result {
@@ -255,7 +297,7 @@ impl ExtendedFormat for Import<&Type> {
 }
 
 fn fmt_symbol_path(
-    mut name: UniqueStr,
+    name: UniqueStr,
     ctx: &Context,
     current_section: u32,
     f: &mut impl Write,
@@ -269,10 +311,6 @@ fn fmt_symbol_path(
         s.uint8_t, s.uint16_t, s.uint32_t, s.uint64_t, s.int8_t, s.int16_t, s.int32_t, s.int64_t, s.size_t => {};
         s.usize, s.u8, s.u16, s.u32, s.u64, s.i8, s.i16, s.i32, s.i64 => unreachable!("Rust-native types shouldn't ever be used by our code!");
         @ {
-            if let Some((actual, _)) = ctx.reg.flag_bits_to_flags(name) {
-                name = actual;
-            }
-
             let section_idx = ctx
                 .symbol_get_section_idx(name)
                 .unwrap_or_else(|| panic!("{}", name));

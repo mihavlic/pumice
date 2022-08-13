@@ -47,7 +47,6 @@ pub fn get_sections<'a>(
 
         (feature.unwrap(), extensions)
     } else {
-        let disabled = "disabled".intern(reg);
         let feature = reg
             .features
             .iter()
@@ -57,8 +56,7 @@ pub fn get_sections<'a>(
         let extensions = reg
             .extensions
             .iter()
-            .filter(|a| a.supported.get(0) != Some(&disabled))
-            .map(|a| a.name)
+            .map(|e| e.name)
             .collect::<HashSet<_>>();
         (feature, extensions)
     }

@@ -6,5 +6,5 @@ members = [
 ]
 exclude = [
     "slag",
-    "bindings_template"
+    # "bindings_template"
 ]

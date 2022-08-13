@@ -1,19 +1,20 @@
 use crate::{
-    format_utils::{section_get_path, ExtendedFormat, Fun, Iter, SectionWriter, Separated},
+    format_utils::{section_get_path, Cond, ExtendedFormat, Fun, Iter, SectionWriter, Separated},
     ownership::resolve_ownership,
+    undangle::undangle,
     workarounds::apply_workarounds,
 };
 
 use derives::DeriveData;
 use format_macro::code;
-use fs_utils::copy_dir_recursive;
+use fs_utils::{copy_dir_recursive, delete_dir_children};
 use generator_lib::{
     configuration::GenConfig,
     interner::{Intern, UniqueStr},
-    smallvec::SmallVec,
+    smallvec::{SmallVec, smallvec},
     type_declaration::{TyToken, Type},
-    CommandParameter, ConstantValue, FeatureExtensionItem, InterfaceItem, Registry, StructMember,
-    Symbol, SymbolBody,
+    CommandParameter, ConstantValue, ExtensionKind, FeatureExtensionItem, InterfaceItem,
+    RedeclarationMethod, Registry, StructMember, Symbol, SymbolBody,
 };
 use ownership::skip_conf_conditions;
 use std::{
@@ -29,10 +30,11 @@ pub mod derives;
 pub mod format_utils;
 pub mod fs_utils;
 pub mod ownership;
+pub mod undangle;
 pub mod workarounds;
 
 pub const PLATFORM_TYPES_IMPORT: &str =
-    "use crate::{cstr, dispatchable_handle, non_dispatchable_handle, util::{char, double, float, int, void}};";
+    "use crate::{cstr, enum_impl, bitflags_impl, dispatchable_handle, non_dispatchable_handle, util::{char, double, float, int, void}};";
 
 pub enum SectionKind {
     Feature(u32),
@@ -202,31 +204,34 @@ pub fn get_command_kind(params: &[CommandParameter], ctx: &Context) -> CommandKi
 }
 
 pub fn write_bindings(
-    ctx: &mut Context,
+    mut ctx: Context,
     glue: &dyn AsRef<Path>,
     out: &dyn AsRef<Path>,
 ) -> Result<(), Box<dyn Error>> {
-    let added_variants = get_enum_added_variants(ctx);
-
-    // (item index, section index)
-    // all the items that we will be generating
-    let mut items = Vec::new();
+    // (symbol index, section index)
+    // all the symbols that we will be generating
+    let mut symbols = Vec::new();
     for (i, &Symbol(name, _)) in ctx.reg.symbols.iter().enumerate() {
         if let Some(section_idx) = ctx.symbol_get_section_idx(name) {
             let section = &ctx.sections[section_idx as usize];
 
             let used = match section.kind {
                 SectionKind::Feature(_) => ctx.conf.is_feature_used(section.name),
-                SectionKind::Extension(_) => ctx.conf.is_extension_used(section.name),
+                SectionKind::Extension(i) => {
+                    let e = &ctx.reg.extensions[i as usize];
+                    ctx.conf.is_extension_used(section.name) && e.kind != ExtensionKind::Disabled
+                }
             };
 
             if used {
-                items.push((i, section_idx));
+                symbols.push((i, section_idx));
             }
         }
     }
 
-    apply_renames(&items, &added_variants, &ctx);
+    undangle(&symbols, &mut ctx);
+    let added_variants = get_enum_added_variants(&ctx);
+    apply_renames(&symbols, &added_variants, &ctx);
 
     let out_dir = out.as_ref().to_path_buf();
     let mut cur_dir = PathBuf::new();
@@ -240,6 +245,7 @@ pub fn write_bindings(
         }
     }
 
+    delete_dir_children(&out_dir)?;
     std::fs::create_dir_all(out_dir.join("src/extensions"))?;
 
     copy_dir_recursive(glue, out)?;
@@ -259,27 +265,91 @@ pub fn write_bindings(
         .extensions
         .iter()
         .filter(|e| ctx.conf.is_extension_used(e.name))
-        .map(|e| e.name)
+        // aditional extension may end up being disabled by the workarounds
+        .filter(|e| e.kind != ExtensionKind::Disabled)
+        .inspect(|e| {
+            if e.name.resolve_original() == "VK_AMD_extension_17" {
+                panic!("{:#?}", e)
+            }
+        })
         .collect::<Vec<_>>();
 
-    extensions.sort_by(|a, b| a.resolve().cmp(b.resolve()));
+    extensions.sort_by(|a, b| a.name.resolve().cmp(b.name.resolve()));
 
     {
         let mut lib = SectionWriter::new(u32::MAX, out_dir.join("src/lib.rs"), true, &ctx);
         let mut exts =
-            SectionWriter::new(u32::MAX, out_dir.join("src/extensions/mod.rs"), false, &ctx);
+            SectionWriter::new(u32::MAX, out_dir.join("src/extensions/mod.rs"), true, &ctx);
 
         code!(
             lib,
-            pub mod extensions;
-            pub mod tables;
             pub mod vk;
-            #(Iter(&features, |w, t| code!(w, pub(crate) mod #t;)))
+            #(Iter(&features, |w, t| code!(w, pub mod #t;)))
         );
 
         code!(
             exts,
-            #(Iter(&extensions, |w, t| code!(w, pub(crate) mod #t;)))
+            #(Iter(&extensions, |w, t| code!(w, pub mod #(t.name);)))
+        );
+    }
+
+    {
+        let mut meta = SectionWriter::new(
+            u32::MAX,
+            out_dir.join("src/extensions/metadata.rs"),
+            true,
+            &ctx,
+        );
+
+        let exts = Fun(|w| {
+            for e in &extensions {
+                let instance = match e.kind {
+                    ExtensionKind::Disabled => {
+                        unreachable!("'{}' is disabled, it should never get generated!", e.name)
+                    }
+                    ExtensionKind::Instance => true,
+                    ExtensionKind::Device => false,
+                    // vulkan_video_codecs_common has this, it's not really an extension though
+                    ExtensionKind::None => continue,
+                };
+
+                let (major, minor) = if let Some(core) = e.requires_core {
+                    let mut split = core.resolve().split('.');
+                    (
+                        split.next().unwrap().parse().unwrap(),
+                        split.next().unwrap().parse().unwrap(),
+                    )
+                } else {
+                    (1, 0)
+                };
+                let core = format!("VK_API_VERSION_{}_{}", major, minor).intern(&ctx);
+                let requires = Separated::args(&e.requires, |w, n| {
+                    code!(w,
+                        #cstring!(n.resolve_original())
+                    );
+                    Ok(())
+                });
+
+                code!(
+                    w,
+                    ExtensionMetadata {
+                        name: #cstring!(e.name.resolve_original()),
+                        instance: #instance,
+                        core_version: #import!(core),
+                        requires_extensions: &[
+                            #requires
+                        ]
+                    },
+                );
+            }
+            Ok(())
+        });
+
+        code!(
+            meta,
+            pub const EXTENSION_METADATA: &[ExtensionMetadata] = &[
+                #exts
+            ];
         );
     }
 
@@ -297,49 +367,50 @@ pub fn write_bindings(
             code!(
                 vk,
                 ##[doc(no_inline)]
-                pub use crate::extensions::#extension::*;
+                pub use crate::extensions::#(extension.name)::*;
             );
         }
     }
 
-    items.sort_by_key(|i| i.1);
+    symbols.sort_by_key(|i| i.1);
 
     {
-        let mut tables = SectionWriter::new(u32::MAX, out_dir.join("src/tables.rs"), false, &ctx);
+        let mut tables =
+            SectionWriter::new(u32::MAX, out_dir.join("src/loader/tables.rs"), true, &ctx);
 
-        code!(
-            tables,
-            #("/// Oh, yes. Little Bobby Tables we call him.\n")
-            #PLATFORM_TYPES_IMPORT
-            use std::mem::MaybeUninit;
-        );
-
-        // name of function, actual not alias symbol of function
+        // (index of owning section, name of function, actual name of function)
         let mut entry = Vec::new();
         let mut instance = Vec::new();
         let mut device = Vec::new();
 
-        for &(index, _) in &items {
+        for &(index, _) in &symbols {
             let &Symbol(name, ref body) = &ctx.reg.symbols[index];
+            let section_idx = ctx.symbol_get_section_idx(name).unwrap();
             if let SymbolBody::Command { params, .. } = body {
-                match get_command_kind(&params, ctx) {
-                    CommandKind::Entry => entry.push((name, name)),
-                    CommandKind::Instance => instance.push((name, name)),
-                    CommandKind::Device => device.push((name, name)),
+                let what = (section_idx, name, name);
+                match get_command_kind(&params, &ctx) {
+                    CommandKind::Entry => entry.push(what),
+                    CommandKind::Instance => instance.push(what),
+                    CommandKind::Device => device.push(what),
                 }
             } else if let &SymbolBody::Alias(of) = body {
-                if is_std_type(of, ctx) {
+                if is_std_type(of, &ctx) {
                     continue;
                 }
-                let (of, body) = resolve_alias(of, ctx);
+                let (of, body) = resolve_alias(of, &ctx);
                 if let SymbolBody::Command { params, .. } = body {
-                    match get_command_kind(&params, ctx) {
-                        CommandKind::Entry => entry.push((name, of)),
-                        CommandKind::Instance => instance.push((name, of)),
-                        CommandKind::Device => device.push((name, of)),
+                    let what = (section_idx, name, of);
+                    match get_command_kind(&params, &ctx) {
+                        CommandKind::Entry => entry.push(what),
+                        CommandKind::Instance => instance.push(what),
+                        CommandKind::Device => device.push(what),
                     }
                 }
             }
+        }
+
+        for vec in [&mut entry, &mut instance, &mut device] {
+            vec.sort_by_key(|a| a.0)
         }
 
         let variations = [
@@ -360,10 +431,11 @@ pub fn write_bindings(
         }
 
         for &(commands, name, _) in &variations {
-            let table_name = cat!("Table", name);
+            let table_name = cat!(name, "Table");
+            let loader_trait = cat!(name, "Load");
 
             let fields = Fun(|w| {
-                for &(name, true_name) in commands {
+                for &(_, name, true_name) in commands {
                     if name != true_name {
                         continue;
                     }
@@ -382,7 +454,7 @@ pub fn write_bindings(
                                 true,
                                 "",
                                 return_type,
-                                ctx,
+                                &ctx,
                             )
                         });
 
@@ -397,18 +469,8 @@ pub fn write_bindings(
                 Ok(())
             });
 
-            let inits = Separated::args(
-                commands
-                    .iter()
-                    .filter(|(name, true_name)| name == true_name),
-                |w, (name, _)| {
-                    code!(w, #name: None);
-                    Ok(())
-                },
-            );
-
-            let functions = Fun(|w| {
-                for &(name, true_name) in commands {
+            let commands_funs = Fun(|w| {
+                for &(_, name, true_name) in commands {
                     if let SymbolBody::Command {
                         return_type,
                         params,
@@ -423,7 +485,7 @@ pub fn write_bindings(
                                 true,
                                 "&self, ",
                                 return_type,
-                                ctx,
+                                &ctx,
                             )
                         });
                         let params = Separated::display(params.iter().map(|p| p.name), ",");
@@ -443,6 +505,90 @@ pub fn write_bindings(
                 Ok(())
             });
 
+            let entry_functions = Fun(|w| {
+                let fields = Iter(commands, |w, &(_, name, _)| {
+                    code!(
+                        w,
+                        (#name, #string!(name.resolve_original()))
+                    );
+                });
+
+                code!(w, pub fn load(&mut self, loader: &impl #loader_trait) {
+                    unsafe {
+                        load_fns!{
+                            self, loader, #fields
+                        }
+                    }
+                });
+
+                Ok(())
+            });
+
+            let other_functions = Fun(|w| {
+                let mut state = None;
+                let fields = Fun(|w| {
+                    for &(section_idx, name, true_name) in commands {
+                        if name != true_name {
+                            continue;
+                        }
+                        if Some(section_idx) != state {
+                            if state.is_some() {
+                                w.write_str("}}")?;
+                            }
+                            let section = &ctx.sections[section_idx as usize];
+                            match section.kind {
+                                SectionKind::Feature(i) => {
+                                    let feature = &ctx.reg.features[i as usize];
+                                    // vulkan always has 0 variant
+                                    // https://registry.khronos.org/vulkan/specs/1.3/html/chap31.html#extendingvulkan-coreversions-versionnumbers
+                                    write!(
+                                        w,
+                                        r#"
+                                        if conf.core_enabled(crate::vk10::make_api_version(0, {}, {}, 0)) {{
+                                            load_fns!{{self, loader,
+                                            "#,
+                                        feature.major, feature.minor
+                                    )?;
+                                }
+                                SectionKind::Extension(_) => {
+                                    write!(
+                                        w,
+                                        r#"if conf.extension_enabled(cstr!("{}")) {{
+                                            load_fns!{{self, loader,
+                                            "#,
+                                        section.name.resolve_original()
+                                    )?;
+                                }
+                            }
+                            state = Some(section_idx);
+                        }
+                        code!(
+                            w,
+                            (#name, #string!(name.resolve_original()))
+                        );
+                    }
+                    w.write_str("}}")?;
+                    Ok(())
+                });
+
+                code!(
+                    w,
+                    pub fn load(&mut self, loader: &impl #loader_trait, conf: &ApiLoadConfig) {
+                        unsafe {
+                            #fields
+                        }
+                    }
+                );
+
+                Ok(())
+            });
+
+            let do_entry = name == "Entry";
+            let entry_functions = Cond(do_entry, entry_functions);
+            let other_functions = Cond(!do_entry, other_functions);
+
+            // it is valid to use zeroed Option to create a None
+            // see https://doc.rust-lang.org/std/option/index.html#representation
             code!(
                 tables,
                 pub struct #table_name {
@@ -450,11 +596,16 @@ pub fn write_bindings(
                 }
                 impl #table_name {
                     pub const fn new_empty() -> Self {
-                        Self {
-                           #inits
+                        unsafe {
+                            // https://github.com/maxbla/const-zero#how-does-it-work
+                            // for some reason calling const functions in place of generics is invalid
+                            const SIZE: usize = std::mem::size_of::<#table_name>();
+                            ConstZeroedHack::<#table_name, SIZE>::zero()
                         }
                     }
-                    #functions
+                    #commands_funs
+                    #entry_functions
+                    #other_functions
                 }
             );
         }
@@ -465,7 +616,7 @@ pub fn write_bindings(
     let mut prev_section = u32::MAX;
     let mut section_writer = None;
 
-    for &(symbol_index, section_index) in &items {
+    for &(symbol_index, section_index) in &symbols {
         if section_index != prev_section {
             let section = &ctx.sections[section_index as usize];
 
@@ -492,30 +643,38 @@ pub fn write_bindings(
     Ok(())
 }
 
-fn get_enum_added_variants(
-    ctx: &Context,
-) -> HashMap<UniqueStr, Vec<(UniqueStr, Vec<(UniqueStr, &ConstantValue)>)>> {
-    let mut enum_supplements: HashMap<
-        // destination enum name
-        UniqueStr,
-        //   source extension name, Vec<variant name, variant value>
-        Vec<(UniqueStr, Vec<(UniqueStr, &ConstantValue)>)>,
-    > = HashMap::new();
+pub struct AddedVariants<'a> {
+    source_extension: UniqueStr,
+    applicable: bool,
+    variants: Vec<(UniqueStr, &'a ConstantValue)>,
+}
+
+fn get_enum_added_variants(ctx: &Context) -> HashMap<UniqueStr, Vec<AddedVariants<'_>>> {
+    let mut enum_supplements: HashMap<UniqueStr, Vec<AddedVariants<'_>>> = HashMap::new();
 
     let features = ctx
         .reg
         .features
         .iter()
-        .filter(|f| ctx.conf.is_feature_used(f.name))
-        .map(|f| f.name);
-    let extensions = ctx.conf.extensions.iter().cloned();
+        .map(|f| (ctx.conf.is_feature_used(f.name), f.name, &f.children));
+    let extensions = ctx.reg.extensions.iter().filter(|e| e.kind != ExtensionKind::Disabled ).map(|e| {
+        (
+            ctx.conf.is_extension_used(e.name)
+                && 
+                // when an extention is promoted to core, all its enum values are copied into a
+                // feature <require> thus variants from the extensions are no longer applicable if
+                // this occurs note that this isn't done for constants because extensions specify
+                // their name and version that way
+                !e
+                    .promotedto
+                    .map(|core| ctx.conf.is_feature_used(core))
+                    .unwrap_or(false),
+            e.name,
+            &e.children,
+        )
+    });
 
-    for section_name in features.chain(extensions) {
-        let children = match ctx.get_section(section_name).unwrap().kind {
-            SectionKind::Feature(idx) => &ctx.reg.features[idx as usize].children,
-            SectionKind::Extension(idx) => &ctx.reg.extensions[idx as usize].children,
-        };
-
+    for (applicable, section_name, children) in features.chain(extensions) {
         for item in children {
             match item {
                 FeatureExtensionItem::Comment(_) => {}
@@ -526,42 +685,54 @@ fn get_enum_added_variants(
                     feature,
                     items,
                 } => {
-                    if !skip_conf_conditions(api, *extension, None, *feature, *profile, &ctx.conf) {
-                        for item in items {
-                            match item {
-                                InterfaceItem::Simple { .. } => {}
-                                &InterfaceItem::Extend {
-                                    name,
-                                    mut extends,
-                                    ref value,
-                                } => {
-                                    if let Some((actual, _)) = ctx.reg.flag_bits_to_flags(extends) {
-                                        extends = actual;
+                    let applicable = applicable
+                        && !skip_conf_conditions(
+                            api, *extension, None, *feature, *profile, &ctx.conf,
+                        );
+                    'outer: for item in items {
+                        match item {
+                            InterfaceItem::Simple { .. } => {}
+                            &InterfaceItem::Extend {
+                                name,
+                                extends,
+                                ref value,
+                            } => {
+                                let entry = enum_supplements.entry(extends).or_insert(Vec::new());
+
+                                let add = (name, value);
+
+                                // we deduplicate the variants here, because khronos was so nice to willingly put
+                                // duplicates in the registry, like VK_STRUCTURE_TYPE_DEVICE_GROUP_PRESENT_CAPABILITIES_KHR
+                                'middle: for added in &mut *entry {
+                                    for i in 0..added.variants.len() {
+                                        let &(n, _) = &added.variants[i];
+                                        if n == name {
+                                            if !applicable {
+                                                continue 'outer;
+                                            }
+                                            // if the added variant is not applicable, ie. soft-deleted
+                                            // we remove it and overwrite it with the current one, otherwise
+                                            else if !added.applicable {
+                                                added.variants.remove(i);
+                                                break 'middle;
+                                            } else {
+                                                continue;
+                                            }
+                                        }
                                     }
+                                }
 
-                                    let entry =
-                                        enum_supplements.entry(extends).or_insert(Vec::new());
-
-                                    let add = (name, value);
-
-                                    // we deduplicate the variants here, because khronos was so nice to willingly put
-                                    // duplicates in the registry, like VK_STRUCTURE_TYPE_DEVICE_GROUP_PRESENT_CAPABILITIES_KHR
-                                    if entry
-                                        .iter()
-                                        .flat_map(|(_, vec)| vec)
-                                        .find(|&&(n, _)| n == name)
-                                        .is_some()
-                                    {
-                                        continue;
-                                    }
-
-                                    if let Some((_, vec)) =
-                                        entry.iter_mut().find(|(ext, _)| *ext == section_name)
-                                    {
-                                        vec.push(add);
-                                    } else {
-                                        entry.push((section_name, vec![add]));
-                                    }
+                                if let Some(a) = entry
+                                    .iter_mut()
+                                    .find(|a| a.source_extension == section_name)
+                                {
+                                    a.variants.push(add);
+                                } else {
+                                    entry.push(AddedVariants {
+                                        source_extension: section_name,
+                                        applicable: applicable,
+                                        variants: vec![add],
+                                    });
                                 }
                             }
                         }
@@ -579,7 +750,7 @@ fn write_item(
     body: &SymbolBody,
     writer: &mut SectionWriter<'_>,
     derives: &mut DeriveData,
-    supplements: &HashMap<UniqueStr, Vec<(UniqueStr, Vec<(UniqueStr, &ConstantValue)>)>>,
+    supplements: &HashMap<UniqueStr, Vec<AddedVariants>>,
     ctx: &Context,
 ) {
     macro_rules! select {
@@ -604,7 +775,7 @@ fn write_item(
                         let ty = get_underlying_type(target.0, &ctx);
                         code!(
                             writer,
-                            pub const #name: #import!(&ty) = #import!(target.0);
+                            pub const #name: #ty = #import!(target.0);
                         );
                         return;
                     }
@@ -621,17 +792,69 @@ fn write_item(
 
             code!(
                 writer,
+                #doc_boilerplate!(name)
                 pub type #name = #import!(of);
             );
         }
-        SymbolBody::Redeclaration(ty) => {
+        SymbolBody::Redeclaration(method) => match method {
+            RedeclarationMethod::Type(ty) => {
+                code!(
+                    writer,
+                    pub type #name = #import!(ty);
+                );
+            }
+            RedeclarationMethod::Custom(fun) => {
+                fun(writer).unwrap();
+            }
+        },
+        // there is nothing to do with defines in rust, just skip them
+        SymbolBody::Define { body } => {
+            // FIXME burn this code down
+
+            let mut code = String::new();
+            let mut chars = body.chars().peekable();
+
+            // remove comments
+            'outer: while let Some(next) = chars.next() {
+                match next {
+                    '/' => {
+                        if let Some('/') = chars.peek() {
+                            while let Some(next) = chars.next() {
+                                if next == '\n' {
+                                    break;
+                                }
+                            }
+                            continue 'outer;
+                        }
+                    }
+                    _ => {}
+                }
+                code.push(next);
+            }
+
+            // String::remove_matches is unstable so this is what you get
+            code = code.replace("#define", "");
+            code = code.replace(name.resolve_original(), "");
+            code = code.replace(
+                "VK_MAKE_VIDEO_STD_VERSION",
+                "crate::extensions::video_common::make_video_std_version",
+            );
+            code = code.replace("VK_MAKE_API_VERSION", "crate::vk10::make_api_version");
+            code = code.replace("VK_API_VERSION_VARIANT", "crate::vk10::api_version_variant");
+            code = code.replace("VK_API_VERSION_MAJOR", "crate::vk10::api_version_major");
+            code = code.replace("VK_API_VERSION_MINOR", "crate::vk10::api_version_minor");
+            code = code.replace("VK_API_VERSION_PATCH", "crate::vk10::api_version_patch");
+            code = code.replace(
+                "VK_HEADER_VERSION",
+                // the constant gets renamed and we need to know its new name
+                "VK_HEADER_VERSION".intern(ctx).resolve(),
+            );
+
             code!(
                 writer,
-                pub type #name = #import!(ty);
+                pub const #name: u32 = #code;
             );
         }
-        // there is nothing to do with defines in rust, just skip them
-        SymbolBody::Define { .. } => {}
         SymbolBody::Included { .. } => {
             unreachable!("[{}]", name);
         }
@@ -645,13 +868,13 @@ fn write_item(
             let raw = name.resolve_original();
             let handle = select!(
                 dispatchable,
-                "non_dispatchable_handle",
-                "dispatchable_handle"
+                "non_dispatchable_handle!",
+                "dispatchable_handle!"
             );
 
             code!(
                 writer,
-                #(handle)!(
+                #handle (
                     #name, #object_type, #string!(raw),
                     #cat!("\"[Vulkan Manual Page](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/", raw, ".html)\"")
                 );
@@ -670,7 +893,10 @@ fn write_item(
                     ctx,
                 )
             });
-            code!(writer, pub type #name = unsafe extern "system" #preamble;);
+            code!(writer, 
+                #doc_boilerplate!(name)
+                pub type #name = unsafe extern "system" #preamble;
+            );
         }
         SymbolBody::Struct { union, members } => {
             let keyword = match union {
@@ -679,19 +905,30 @@ fn write_item(
             };
             let members = merge_bitfield_members(&members, &ctx);
             let members = Separated::args(members.iter(), |w, &(name, ty)| {
-                code!(w, #name: #import!(ty));
+                code!(w, pub #name: #import!(ty));
                 Ok(())
             });
-            let copy = select!(derives.is_copy(name, ctx), ", Copy", "");
-            let eq = select!(derives.is_eq(name, ctx), ", PartialEq, Eq, Hash", "");
+            let copy = Cond(derives.is_copy(name, ctx), ", Copy");
+            let eq = Cond(derives.is_eq(name, ctx), ", PartialEq, Eq, Hash");
+            let zeroable = derives.is_zeroable(name, ctx);
 
             code!(
                 writer,
+                #doc_boilerplate!(name)
                 ##[derive(Clone #copy #eq)]
                 ##[repr(C)]
                 pub #keyword #name {
                     #members
                 }
+                #(Cond(zeroable, Fun(|w| {code!(w,
+                    impl Default for #name {
+                        fn default() -> Self {
+                            unsafe {
+                                std::mem::MaybeUninit::zeroed().assume_init()
+                            }
+                        }
+                    }
+                ); Ok(())} )))
             );
         }
         SymbolBody::Constant { val, .. } => {
@@ -704,65 +941,166 @@ fn write_item(
                     Literal(i) => code!(w, #i),
                     Expression(e) => code!(w, #e),
                     Symbol(s) => code!(w, #import!(*s)),
-                    String(s) => code!(w, #cat!("cstr!(\"", s, "\")")),
+                    String(s) => code!(w, #cstring!(s)),
                 }
                 Ok(())
             });
 
-            code!(writer, pub const #name: #import!(&ty) = #val;)
+            code!(writer, pub const #name: #ty = #val;)
         }
-        SymbolBody::Enum { ty, members, .. } => {
+        SymbolBody::Enum { ty, members, bitmask } => {
             let ty = get_underlying_type(*ty, &ctx);
 
             let eq = select!(derives.is_eq(name, ctx), ", Eq, Hash", "");
-            let default = select!(derives.is_default(name, ctx), ", Default", "");
 
             let supl = supplements.get(&name);
 
             code!(
                 writer,
-                ##[derive(Clone, Copy, PartialEq #eq #default)]
-                pub struct #name(#import!(&ty));
+                #doc_boilerplate!(name)
+                ##[derive(Clone, Copy, PartialEq #eq, Default)]
+                ##[repr(transparent)]
+                pub struct #name(pub #ty);
             );
-
-            // skip generating empty impl blocks
-            if members.is_empty() && supl.map(|v| v.is_empty()).unwrap_or(true) {
-                return;
-            }
 
             let member_iter = members.iter().map(|a| (name, a.0, &a.1));
             let supl_iter = supl
                 .into_iter()
                 .flatten()
-                .flat_map(|(ext, vec)| vec.iter().map(|a| (*ext, a.0, a.1)));
+                .filter(|a| a.applicable)
+                .flat_map(|a| a.variants.iter().map(|b| (a.source_extension, b.0, b.1)));
 
-            let chain = member_iter.chain(supl_iter);
-            // name is not a name of an extension, but we just need a filler UniqueStr which will never be printed to jumpstart this
+            let mut members = member_iter.chain(supl_iter).collect::<Vec<_>>();
+
+            let mut i = 0;
+            'a: while i < members.len() {
+                let mut j = i + 1;
+                'b: while j < members.len() {
+                    let a = &members[i];
+                    let b = &members[j];
+                    if a.1.eq_resolve(b.1) {
+                        match (&a.2, &b.2) {
+                            (_, ConstantValue::Symbol(to)) => {
+                                assert_eq!(*to, a.1);
+                                members.remove(j);
+                                continue 'a;
+                            }
+                            (ConstantValue::Symbol(to), _) => {
+                                assert_eq!(*to, b.1);
+                                members.remove(i);
+                                continue 'b;
+                            }
+                            (a_val, b_val) => {
+                                // multiple conditional <require> may be applicable and result
+                                // in duplicate variants, here we remove them
+                                // example: VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_PUSH_DESCRIPTORS_KHR
+                                if a_val == b_val {
+                                    members.remove(j);
+                                    continue 'a;
+                                } else {
+                                    unreachable!(
+                                        "Duplicates '{}' and '{}' should share a value!",
+                                        a.1.resolve_original(),
+                                        b.1.resolve_original()
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    j += 1;
+                }
+                i += 1;
+            }
+
+            // Vulkan enums allow for some variant to be an alias of another these are mostly used
+            // for backwards compatibility when some enum is promoted to core, the _KHR and such
+            // variants remain. Hoiwever if we are only generating the extensions which used to have
+            // these variants natively we may happen to not generate the core version that currently
+            // has the actual variants of which these are aliases. Thus we only "softly" no-generate
+            // these variants and here we look for aliases to softly removed ("not applicable")
+            // variants and if this happens we replace the alias to its supposed value
+            for (_, _, val) in &mut members {
+                'propagate: loop {
+                    match val {
+                        ConstantValue::Symbol(alias) => {
+                            if let Some(supl) = supl {
+                                for added in supl {
+                                    for &(name, other_val) in &added.variants {
+                                        if name == *alias {
+                                            if !added.applicable {
+                                                *val = other_val;
+                                                continue 'propagate;
+                                            } else {
+                                                break 'propagate;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => break,
+                    }
+
+                    break;
+                }
+            }
+
             let state = Cell::new(name);
-
-            let members = Separated::statements(chain, |w, (ext, name, val)| {
+            let variants = Iter(&members, |w, &(ext, name, val)| {
                 if state.get() != ext {
-                    write!(w, "// {ext}\n")?;
+                    write!(w, "/// {ext}\n").unwrap();
                     state.set(ext);
                 }
 
                 use ConstantValue::*;
                 match val {
-                    Bitpos(pos) => code!(w, pub const #name: Self = Self(1 << #pos)),
-                    Literal(val) => code!(w, pub const #name: Self = Self(#val)),
-                    Expression(str) => code!(w, pub const #name: Self = Self(#str)),
-                    Symbol(alias) => code!(w, pub const #name: Self = Self::#alias),
+                    Bitpos(pos) => code!(w, pub const #name: Self = Self(1 << #pos);),
+                    Literal(val) => code!(w, pub const #name: Self = Self(#val);),
+                    Expression(str) => code!(w, pub const #name: Self = Self(#str);),
+                    Symbol(alias) => code!(w, pub const #name: Self = Self::#alias;),
                     String(_) => unreachable!(),
                 }
-                Ok(())
             });
-
-            code!(
-                writer,
-                impl #name {
-                    #members
+            
+            if !members.is_empty() {
+                code!(
+                    writer,
+                    impl #name {
+                        #variants
+                    }
+                );
+            }
+            
+            let variants = Separated::display(members.iter().filter(|m| !matches!(m.2, ConstantValue::Symbol(_))).map(|m| m.1), ","); 
+            if *bitmask {
+                let mut all = 0;
+                for &(_, _, val) in &members {
+                    match val {
+                        &ConstantValue::Bitpos(v) => all |= 1 << v,
+                        &ConstantValue::Literal(v) => all |= v,
+                        ConstantValue::Expression(_) => unreachable!(),
+                        ConstantValue::Symbol(_) => {},
+                        ConstantValue::String(_) => {},
+                    }
                 }
-            );
+                let all = Fun(|w| {
+                    write!(w, "0x{:x}", all)
+                });
+
+                code!(
+                    writer,
+                    bitflags_impl!{
+                        #name: #ty, #all, #variants
+                    }
+                )
+            } else {
+                code!(
+                    writer,
+                    enum_impl!{
+                        #name: #ty, #variants
+                    }
+                )
+            }
         }
         SymbolBody::Command {
             return_type,
@@ -803,8 +1141,9 @@ fn fmt_global_command(
     code!(
         writer,
         ##[cfg(feature = "global_commands")]
+        #doc_boilerplate!(name)
         pub unsafe #preamble {
-            (crate::tables::#table.#fptr_name.unwrap())(
+            (crate::loader::tables::#table.#fptr_name.unwrap())(
                 #params
             )
         }
@@ -856,7 +1195,7 @@ pub fn is_std_type(ty: UniqueStr, ctx: &Context) -> bool {
 
 fn apply_renames(
     symbols: &[(usize, u32)],
-    added_variants: &HashMap<UniqueStr, Vec<(UniqueStr, Vec<(UniqueStr, &ConstantValue)>)>>,
+    added_variants: &HashMap<UniqueStr, Vec<AddedVariants>>,
     ctx: &Context,
 ) {
     let renames = &[
@@ -872,6 +1211,8 @@ fn apply_renames(
         ("size_t", "usize"),
         // avoid conflicts
         ("type", "kind"),
+        // the normal renaming makes it into "common" which is confusing
+        ("vulkan_video_codecs_common", "video_common"),
     ];
 
     for &(from, to) in renames {
@@ -882,10 +1223,7 @@ fn apply_renames(
 
     for feature in &ctx.reg.features {
         buf.clear();
-        buf.push_str("vk");
-        buf.push_str(feature.number.resolve());
-        buf.retain(|c| c != '.');
-
+        write!(buf, "vk{}{}", feature.major, feature.minor).unwrap();
         feature.name.rename(buf.intern(ctx));
     }
 
@@ -903,7 +1241,7 @@ fn apply_renames(
         }
 
         buf.clear();
-        buf.push_str(stripped.unwrap());
+        buf.push_str(stripped.unwrap_or(name));
         buf.make_ascii_lowercase();
 
         extension.name.rename(buf.intern(ctx));
@@ -938,6 +1276,27 @@ fn apply_renames(
         }
     }
 
+    // collect all enums that alias a given other enum
+    let mut enum_aliases: HashMap<UniqueStr, Vec<UniqueStr>> = HashMap::new();
+    for &(i, _) in symbols {
+        let &Symbol(name, ref body) = &ctx.reg.symbols[i];
+
+        match body {
+            &SymbolBody::Alias(of) => {
+                if !is_std_type(of, &ctx) {
+                    let (target_name, body) = resolve_alias(of, &ctx);
+                    match body {
+                        SymbolBody::Alias { .. } => {
+                            enum_aliases.entry(target_name).or_default().push(name);
+                        }
+                        _ => {}
+                    }
+                };
+            }
+            _ => {}
+        }
+    }
+
     for &(i, _) in symbols {
         let &Symbol(name, ref body) = &ctx.reg.symbols[i];
 
@@ -955,9 +1314,30 @@ fn apply_renames(
                 };
             }
             SymbolBody::Enum { members, .. } => {
+                let aliases = enum_aliases.get(&name);
+                let prefixes = aliases.into_iter().flatten().map(|s| CamelCaseSplit::new(s.resolve()).last().unwrap())
+                .filter(|&s| {
+                    is_tag_name(s)}
+                ).collect::<Vec<_>>();
+
                 for &(member_name, ..) in members {
-                    make_enum_member_rusty(name, member_name, true, &mut buf);
-                    member_name.rename(buf.intern(&ctx));
+                    make_enum_member_rusty(
+                        name.resolve_original(),
+                        member_name.resolve_original(),
+                        true,
+                        &mut buf,
+                    );
+
+                    let mut stripped = None;
+                    for &prefix in &prefixes {
+                        if let Some(strip) = buf.strip_suffix(prefix) {
+                            stripped = Some(strip);
+                            break;
+                        }
+                    }
+
+                    let result = stripped.unwrap_or(&buf);
+                    member_name.rename(result.intern(&ctx));
                 }
             }
             SymbolBody::Struct { members, .. } => {
@@ -988,14 +1368,44 @@ fn apply_renames(
         }
     }
 
-    for (enum_name, ext_variants) in added_variants {
-        for (_, variants) in ext_variants {
-            for &(name, _) in variants {
-                make_enum_member_rusty(*enum_name, name, true, &mut buf);
+    for (enum_name, added) in added_variants {
+        for variants in added {
+            if !variants.applicable {
+                continue;
+            }
+
+            // can't do this, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR creates ambiguity
+            // // for example VK_KHR_push_descriptor
+            // let tag = variants.source_extension.resolve_original().split('_').nth(1).unwrap();
+            // let tag = if is_tag_name(tag) {
+            //     Some(tag)
+            // } else {
+            //     None
+            // };
+            
+            for &(name, _) in &variants.variants {
+                make_enum_member_rusty(
+                    enum_name.resolve_original(),
+                    name.resolve_original(),
+                    true,
+                    &mut buf,
+                );
+
+                // let result = tag.and_then(|t| buf.strip_suffix(t).map(|s| s.trim_end_matches('_')) ).unwrap_or(&buf);
                 name.rename(buf.intern(&ctx));
             }
         }
     }
+}
+
+fn is_tag_name(s: &str) -> bool {
+    switch!(
+        s;
+        "KHR", "EXT", "NV", "AMD", "VALVE", "IMG", "AMDX", "ARM", "FSL", "BRCM", "NXP", "NVX", "VIV", "VSI", "KDAB", "ANDROID", "CHROMIUM",
+        "FUCHSIA", "GGP", "GOOGLE", "QCOM", "LUNARG", "NZXT", "SAMSUNG", "SEC", "TIZEN", "RENDERDOC", "NN", "MVK", 
+        "KHX", "MESA", "INTEL", "HUAWEI", "QNX", "JUICE", "FB", "RASTERGRID" => true;
+        @ false
+    )
 }
 
 // essentially allows matching against runtime values
@@ -1075,7 +1485,7 @@ fn merge_bitfield_members<'a>(
 
             let s = &ctx.strings;
             let underlying = get_underlying_type(basetype, ctx)
-                .try_only_basetype()
+                .try_basetype()
                 .unwrap();
             let type_bits = switch!(underlying;
                 s.uint8_t,  s.int8_t => 8;
@@ -1116,13 +1526,37 @@ fn resolve_alias<'a>(alias: UniqueStr, reg: &'a Registry) -> (UniqueStr, &'a Sym
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum UnderlyingType {
+    Basetype(UniqueStr),
+    CString,
+}
+
+impl UnderlyingType {
+    pub fn try_basetype(&self) -> Option<UniqueStr> {
+        match self {
+            UnderlyingType::Basetype(b) => Some(*b),
+            UnderlyingType::CString => None,
+        }
+    }
+}
+
+impl ExtendedFormat for UnderlyingType {
+    fn efmt(self, writer: &mut SectionWriter) -> std::fmt::Result {
+        match self {
+            UnderlyingType::Basetype(b) => import!(b).efmt(writer),
+            UnderlyingType::CString => write!(writer, "&std::ffi::CStr"),
+        }
+    }
+}
+
 // Get the underlying type of a symbol.
 // The difference between this and `resolve_alias()` is that this also jumps through "transparent" symbols, such as handles or constants.
-fn get_underlying_type(name: UniqueStr, ctx: &Context) -> Type {
+fn get_underlying_type(name: UniqueStr, ctx: &Context) -> UnderlyingType {
     let mut symbol = name;
     loop {
         if is_std_type(symbol, &ctx) {
-            return Type::from_only_basetype(symbol);
+            return UnderlyingType::Basetype(symbol);
         }
 
         let top = ctx.get_symbol(symbol).unwrap();
@@ -1137,25 +1571,21 @@ fn get_underlying_type(name: UniqueStr, ctx: &Context) -> Type {
                     match val {
                         ConstantValue::Bitpos(_) => unreachable!(),
                         ConstantValue::Literal(_) | ConstantValue::Expression(_) => {
-                            return Type::from_only_basetype(ctx.strings.uint32_t)
+                            return UnderlyingType::Basetype(ctx.strings.uint32_t)
                         }
                         ConstantValue::Symbol(s) => symbol = *s,
-                        // FIXME avoid allocating?
-                        // this function returns either just a basetype or a cstrings we could
-                        // return a &Type of the cstring but then we can't return the quite
-                        // arbitrary basetypes which have to be constructed in this scope this could
-                        // be solved by providing the function with a mutable reference to some
-                        // scratch but would be quite ugly
-                        ConstantValue::String(_) => return ctx.types.cstring.clone(),
+                        ConstantValue::String(_) => return UnderlyingType::CString,
                     }
                 }
             }
+            // really the only macros that are left are version constants so this is good enough for now
+            SymbolBody::Define { .. } => return UnderlyingType::Basetype(ctx.strings.uint32_t),
             SymbolBody::Redeclaration(_)
             | SymbolBody::Basetype { .. }
             | SymbolBody::Included { .. }
             | SymbolBody::Struct { .. }
-            | SymbolBody::Funcpointer { .. } => return Type::from_only_basetype(symbol),
-            SymbolBody::Command { .. } | SymbolBody::Define { .. } => unreachable!(),
+            | SymbolBody::Funcpointer { .. } => return UnderlyingType::Basetype(symbol),
+            SymbolBody::Command { .. } => unreachable!(),
         }
     }
 }
@@ -1216,8 +1646,8 @@ fn camel_to_snake(str: &str, out: &mut String) {
 //  VK_DEBUG_REPORT_INFORMATION_BIT_EXT -> VK DEBUG REPORT INFORMATION BIT EXT
 // => INFORMATION BIT
 fn make_enum_member_rusty(
-    enum_name: UniqueStr,
-    member_name: UniqueStr,
+    enum_name: &str,
+    member_name: &str,
     constant_syntax: bool,
     out: &mut String,
 ) {
@@ -1251,16 +1681,25 @@ fn make_enum_member_rusty(
     // workaround for identifiers starting with a digit, see above
     let mut prev_char = None;
 
-    let enum_str = enum_name.resolve_original();
-    let member_str = member_name.resolve_original();
-
     // we skip "Flags" as they are part of the enum boilerplate but don't occur in the member, see above
-    let mut enum_chunks = CamelCaseSplit::new(enum_str)
+    let mut enum_chunks = CamelCaseSplit::new(enum_name)
         .filter(|s| *s != "Flags")
         .peekable();
 
-    // let's skip "BIT" as well as it's quite redundant
-    let mut member_chunks = member_str.split('_').filter(|s| *s != "BIT");
+    let mut member_chunks = member_name.split('_').filter(|&s| {
+        switch!(
+            s;
+            // let's skip "BIT" as well as it's quite redundant
+            "BIT" => false;
+            // // strip organization tags
+            // // FIXME use a hashset?
+            // "KHR", "EXT", "NV", "AMD", "VALVE", "MESA", "INTEL", "GOOGLE", "QCOM", "LUNARG",
+            // "IMG", "AMDX", "ARM", "FSL", "BRCM", "NXP", "NVX", "VIV", "VSI", "KDAB", "ANDROID",
+            // "CHROMIUM", "FUCHSIA", "GGP", "NZXT", "SAMSUNG", "SEC", "TIZEN", "RENDERDOC", "NN",
+            // "MVK", "KHX", "HUAWEI", "QNX", "JUICE", "FB", "RASTERGRID" => false;
+            @ true
+        )
+    });
 
     while let Some(mstr) = member_chunks.next() {
         let estr = enum_chunks.peek();
@@ -1348,10 +1787,6 @@ fn convert_type_in_fun_ctx(ty: &Type) -> Type {
 
 #[test]
 fn test_enum_rustify() {
-    use generator_lib::interner::Interner;
-
-    let reg = Interner::new();
-
     let data = &[
         (
             "VkDebugReportFlagsEXT",
@@ -1383,13 +1818,16 @@ fn test_enum_rustify() {
             "E16_INVOCATIONS_PER_PIXEL",
             "E16InvocationsPerPixel",
         ),
+        (
+            "VkStructureType",
+            "VK_STRUCTURE_TYPE_APPLICATION_INFO",
+            "APPLICATION_INFO",
+            "ApplicationInfo",
+        ),
     ];
 
     let mut buf = String::new();
     for &(enum_name, member_name, const_expect, normal_expect) in data {
-        let enum_name = enum_name.intern(&reg);
-        let member_name = member_name.intern(&reg);
-
         make_enum_member_rusty(enum_name, member_name, true, &mut buf);
         assert_eq!(const_expect, buf);
 

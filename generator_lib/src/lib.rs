@@ -8,6 +8,7 @@ use std::{
 };
 
 use configuration::GenConfig;
+use foreach_uniquestr::ForeachUniquestr;
 use interner::{Intern, Interner, UniqueStr};
 use roxmltree::Node;
 use type_declaration::{parse_type_decl, Type};
@@ -15,6 +16,7 @@ use type_declaration::{parse_type_decl, Type};
 pub extern crate smallvec;
 
 pub mod configuration;
+pub mod foreach_uniquestr;
 pub mod interner;
 pub mod type_declaration;
 
@@ -34,13 +36,28 @@ pub enum SymbolKind {
     Command,
 }
 
+#[derive(Clone)]
+pub enum RedeclarationMethod {
+    Type(Type),
+    Custom(fn(&mut dyn std::fmt::Write) -> std::fmt::Result),
+}
+
+impl Debug for RedeclarationMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Type(arg0) => f.debug_tuple("Type").field(arg0).finish(),
+            Self::Custom(_) => f.debug_tuple("Custom").field(&"opaque fn").finish(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Symbol(pub UniqueStr, pub SymbolBody);
 
 #[derive(Debug, Clone)]
 pub enum SymbolBody {
     Alias(UniqueStr),
-    Redeclaration(Type),
+    Redeclaration(RedeclarationMethod),
     Included {
         header: UniqueStr,
     },
@@ -88,10 +105,20 @@ pub struct StructMember {
 pub struct Feature {
     pub name: UniqueStr,
     pub api: Vec<UniqueStr>,
-    pub number: UniqueStr,
+    pub major: u8,
+    pub minor: u8,
     pub sortorder: Option<u32>,
     pub protect: Option<UniqueStr>,
     pub children: Vec<FeatureExtensionItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtensionKind {
+    Disabled,
+    Instance,
+    Device,
+    /// the "extension" vulkan_video_codecs_common gets this
+    None,
 }
 
 // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html#_attributes_of_extension_tags
@@ -103,7 +130,7 @@ pub struct Extension {
     pub author: Option<String>,
     pub contact: Option<String>,
 
-    pub ext_type: Option<UniqueStr>,
+    pub kind: ExtensionKind,
     pub requires: Vec<UniqueStr>,
     pub requires_core: Option<UniqueStr>,
     pub protect: Option<UniqueStr>,
@@ -205,7 +232,7 @@ pub enum FeatureExtensionItem {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ConstantValue {
     Bitpos(u32),
     Literal(i64),
@@ -322,28 +349,7 @@ impl Registry {
             flag_bits_to_flags: Default::default(),
         }
     }
-    pub fn get_symbol_index(&self, mut name: UniqueStr) -> Option<u32> {
-        // (this is kind of an odd place to put this?)
-        // QUIRK, we have some structs like this:
-        // https://github.com/KhronosGroup/Vulkan-Docs/issues/30
-        //   struct VkSurfaceCapabilitiesKHR {
-        //     supportedTransforms: VkSurfaceTransformFlagsKHR,
-        //     currentTransform: VkSurfaceTransformFlagBitsKHR,
-        //     ...
-        //   }
-        // Which use both the Flags and FlagBits symbols, while this is supported by vulkan,
-        // it is rare and makes the generator unhappy. Erupt in this case emits both of
-        // these versions, as opposed to usually just emitting the Flags where possible.
-        // I think that since this is so rare it's fine to merge these back to just Flags,
-        // the programmer will have to be aware that some bitfields are supposed to have only one bit set.
-        // I would like to note that the fact that Erupt uses the `struct FlagBits(integer)`
-        // pattern is rather unideal in these cases where we would really only like to
-        // exhaustively match on the different bits. Though this would neccesitate gathering
-        // all the variant definition into one `enum` declaration.
-        if let Some((actual, _)) = self.flag_bits_to_flags(name) {
-            name = actual;
-        }
-
+    pub fn get_symbol_index(&self, name: UniqueStr) -> Option<u32> {
         let &(index, ty) = self.item_map.get(&name)?;
         if ty != ItemKind::Symbol {
             return None;
@@ -463,8 +469,15 @@ impl Registry {
     pub fn get_item_entry(&self, name: UniqueStr) -> Option<&(u32, ItemKind)> {
         self.item_map.get(&name)
     }
-    pub fn flag_bits_to_flags(&self, name: UniqueStr) -> Option<(UniqueStr, UniqueStr)> {
-        self.flag_bits_to_flags.get(&name).cloned()
+    pub fn finalize(&mut self) {
+        let mut fun = |str: &mut UniqueStr| {
+            if let Some((flags, _)) = self.flag_bits_to_flags.get(&*str) {
+                *str = *flags;
+            }
+        };
+        self.symbols.foreach(&mut fun);
+        self.features.foreach(&mut fun);
+        self.extensions.foreach(&mut fun);
     }
 }
 
@@ -1007,7 +1020,8 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConf
                         // see the comment in the match case for <types category="bitmask">
 
                         if bitmask {
-                            if let Some((flags_name, flags_ty)) = reg.flag_bits_to_flags(name) {
+                            if let Some(&(flags_name, flags_ty)) = reg.flag_bits_to_flags.get(&name)
+                            {
                                 name = flags_name;
                                 ty = Some(flags_ty);
                             } else {
@@ -1115,11 +1129,14 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConf
                     continue;
                 }
 
+                let mut number = n.get("number").split('.');
+
                 let children = convert_section_children(n, None, conf, reg);
                 reg.add_feature(Feature {
                     name: n.intern("name", reg),
                     api: parse_comma_separated(n.attribute("api"), reg),
-                    number: n.intern("number", reg),
+                    major: number.next().unwrap().parse().unwrap(),
+                    minor: number.next().unwrap().parse().unwrap(),
                     sortorder: n.attribute("sortorder").map(|s| s.parse().unwrap()),
                     protect: n.attribute("protect").map(|s| s.intern(reg)),
                     children,
@@ -1148,6 +1165,23 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConf
                     let extnumber = e.attribute("number").map(|s| s.parse().unwrap());
                     let children = convert_section_children(e, extnumber, conf, reg);
 
+                    let mut supported = Vec::new();
+                    let kind = loop {
+                        if let Some(s) = e.attribute("supported") {
+                            if s == "disabled" {
+                                break ExtensionKind::Disabled;
+                            } else {
+                                supported = parse_comma_separated(Some(s), &reg);
+                            }
+                        }
+
+                        match e.attribute("type") {
+                            Some("instance") => break ExtensionKind::Instance,
+                            Some("device") => break ExtensionKind::Device,
+                            _ => break ExtensionKind::None,
+                        };
+                    };
+
                     reg.add_extension(Extension {
                         name,
                         // video.xml does not have this number yay!
@@ -1155,12 +1189,12 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConf
                         sortorder: e.attribute("sortorder").map(|s| s.parse().unwrap()),
                         author: e.attribute("author").map(|s| s.to_owned()),
                         contact: e.attribute("contact").map(|s| s.to_owned()),
-                        ext_type: e.attribute("type").map(|s| s.intern(reg)),
+                        kind,
                         requires: parse_comma_separated(e.attribute("requires"), reg),
                         requires_core: e.attribute("requiresCore").map(|s| s.intern(reg)),
                         protect,
                         platform: e.attribute("platform").map(|s| s.intern(reg)),
-                        supported: parse_comma_separated(e.attribute("supported"), reg),
+                        supported,
                         promotedto: e.attribute("promotedto").map(|s| s.intern(reg)),
                         deprecatedby: e.attribute("deprecatedby").map(|s| s.intern(reg)),
                         obsoletedby: e.attribute("obsoletedby").map(|s| s.intern(reg)),

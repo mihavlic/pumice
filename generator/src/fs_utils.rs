@@ -53,3 +53,16 @@ pub fn copy_dir_recursive<U: AsRef<Path>, V: AsRef<Path>>(
 
     Ok(())
 }
+
+pub fn delete_dir_children(path: impl AsRef<Path>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(path)? {
+        let path = entry?.path();
+
+        if path.is_dir() {
+            std::fs::remove_dir_all(path)?;
+        } else {
+            std::fs::remove_file(path)?;
+        }
+    }
+    Ok(())
+}
