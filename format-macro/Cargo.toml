@@ -1,5 +1,5 @@
 [package]
-name = "format_macro"
+name = "format-macro"
 version = "0.1.0"
 edition = "2021"
 

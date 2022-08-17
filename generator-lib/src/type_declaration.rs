@@ -1,8 +1,10 @@
 use std::{
+    borrow::{Borrow, Cow},
     fmt::{Debug, Display, Write},
     iter::Peekable,
     marker::PhantomData,
-    slice,
+    ops::{Deref, DerefMut},
+    slice::{self},
 };
 
 use smallvec::SmallVec;
@@ -108,9 +110,10 @@ impl<'a> Iterator for CLexer<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TyToken {
     BaseType(UniqueStr),
-    Ptr,
-    Array(Option<UniqueStr>),
     Const,
+    Ptr,
+    Ref,
+    Array(Option<UniqueStr>),
 }
 
 // in release mode the size of TyToken is 16 bytes, the maximum size
@@ -118,9 +121,87 @@ pub enum TyToken {
 #[derive(PartialEq, Eq, Clone)]
 pub struct Type(pub SmallVec<[TyToken; 1]>);
 
+impl Deref for Type {
+    type Target = TypeRef;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        TypeRef::from_slice(&self.0)
+    }
+}
+
+impl DerefMut for Type {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        TypeRef::from_slice_mut(&mut self.0)
+    }
+}
+
 impl Type {
     pub fn from_only_basetype(basetype: UniqueStr) -> Self {
         Self(smallvec::smallvec![TyToken::BaseType(basetype)])
+    }
+    // Since C is such a lovely language, some types have different semantics when they are used as a function argument.
+    // For example, consider:
+    //   void vkCmdSetBlendConstants(VkCommandBuffer commandBuffer, const float blendConstants[4]) {}
+    // the `const float [4]` actually means (in rust) `*const [float; 4]`
+    // this means that types in function arguments must be specially handled
+    pub fn make_c_function_arg(&mut self) {
+        if self
+            .as_slice()
+            .iter()
+            .find(|t| matches!(t, TyToken::Array(_)))
+            .is_none()
+        {
+            return;
+        }
+
+        let mut out = SmallVec::new();
+        let mut tokens = self.as_slice().iter().peekable();
+
+        while let Some(&token) = tokens.next() {
+            match token {
+                TyToken::Array(_) => {
+                    out.push(TyToken::Ptr);
+                    // if we have a situation like
+                    //   `const char[4]`
+                    //   Arr(4), Const, Ident(Char)
+                    // we would get
+                    //   Ptr, Arr(4), Const, Ident(Char)
+                    // yet we want
+                    //   Ptr, Const, Arr(4), Ident(Char)
+                    // which is obviously invalid, so if we see a Const when
+                    // emitting a pointer, we eat it from the Arr and re-emit it
+                    // after the pointer, after which the actual array is emitted
+                    if let Some(TyToken::Const) = tokens.peek() {
+                        out.push(TyToken::Const);
+                        tokens.next();
+                    }
+                }
+                _ => {}
+            }
+            out.push(token);
+        }
+
+        *self = Type(out);
+    }
+}
+
+#[repr(transparent)]
+#[derive(PartialEq, Eq)]
+pub struct TypeRef([TyToken]);
+
+impl TypeRef {
+    pub fn from_slice(slice: &[TyToken]) -> &TypeRef {
+        // sound because the type is transparent
+        unsafe { std::mem::transmute::<_, &TypeRef>(slice) }
+    }
+    pub fn as_slice(&self) -> &[TyToken] {
+        &self.0
+    }
+    pub fn from_slice_mut(slice: &mut [TyToken]) -> &mut TypeRef {
+        // sound because the type is transparent
+        unsafe { std::mem::transmute::<_, &mut TypeRef>(slice) }
     }
     pub fn try_only_basetype(&self) -> Option<UniqueStr> {
         // FIXME if it is valid to have only a const basetype then this function does not work
@@ -146,19 +227,131 @@ impl Type {
             unreachable!()
         }
     }
+    pub fn descend(&self) -> &TypeRef {
+        match &self.0[0] {
+            TyToken::Ptr | TyToken::Ref => {
+                if let Some(TyToken::Const) = self.0.get(1) {
+                    return TypeRef::from_slice(&self.0[2..]);
+                }
+            }
+            TyToken::Const => {
+                assert!(matches!(self.0.get(1), Some(TyToken::BaseType(_))));
+                // all is well, pass and strip the const
+            }
+            TyToken::BaseType(_) => {
+                // cannot descend further
+                return &self;
+            }
+            _ => {}
+        }
+        TypeRef::from_slice(&self.0[1..])
+    }
+    pub fn first(&self) -> &TyToken {
+        &self.0[0]
+    }
+    pub fn first_mut(&mut self) -> &mut TyToken {
+        &mut self.0[0]
+    }
+    pub fn ptr_to_ref(&self) -> Cow<'_, TypeRef> {
+        match self.first() {
+            &TyToken::Ptr => {
+                let mut owned = self.to_owned();
+                *owned.first_mut() = TyToken::Ref;
+                Cow::Owned(owned)
+            }
+            _ => Cow::Borrowed(&self),
+        }
+    }
+    pub fn strip_indirection(&self) -> &TypeRef {
+        match self.first() {
+            TyToken::Ptr | TyToken::Ref => self.descend(),
+            _ => &self,
+        }
+    }
+
+    // Since C is such a lovely language, some types have different semantics when they are used as a function argument.
+    // For example, consider:
+    //   void vkCmdSetBlendConstants(VkCommandBuffer commandBuffer, const float blendConstants[4]) {}
+    // the `const float [4]` actually means (in rust) `*const [float; 4]`
+    // this means that types in function arguments must be specially handled
+    pub fn to_c_function_arg(&self) -> Cow<'_, TypeRef> {
+        if self
+            .as_slice()
+            .iter()
+            .find(|t| matches!(t, TyToken::Array(_)))
+            .is_none()
+        {
+            return Cow::Borrowed(self);
+        }
+
+        let mut out = SmallVec::new();
+        let mut tokens = self.as_slice().iter().peekable();
+
+        while let Some(&token) = tokens.next() {
+            match token {
+                TyToken::Array(_) => {
+                    out.push(TyToken::Ptr);
+                    // if we have a situation like
+                    //   `const char[4]`
+                    //   Arr(4), Const, Ident(Char)
+                    // we would get
+                    //   Ptr, Arr(4), Const, Ident(Char)
+                    // yet we want
+                    //   Ptr, Const, Arr(4), Ident(Char)
+                    // which is obviously invalid, so if we see a Const when
+                    // emitting a pointer, we eat it from the Arr and re-emit it
+                    // after the pointer, after which the actual array is emitted
+                    if let Some(TyToken::Const) = tokens.peek() {
+                        out.push(TyToken::Const);
+                        tokens.next();
+                    }
+                }
+                _ => {}
+            }
+            out.push(token);
+        }
+
+        Cow::Owned(Type(out))
+    }
 }
 
-impl Display for Type {
+impl ToOwned for TypeRef {
+    type Owned = Type;
+
+    fn to_owned(&self) -> Self::Owned {
+        Type(SmallVec::from_slice(&self.0))
+    }
+}
+
+impl Borrow<TypeRef> for Type {
+    fn borrow(&self) -> &TypeRef {
+        &self
+    }
+}
+
+impl Display for TypeRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         fmt_type_tokens_simple(&self.0, f)
     }
 }
 
-impl Debug for Type {
+impl Debug for TypeRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_char('"')?;
         fmt_type_tokens_simple(&self.0, f)?;
         f.write_char('"')
+    }
+}
+
+impl Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        <TypeRef as Display>::fmt(self.deref(), f)
+    }
+}
+
+impl Debug for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        <TypeRef as Debug>::fmt(self.deref(), f)
     }
 }
 
@@ -177,10 +370,25 @@ pub fn fmt_type_tokens_impl<
     on_arr: &F2,
     f: &mut T,
 ) -> std::fmt::Result {
-    for (i, token) in tokens.iter().enumerate() {
+    let mut tokens_iter = tokens.iter().enumerate();
+    while let Some((i, token)) = tokens_iter.next() {
         match token {
             TyToken::BaseType(s) => {
                 on_ident(*s, f)?;
+            }
+            TyToken::Ref => {
+                f.write_char('&')?;
+
+                match tokens.get(i + 1) {
+                    Some(TyToken::Const) => {
+                        tokens_iter.next();
+                    }
+                    _ => {
+                        f.write_str("mut ")?;
+                    }
+                }
+
+                continue;
             }
             TyToken::Ptr => {
                 f.write_char('*')?;
@@ -188,6 +396,8 @@ pub fn fmt_type_tokens_impl<
                 if !matches!(tokens.get(i + 1), Some(&TyToken::Const)) {
                     f.write_str("mut ")?;
                 }
+
+                continue;
             }
             TyToken::Array(s) => {
                 f.write_char('[')?;
@@ -204,7 +414,7 @@ pub fn fmt_type_tokens_impl<
             }
         }
 
-        if i != tokens.len() - 1 && *token != TyToken::Ptr {
+        if i != tokens.len() - 1 {
             f.write_char(' ')?;
         }
     }
@@ -458,6 +668,18 @@ fn test_parse_type() {
                 None,
             ),
         ),
+        (
+            "const float blendConstants [4]",
+            (
+                Some("blendConstants"),
+                &[
+                    TyToken::Array(Some("4".intern(&int))),
+                    TyToken::Const,
+                    TyToken::BaseType("float".intern(&int)),
+                ],
+                None,
+            ),
+        ),
     ];
 
     for &(str, expect) in data {
@@ -479,6 +701,9 @@ fn test_type_display() {
 
     let int = Interner::new();
     let ty = Type(smallvec![
+        TyToken::Ref,
+        TyToken::Ref,
+        TyToken::Const,
         TyToken::Ptr,
         TyToken::Array(None),
         TyToken::Array(Some("1".intern(&int))),
@@ -490,6 +715,6 @@ fn test_type_display() {
     let display = format!("{}", ty);
     let debug = format!("{:?}", ty);
 
-    assert_eq!(display, "*mut [[*const char; 1]]");
-    assert_eq!(debug, "\"*mut [[*const char; 1]]\"");
+    assert_eq!(display, "&mut &*mut [[*const char; 1]]");
+    assert_eq!(debug, "\"&mut &*mut [[*const char; 1]]\"");
 }

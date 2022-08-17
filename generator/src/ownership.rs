@@ -71,8 +71,8 @@ fn section_used_symbols<'a>(
     conf: &'a GenConfig,
     reg: &'a Registry,
 ) -> impl Iterator<Item = UniqueStr> + 'a {
-    let children = match section.kind {
-        SectionKind::Feature(idx) => {
+    let children = match &section.kind {
+        &SectionKind::Feature(idx) => {
             let Feature {
                 name,
                 api,
@@ -87,7 +87,7 @@ fn section_used_symbols<'a>(
                 Some(children.as_slice())
             }
         }
-        SectionKind::Extension(idx) => {
+        &SectionKind::Extension(idx) => {
             let Extension {
                 name,
                 protect,
@@ -102,6 +102,7 @@ fn section_used_symbols<'a>(
                 Some(children.as_slice())
             }
         }
+        SectionKind::Path(_) => unreachable!("Custom-named sections are not currently supported."),
     };
     children
         .into_iter()

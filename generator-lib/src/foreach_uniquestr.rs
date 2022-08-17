@@ -1,6 +1,6 @@
 use crate::{
-    interner::UniqueStr, type_declaration::Type, CommandParameter, ConstantValue, Extension,
-    Feature, FeatureExtensionItem, InterfaceItem, RedeclarationMethod, StructMember, Symbol,
+    interner::UniqueStr, type_declaration::Type, ConstantValue, Declaration, DeclarationMetadata,
+    Extension, Feature, FeatureExtensionItem, InterfaceItem, RedeclarationMethod, Symbol,
     SymbolBody,
 };
 
@@ -61,17 +61,18 @@ impl ForeachUniquestr for ConstantValue {
     }
 }
 
-impl ForeachUniquestr for StructMember {
+impl ForeachUniquestr for DeclarationMetadata {
     fn foreach<F: FnMut(&mut UniqueStr)>(&mut self, fun: &mut F) {
-        self.name.foreach(fun);
-        self.ty.foreach(fun);
+        self.values.foreach(fun);
+        self.length.foreach(fun);
     }
 }
 
-impl ForeachUniquestr for CommandParameter {
+impl ForeachUniquestr for Declaration {
     fn foreach<F: FnMut(&mut UniqueStr)>(&mut self, fun: &mut F) {
         self.name.foreach(fun);
         self.ty.foreach(fun);
+        self.metadata.foreach(fun);
     }
 }
 

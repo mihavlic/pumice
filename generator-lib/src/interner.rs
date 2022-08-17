@@ -297,6 +297,29 @@ impl Interner {
     pub fn intern(&self, str: &str) -> UniqueStr {
         self.0.borrow_mut().intern(str)
     }
+    pub fn try_intern(&self, str: &str) -> Option<UniqueStr> {
+        let s = self.0.borrow_mut();
+        s.map.get(str).map(|&h| UniqueStr {
+            ptr: h,
+            #[cfg(debug_assertions)]
+            guard: s.guard,
+        })
+    }
+    pub fn apply_rename<'a>(&'a self, str: &'a str) -> &'a str {
+        self.0
+            .borrow_mut()
+            .map
+            .get(str)
+            .map(|&h| unsafe {
+                let header = h.as_ref();
+                let bytes = std::slice::from_raw_parts(
+                    header.current.as_ptr(),
+                    header.current_len as usize,
+                );
+                std::str::from_utf8_unchecked(bytes)
+            })
+            .unwrap_or(str)
+    }
     pub fn borrow(&self) -> Ref<StringInterner> {
         self.0.borrow()
     }
@@ -307,11 +330,15 @@ impl Interner {
 
 pub trait Intern {
     fn intern(&self, int: &Interner) -> UniqueStr;
+    fn try_intern(&self, int: &Interner) -> Option<UniqueStr>;
 }
 
 impl<T: AsRef<str>> Intern for T {
     fn intern(&self, int: &Interner) -> UniqueStr {
         int.intern(self.as_ref())
+    }
+    fn try_intern(&self, int: &Interner) -> Option<UniqueStr> {
+        int.try_intern(self.as_ref())
     }
 }
 

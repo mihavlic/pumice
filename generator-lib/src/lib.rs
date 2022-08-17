@@ -82,23 +82,53 @@ pub enum SymbolBody {
     },
     Struct {
         union: bool,
-        members: Vec<StructMember>,
+        members: Vec<Declaration>,
     },
     Constant {
         val: ConstantValue,
         ty: Option<UniqueStr>,
     },
     Command {
+        params: Vec<Declaration>,
         return_type: Type,
-        params: Vec<CommandParameter>,
     },
 }
 
 #[derive(Debug, Clone)]
-pub struct StructMember {
+pub enum Optional {
+    Always,
+    Sometimes,
+    Never,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeclarationMetadata {
+    /// Legal values the declaration can have
+    pub values: Vec<UniqueStr>,
+    /// A optional length the declaration can have
+    pub length: Vec<UniqueStr>,
+    /// Whether the declaration be null under certain circumstances
+    pub optional: Optional,
+}
+
+#[derive(Debug, Clone)]
+pub struct Declaration {
     pub name: UniqueStr,
     pub ty: Type,
     pub bitfield: Option<u8>,
+    pub metadata: DeclarationMetadata,
+}
+
+impl Declaration {
+    pub fn parse(str: &str, metadata: DeclarationMetadata, int: &Interner) -> Self {
+        let (name, ty, bitfield) = parse_type_decl(str, int);
+        Self {
+            name: name.unwrap(),
+            ty,
+            metadata,
+            bitfield,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -194,16 +224,6 @@ pub struct Format {
     pub components: Vec<Component>,
     pub planes: Vec<Plane>,
     pub spirvimageformats: Vec<UniqueStr>,
-}
-
-#[derive(Debug, Clone)]
-pub struct CommandParameter {
-    pub name: UniqueStr,
-    pub len: Option<String>,
-    pub alt_len: Option<String>,
-    pub optional: bool,
-    pub externsync: Option<String>,
-    pub ty: Type,
 }
 
 #[derive(Debug, Clone)]
@@ -871,11 +891,12 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConf
                                 buf.split('(')
                             };
 
-                            let return_type = {
+                            let mut return_type = {
                                 let first = brackets.next().unwrap();
                                 let clean = first.trim_start_matches("typedef");
                                 parse_type_decl(clean, reg).1
                             };
+                            return_type.make_c_function_arg();
 
                             // waste the second parenthesis
                             brackets.next().unwrap();
@@ -896,7 +917,8 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConf
                                     continue;
                                 }
 
-                                let (name, ty, _) = parse_type_decl(&arg, &reg);
+                                let (name, mut ty, _) = parse_type_decl(&arg, &reg);
+                                ty.make_c_function_arg();
                                 args.push((name.unwrap(), ty));
                             }
 
@@ -924,26 +946,39 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConf
                         category @ Some("struct" | "union") => {
                             let mut members = Vec::new();
 
-                            for member in node_iter_children(t) {
-                                match member.tag_name().name() {
+                            for m in node_iter_children(t) {
+                                match m.tag_name().name() {
                                     "member" => {}
                                     "comment" => continue,
                                     _ => unreachable!(),
                                 }
 
-                                if api_guard_skip(member, conf, reg) {
+                                if api_guard_skip(m, conf, reg) {
                                     continue;
                                 }
 
-                                buf.clear();
-                                node_collect_text(member, &mut buf);
-                                let (name, ty, bitfield) = parse_type_decl(&buf, reg);
+                                // stolen straight from erupt, sorry
+                                let optional = m
+                                    .attribute("optional")
+                                    .map(|v| match (v.contains("true"), v.contains("false")) {
+                                        (true, false) => Optional::Always,
+                                        (true, true) => Optional::Sometimes,
+                                        (false, _) => Optional::Never,
+                                    })
+                                    .unwrap_or(Optional::Never);
 
-                                members.push(StructMember {
-                                    name: name.unwrap(),
-                                    ty,
-                                    bitfield,
-                                });
+                                let metadata = DeclarationMetadata {
+                                    values: parse_comma_separated(m.attribute("values"), reg),
+                                    length: parse_comma_separated(
+                                        m.attribute("altlen").or_else(|| m.attribute("len")),
+                                        reg,
+                                    ),
+                                    optional,
+                                };
+
+                                buf.clear();
+                                node_collect_text(m, &mut buf);
+                                members.push(Declaration::parse(&buf, metadata, reg));
                             }
 
                             reg.add_symbol(
@@ -1073,7 +1108,8 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConf
                         buf.clear();
                         node_collect_text(proto, &mut buf);
 
-                        let (name, ty, _) = parse_type_decl(&buf, reg);
+                        let (name, mut ty, _) = parse_type_decl(&buf, reg);
+                        ty.make_c_function_arg();
                         (name.unwrap(), ty)
                     };
 
@@ -1089,22 +1125,30 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConf
                             continue;
                         }
 
+                        // stolen straight from erupt, sorry
+                        let optional = p
+                            .attribute("optional")
+                            .map(|v| match (v.contains("true"), v.contains("false")) {
+                                (true, false) => Optional::Always,
+                                (true, true) => Optional::Sometimes,
+                                (false, _) => Optional::Never,
+                            })
+                            .unwrap_or(Optional::Never);
+
+                        let metadata = DeclarationMetadata {
+                            values: parse_comma_separated(p.attribute("values"), reg),
+                            length: parse_comma_separated(
+                                p.attribute("altlen").or_else(|| p.attribute("len")),
+                                reg,
+                            ),
+                            optional,
+                        };
+
                         buf.clear();
                         node_collect_text(p, &mut buf);
-                        let (name, ty, _) = parse_type_decl(&buf, reg);
-
-                        params.push(CommandParameter {
-                            name: name.unwrap(),
-                            len: p.attribute("len").map(|s| s.to_owned()),
-                            alt_len: p.attribute("altlen").map(|s| s.to_owned()),
-                            // FIXME this can be a comma separated list, help
-                            optional: p
-                                .attribute("optional")
-                                .map(|s| s.starts_with("true"))
-                                .unwrap_or(false),
-                            externsync: p.attribute("externsync").map(|s| s.to_owned()),
-                            ty,
-                        })
+                        let mut decl = Declaration::parse(&buf, metadata, reg);
+                        decl.ty.make_c_function_arg();
+                        params.push(decl);
                     }
 
                     reg.add_symbol(

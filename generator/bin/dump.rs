@@ -5,7 +5,7 @@ use std::{
 };
 
 use dependencies::get_sections;
-use generator::Context;
+use generator::{Context, SectionFunctions};
 use generator_lib::{
     configuration::GenConfig, interner::Intern, process_registry_xml, Registry, Symbol,
 };
@@ -74,11 +74,8 @@ fn main() {
     );
 
     for &Symbol(name, _) in &ctx.reg.symbols {
-        let section = if let Some(section) = ctx.symbol_get_section(name) {
-            section.name.resolve()
-        } else {
-            "INVALID"
-        };
+        let section = ctx.symbol_get_section(name).map(|s| s.name());
+        let section = section.as_ref().map(|s| s.resolve()).unwrap_or("INVALID");
 
         writeln!(own_file, "{}: {}", name.resolve(), section).unwrap();
     }

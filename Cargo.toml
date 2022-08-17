@@ -1,10 +1,9 @@
 [workspace]
 members = [
     "generator",
-    "generator_lib",
-    "format_macro"
+    "generator-lib",
+    "format-macro"
 ]
 exclude = [
-    "slag",
-    # "bindings_template"
+    "codegen-template"
 ]

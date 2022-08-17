@@ -56,9 +56,12 @@ pub fn apply_workarounds(ctx: &mut Context) {
         Workaround::Replace(SymbolBody::Redeclaration(RedeclarationMethod::Custom(arg)))
     };
 
+    let slag_sys = ctx.strings.slag_sys;
+
     let ownership = |arg: &str| -> Workaround {
+        let name = arg.intern(ctx);
         Workaround::SetOwnership(
-            ctx.get_section_idx(arg.intern(ctx))
+            ctx.get_section_idx(slag_sys..name)
                 .unwrap_or_else(|| panic!("No such section '{}'", arg)),
         )
     };
@@ -214,7 +217,7 @@ pub fn apply_workarounds(ctx: &mut Context) {
         (alias("void"),             "IDirectFBSurface"),
         (alias("void"),             "_screen_context"),
         (alias("void"),             "_screen_window"),
-        // manually add ownership that is missing
+        // manually add ownership that is missing / symbols assumed to be imported from headers 
         (ownership("VK_KHR_xcb_surface"), "Display"),
         (ownership("VK_KHR_xcb_surface"), "VisualID"),
         (ownership("VK_KHR_xcb_surface"), "Window"),
@@ -238,7 +241,7 @@ pub fn apply_workarounds(ctx: &mut Context) {
         (ownership("VK_GGP_stream_descriptor_surface"), "GgpFrameToken"),
         (ownership("VK_QNX_screen_surface"), "_screen_context"),
         (ownership("VK_QNX_screen_surface"), "_screen_window"),
-        // Objective C stuff?
+        // apple stuff which is weird due to objective C
         (alias("void"),             "ANativeWindow"),
         (alias("void"),             "AHardwareBuffer"),
         (alias("void"),             "CAMetalLayer"),

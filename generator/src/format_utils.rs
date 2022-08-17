@@ -2,20 +2,21 @@ use std::{
     fmt::{Display, Write},
     fs::OpenOptions,
     iter,
+    ops::Deref,
     path::{Path, PathBuf},
     thread::panicking,
 };
 
 use generator_lib::{
     interner::UniqueStr,
-    type_declaration::{fmt_type_tokens_impl, Type},
+    type_declaration::{fmt_type_tokens_impl, Type, TypeRef},
 };
 
-use crate::{Context, Section};
+use crate::{Context, SectionFunctions, SectionIdent};
 
 pub struct SectionWriter<'a> {
+    pub section: SectionIdent,
     pub buf: String,
-    pub section: u32,
     pub ctx: &'a Context,
     pub path: PathBuf,
     pub ends_whitespace: bool,
@@ -32,10 +33,15 @@ impl<'a> std::fmt::Write for SectionWriter<'a> {
 }
 
 impl<'a> SectionWriter<'a> {
-    pub fn new(section: u32, path: impl AsRef<Path>, append: bool, ctx: &'a Context) -> Self {
+    pub fn new(
+        section: SectionIdent,
+        path: impl AsRef<Path>,
+        append: bool,
+        ctx: &'a Context,
+    ) -> Self {
         Self {
-            buf: String::new(),
             section,
+            buf: String::new(),
             ctx,
             path: path.as_ref().to_path_buf(),
             ends_whitespace: true,
@@ -43,6 +49,10 @@ impl<'a> SectionWriter<'a> {
         }
     }
     pub fn save(&self) -> std::io::Result<()> {
+        if self.buf.is_empty() {
+            return Ok(());
+        }
+
         let syn_file = syn::parse_file(&self.buf)
             .map_err(|e| {
                 std::fs::write(&self.path, &self.buf).unwrap();
@@ -54,13 +64,20 @@ impl<'a> SectionWriter<'a> {
             })
             .unwrap();
 
-        let mut file = if self.append {
+        let mut file = if self.append && self.path.exists() {
             OpenOptions::new()
                 .append(true)
                 .write(true)
-                .open(&self.path)?
+                .open(&self.path)
+                .map_err(|e| {
+                    eprintln!("Error opening '{}'", self.path.to_string_lossy());
+                    e
+                })?
         } else {
-            std::fs::File::create(&self.path)?
+            std::fs::File::create(&self.path).map_err(|e| {
+                eprintln!("Error creating '{}'", self.path.to_string_lossy());
+                e
+            })?
         };
 
         use std::io::Write;
@@ -84,44 +101,46 @@ impl<'a> Drop for SectionWriter<'a> {
 }
 
 pub trait ExtendedFormat {
-    fn efmt(self, writer: &mut SectionWriter) -> std::fmt::Result;
+    fn efmt(self, w: &mut SectionWriter) -> std::fmt::Result;
 }
 
 impl<T: Display> ExtendedFormat for T {
-    fn efmt(self, writer: &mut SectionWriter) -> std::fmt::Result {
-        write!(writer, "{}", self)
+    fn efmt(self, w: &mut SectionWriter) -> std::fmt::Result {
+        write!(w, "{}", self)
     }
 }
 
+#[derive(Clone)]
 pub struct Fun<T: FnOnce(&mut SectionWriter<'_>) -> std::fmt::Result>(pub T);
 
 impl<T: FnOnce(&mut SectionWriter<'_>) -> std::fmt::Result> ExtendedFormat for Fun<T> {
-    fn efmt(self, writer: &mut SectionWriter) -> std::fmt::Result {
-        (self.0)(writer)
+    fn efmt(self, w: &mut SectionWriter) -> std::fmt::Result {
+        (self.0)(w)
     }
 }
 
+#[derive(Clone)]
 pub struct Cond<T: ExtendedFormat>(pub bool, pub T);
 
 impl<T: ExtendedFormat> ExtendedFormat for Cond<T> {
-    fn efmt(self, writer: &mut SectionWriter<'_>) -> std::fmt::Result {
+    fn efmt(self, w: &mut SectionWriter<'_>) -> std::fmt::Result {
         let Cond(cond, t) = self;
         if cond {
-            t.efmt(writer)
+            t.efmt(w)
         } else {
             Ok(())
         }
     }
 }
 
-pub struct Iter<T, I: IntoIterator<Item = T>, F: Fn(&mut SectionWriter<'_>, T)>(pub I, pub F);
+pub struct Iter<T, I: IntoIterator<Item = T>, F: FnMut(&mut SectionWriter<'_>, T)>(pub I, pub F);
 
-impl<T, I: IntoIterator<Item = T>, F: Fn(&mut SectionWriter<'_>, T)> ExtendedFormat
+impl<T, I: IntoIterator<Item = T>, F: FnMut(&mut SectionWriter<'_>, T)> ExtendedFormat
     for Iter<T, I, F>
 {
-    fn efmt(self, writer: &mut SectionWriter<'_>) -> std::fmt::Result {
+    fn efmt(mut self, w: &mut SectionWriter<'_>) -> std::fmt::Result {
         for it in self.0 {
-            (self.1)(writer, it);
+            (self.1)(w, it);
         }
         Ok(())
     }
@@ -130,9 +149,9 @@ impl<T, I: IntoIterator<Item = T>, F: Fn(&mut SectionWriter<'_>, T)> ExtendedFor
 pub struct Concat<'a, const S: usize>(pub [&'a dyn Display; S]);
 
 impl<'a, const S: usize> ExtendedFormat for &Concat<'a, S> {
-    fn efmt(self, writer: &mut SectionWriter) -> std::fmt::Result {
+    fn efmt(self, w: &mut SectionWriter) -> std::fmt::Result {
         for it in self.0 {
-            write!(writer, "{}", it)?;
+            write!(w, "{}", it)?;
         }
         Ok(())
     }
@@ -148,6 +167,25 @@ pub struct Separated<
     sep: &'a str,
     // whether to add a separator after the last element
     sep_last: bool,
+}
+
+impl<
+        'a,
+        T: IntoIterator,
+        F: Fn(&mut SectionWriter<'_>, <T as IntoIterator>::Item) -> std::fmt::Result,
+    > Clone for Separated<'a, T, F>
+where
+    <T as IntoIterator>::IntoIter: Clone,
+    F: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            iter: self.iter.clone(),
+            fun: self.fun.clone(),
+            sep: self.sep.clone(),
+            sep_last: self.sep_last.clone(),
+        }
+    }
 }
 
 impl<
@@ -193,14 +231,14 @@ impl<
         F: Fn(&mut SectionWriter<'_>, <T as IntoIterator>::Item) -> std::fmt::Result,
     > ExtendedFormat for Separated<'a, T, F>
 {
-    fn efmt(self, writer: &mut SectionWriter) -> std::fmt::Result {
+    fn efmt(self, w: &mut SectionWriter) -> std::fmt::Result {
         let mut iter = self.iter.peekable();
 
         while let Some(next) = iter.next() {
-            (self.fun)(writer, next)?;
+            (self.fun)(w, next)?;
 
             if iter.peek().is_some() || self.sep_last {
-                writer.write_str(self.sep)?;
+                w.write_str(self.sep)?;
             }
         }
         Ok(())
@@ -259,7 +297,7 @@ macro_rules! doc_boilerplate {
     ($name:expr) => {
         $crate::format_utils::Fun(|w| {
             let original = $name.resolve_original();
-            writeln!(w,"/// [{}](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/{}.html)", original, original)?;
+            writeln!(w,"/// [Vulkan Manual](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/{}.html)", original)?;
             if !$name.is_original() {
                 writeln!(w,r#"#[doc(alias = "{}")]"#, original)?;
             }
@@ -271,23 +309,29 @@ macro_rules! doc_boilerplate {
 pub use doc_boilerplate;
 
 impl ExtendedFormat for Import<UniqueStr> {
-    fn efmt(self, writer: &mut SectionWriter) -> std::fmt::Result {
-        fmt_symbol_path(self.0, &writer.ctx, writer.section, &mut writer.buf)
+    fn efmt(self, w: &mut SectionWriter) -> std::fmt::Result {
+        fmt_symbol_path(self.0, &w.section, &w.ctx, &mut w.buf)
     }
 }
 
 impl ExtendedFormat for Import<&Type> {
     fn efmt(self, w: &mut SectionWriter) -> std::fmt::Result {
+        Import(self.0.deref()).efmt(w)
+    }
+}
+
+impl ExtendedFormat for Import<&TypeRef> {
+    fn efmt(self, w: &mut SectionWriter) -> std::fmt::Result {
         fmt_type_tokens_impl(
-            &self.0 .0,
-            &(|s, f: &mut String| fmt_symbol_path(s, &w.ctx, w.section, f)),
+            self.0.as_slice(),
+            &(|s, f: &mut String| fmt_symbol_path(s, &w.section, &w.ctx, f)),
             &(|s, f| {
                 // the array size is either a number literal or a constant potentially defined elsewhere
                 let str = s.resolve();
                 if str.parse::<u64>().is_ok() {
                     f.write_str(str)
                 } else {
-                    fmt_symbol_path(s, &w.ctx, w.section, f)?;
+                    fmt_symbol_path(s, &w.section, &w.ctx, f)?;
                     f.write_str(" as usize")
                 }
             }),
@@ -298,32 +342,36 @@ impl ExtendedFormat for Import<&Type> {
 
 fn fmt_symbol_path(
     name: UniqueStr,
+    current_section: &SectionIdent,
     ctx: &Context,
-    current_section: u32,
     f: &mut impl Write,
 ) -> std::fmt::Result {
     let s = &ctx.strings;
     crate::switch!(
         name;
         // these ffi types are imported into every module
-        s.void, s.int, s.char, s.float, s.double,
+        s.void, s.int, s.char, s.float, s.double, s.bool,
         // stdint.h types are always renamed to their rust-native counterparts
         s.uint8_t, s.uint16_t, s.uint32_t, s.uint64_t, s.int8_t, s.int16_t, s.int32_t, s.int64_t, s.size_t => {};
         s.usize, s.u8, s.u16, s.u32, s.u64, s.i8, s.i16, s.i32, s.i64 => unreachable!("Rust-native types shouldn't ever be used by our code!");
         @ {
-            let section_idx = ctx
-                .symbol_get_section_idx(name)
+            let section = ctx
+                .symbol_get_section(name)
                 .unwrap_or_else(|| panic!("{}", name));
 
-            if section_idx != current_section {
-                f.write_str("crate::")?;
+            let mut foreign = false;
 
-                let section = &ctx.sections[section_idx as usize];
-                let section_name = section.name.resolve();
+            if section.lib() != current_section.lib() {
+                write!(f, "{}::", section.lib())?;
+                foreign = true;
+            } else if section.name() != current_section.name() {
+                write!(f, "crate::")?;
+                foreign = true;
+            }
 
-                for path in section_get_path(section)
-                    .iter()
-                    .chain(iter::once(&section_name))
+            if foreign {
+                for path in section.path()
+                    .chain(iter::once(section.name().resolve()))
                 {
                     write!(f, "{}::", path)?;
                 }
@@ -332,18 +380,4 @@ fn fmt_symbol_path(
     );
 
     f.write_str(name.resolve())
-}
-
-pub fn section_get_path(section: &Section) -> &'static [&'static str] {
-    match section.kind {
-        crate::SectionKind::Feature(_) => &[],
-        crate::SectionKind::Extension(_) => &["extensions"],
-    }
-}
-
-pub fn section_get_path_str(section: &Section) -> &'static str {
-    match section.kind {
-        crate::SectionKind::Feature(_) => "",
-        crate::SectionKind::Extension(_) => "/extensions",
-    }
 }
