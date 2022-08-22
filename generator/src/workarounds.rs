@@ -56,12 +56,10 @@ pub fn apply_workarounds(ctx: &mut Context) {
         Workaround::Replace(SymbolBody::Redeclaration(RedeclarationMethod::Custom(arg)))
     };
 
-    let slag_sys = ctx.strings.slag_sys;
-
     let ownership = |arg: &str| -> Workaround {
         let name = arg.intern(ctx);
         Workaround::SetOwnership(
-            ctx.get_section_idx(slag_sys..name)
+            ctx.get_section_idx(ctx.strings.slag..name)
                 .unwrap_or_else(|| panic!("No such section '{}'", arg)),
         )
     };
@@ -262,7 +260,7 @@ pub fn apply_workarounds(ctx: &mut Context) {
         for (_, method) in sorted_get_all(*name, &workarounds).unwrap_or(&[]) {
             match method {
                 Workaround::Remove => {
-                    // borrowchk
+                    // borrowchk tricks
                     let name = *name;
                     ctx.remove_symbol(name);
                     continue 'outer;
@@ -280,6 +278,19 @@ pub fn apply_workarounds(ctx: &mut Context) {
 
         match body {
             SymbolBody::Enum { members, .. } => prune_leaf_vec(members, |(s, _)| *s, &workarounds),
+            SymbolBody::Alias(_) => {
+                // QUIRK when aliasing promoted variants to preserve backwards compatibility,
+                // both the *Flags and *FlagBits are aliased, since we remove *FlagBits
+                // we also need to remove this alias
+                if name.resolve().contains("FlagBits") {
+                    // borrowchk tricks
+                    let name = *name;
+                    ctx.remove_symbol(name);
+                    // mark this symbol as removed so that resolve_ownership can ignore it
+                    name.rename(ctx.strings.__RESERVED_INVALID_PLACEHOLDER);
+                    continue 'outer;
+                }
+            }
             _ => {}
         }
 

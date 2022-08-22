@@ -4,9 +4,9 @@ use generator_lib::{foreach_uniquestr::ForeachUniquestr, interner::UniqueStr, Sy
 
 use crate::{is_std_type, Context};
 
-pub fn undangle(symbols: &Vec<(usize, u32)>, ctx: &mut Context) {
+pub fn undangle(ctx: &mut Context) {
     let mut map: HashMap<UniqueStr, UniqueStr> = HashMap::new();
-    for &(symbol_idx, _) in symbols {
+    for &(symbol_idx, _) in &ctx.symbols {
         if let Symbol(name, SymbolBody::Alias(of)) = &mut ctx.reg.symbols[symbol_idx] {
             if let Some(to) = map.get(of) {
                 *of = *to;
@@ -41,7 +41,7 @@ pub fn undangle(symbols: &Vec<(usize, u32)>, ctx: &mut Context) {
         }
     }
 
-    for &(symbol_idx, _) in symbols {
+    for &(symbol_idx, _) in &ctx.symbols {
         ctx.reg.symbols[symbol_idx].foreach(&mut |str| {
             if let Some(to) = map.get(str) {
                 *str = *to;

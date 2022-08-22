@@ -257,6 +257,18 @@ macro_rules! import {
 pub use import;
 
 #[macro_export]
+macro_rules! import_str {
+    ($e:expr, $ctx:expr) => {
+        $crate::format_utils::Import(
+            $e.try_intern($ctx)
+                .unwrap_or_else(|| panic!("String '{}' is not in the interner!", $e)),
+        )
+    };
+}
+
+pub use import_str;
+
+#[macro_export]
 macro_rules! string {
     ($e:expr) => {
         $crate::format_utils::Concat([&'"', &$e, &'"'])
@@ -297,11 +309,10 @@ macro_rules! doc_boilerplate {
     ($name:expr) => {
         $crate::format_utils::Fun(|w| {
             let original = $name.resolve_original();
-            writeln!(w,"/// [Vulkan Manual](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/{}.html)", original)?;
             if !$name.is_original() {
                 writeln!(w,r#"#[doc(alias = "{}")]"#, original)?;
             }
-            Ok(())
+            writeln!(w,"/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/{}.html)", original)
         })
     };
 }
@@ -371,7 +382,7 @@ fn fmt_symbol_path(
 
             if foreign {
                 for path in section.path()
-                    .chain(iter::once(section.name().resolve()))
+                    .chain(iter::once(section.name().resolve()).filter(|s| s != &"crate"))
                 {
                     write!(f, "{}::", path)?;
                 }

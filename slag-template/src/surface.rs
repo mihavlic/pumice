@@ -3,7 +3,11 @@ use crate::{
     extensions::khr_surface,
     loader::tables::InstanceTable,
     util::{char, VulkanResult},
-    vk::{KHR_WAYLAND_SURFACE_EXTENSION_NAME, KHR_XLIB_SURFACE_EXTENSION_NAME, KHR_XCB_SURFACE_EXTENSION_NAME, KHR_ANDROID_SURFACE_EXTENSION_NAME, KHR_WIN32_SURFACE_EXTENSION_NAME, EXT_METAL_SURFACE_EXTENSION_NAME},
+    vk::{
+        EXT_METAL_SURFACE_EXTENSION_NAME, KHR_ANDROID_SURFACE_EXTENSION_NAME,
+        KHR_WAYLAND_SURFACE_EXTENSION_NAME, KHR_WIN32_SURFACE_EXTENSION_NAME,
+        KHR_XCB_SURFACE_EXTENSION_NAME, KHR_XLIB_SURFACE_EXTENSION_NAME,
+    },
     vk10, vkcall,
 };
 use khr_surface::KHR_SURFACE_EXTENSION_NAME;
@@ -32,7 +36,7 @@ pub unsafe fn create_surface(
 
             vkcall!(
                 surface,
-                table.create_wayland_surface_khr(
+                (table.create_wayland_surface_khr.unwrap())(
                     instance,
                     &create_info,
                     allocation_callbacks,
@@ -51,7 +55,7 @@ pub unsafe fn create_surface(
 
             vkcall!(
                 surface,
-                table.create_xlib_surface_khr(
+                (table.create_xlib_surface_khr.unwrap())(
                     instance,
                     &create_info,
                     allocation_callbacks,
@@ -70,7 +74,12 @@ pub unsafe fn create_surface(
 
             vkcall!(
                 surface,
-                table.create_xcb_surface_khr(instance, &create_info, allocation_callbacks, surface)
+                (table.create_xcb_surface_khr.unwrap())(
+                    instance,
+                    &create_info,
+                    allocation_callbacks,
+                    surface
+                )
             )
         }
         (Rwh::AndroidNdk(handle), _) => {
@@ -83,7 +92,7 @@ pub unsafe fn create_surface(
 
             vkcall!(
                 surface,
-                table.create_android_surface_khr(
+                (table.create_android_surface_khr.unwrap())(
                     instance,
                     &create_info,
                     allocation_callbacks,
@@ -102,7 +111,7 @@ pub unsafe fn create_surface(
 
             vkcall!(
                 surface,
-                table.create_win_32_surface_khr(
+                (table.create_win_32_surface_khr.unwrap())(
                     instance,
                     &create_info,
                     allocation_callbacks,
@@ -129,7 +138,7 @@ pub unsafe fn create_surface(
 
             vkcall!(
                 surface,
-                table.create_metal_surface_ext(
+                (table.create_metal_surface_ext.unwrap())(
                     instance,
                     &create_info,
                     allocation_callbacks,
@@ -156,7 +165,7 @@ pub unsafe fn create_surface(
 
             vkcall!(
                 surface,
-                table.create_metal_surface_ext(
+                (table.create_metal_surface_ext.unwrap())(
                     instance,
                     &create_info,
                     allocation_callbacks,
@@ -178,26 +187,14 @@ pub fn enumerate_required_extensions(
         KHR_SURFACE_EXTENSION_NAME,
         KHR_WAYLAND_SURFACE_EXTENSION_NAME,
     ];
-    const XLIB: &[&CStr] = &[
-        KHR_SURFACE_EXTENSION_NAME,
-        KHR_XLIB_SURFACE_EXTENSION_NAME
-    ];
-    const XCB: &[&CStr] = &[
-        KHR_SURFACE_EXTENSION_NAME,
-        KHR_XCB_SURFACE_EXTENSION_NAME
-    ];
+    const XLIB: &[&CStr] = &[KHR_SURFACE_EXTENSION_NAME, KHR_XLIB_SURFACE_EXTENSION_NAME];
+    const XCB: &[&CStr] = &[KHR_SURFACE_EXTENSION_NAME, KHR_XCB_SURFACE_EXTENSION_NAME];
     const ANDROID: &[&CStr] = &[
         KHR_SURFACE_EXTENSION_NAME,
-        KHR_ANDROID_SURFACE_EXTENSION_NAME
+        KHR_ANDROID_SURFACE_EXTENSION_NAME,
     ];
-    const WIN: &[&CStr] = &[
-        KHR_SURFACE_EXTENSION_NAME,
-        KHR_WIN32_SURFACE_EXTENSION_NAME
-    ];
-    const METAL: &[&CStr] = &[
-        KHR_SURFACE_EXTENSION_NAME,
-        EXT_METAL_SURFACE_EXTENSION_NAME
-    ];
+    const WIN: &[&CStr] = &[KHR_SURFACE_EXTENSION_NAME, KHR_WIN32_SURFACE_EXTENSION_NAME];
+    const METAL: &[&CStr] = &[KHR_SURFACE_EXTENSION_NAME, EXT_METAL_SURFACE_EXTENSION_NAME];
 
     let extensions = match window_handle.raw_window_handle() {
         RawWindowHandle::Wayland(_) => WAYLAND,

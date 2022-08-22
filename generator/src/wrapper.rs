@@ -1,14 +1,13 @@
 use generator_lib::{
     interner::{Interner, UniqueStr},
     type_declaration::{TyToken, Type, TypeRef},
-    Declaration, Optional, RedeclarationMethod, SymbolBody,
+    Declaration, Optional, SymbolBody,
 };
 
 use crate::{
-    cat, code, doc_boilerplate,
+    cat, code, doc_boilerplate, fmt_default_value, fmt_default_value_with_overlay,
     format_utils::{Cond, ExtendedFormat, Fun, Iter, SectionWriter, Separated},
-    get_command_kind, get_default_value, get_default_value_with_overlay, import, is_std_type,
-    CommandKind, Context,
+    import, is_std_type, try_ptr_target, CommandKind, Context,
 };
 
 use std::{cell::RefCell, fmt::Write};
@@ -43,8 +42,12 @@ enum ParameterRole<'a> {
     },
 }
 
-fn generate_list<'a>(parameters: &'a [Declaration], ctx: &Context) -> Vec<ParameterRole<'a>> {
-    let handle_type = get_handle_type(parameters, ctx);
+fn generate_list<'a>(
+    parameters: &'a [Declaration],
+    kind: CommandKind,
+    ctx: &Context,
+) -> Vec<ParameterRole<'a>> {
+    let handle_type = get_handle_type(kind, ctx);
 
     let mut kinds = vec![ParameterRole::None; parameters.len()];
     let mut passthrough = Vec::new();
@@ -62,35 +65,22 @@ fn generate_list<'a>(parameters: &'a [Declaration], ctx: &Context) -> Vec<Parame
                 continue;
             }
 
-            let void_ptr = if param.ty == ctx.types.void_ptr {
-                true
-            } else {
-                loop {
-                    match param.ty.as_slice() {
-                        &[TyToken::BaseType(basetype)] => {
-                            if let Some(SymbolBody::Redeclaration(RedeclarationMethod::Type(ty))) =
-                                ctx.get_symbol(basetype)
-                            {
-                                if let &[TyToken::Ptr, TyToken::BaseType(basetype)] = ty.as_slice()
-                                {
-                                    if basetype == ctx.strings.void {
-                                        break true;
-                                    }
-                                }
-                            }
+            let void_ptr = try_ptr_target(&param.ty, ctx)
+                .map(|ty| match ty.as_slice() {
+                    &[TyToken::BaseType(mut basetype)]
+                    | &[TyToken::Const, TyToken::BaseType(mut basetype)] => loop {
+                        if basetype == ctx.strings.void {
+                            break true;
                         }
-                        &[TyToken::Ptr, TyToken::BaseType(basetype)] => {
-                            if let Some(SymbolBody::Alias(of)) = ctx.get_symbol(basetype) {
-                                if *of == ctx.strings.void {
-                                    break true;
-                                }
-                            }
+                        if let Some(SymbolBody::Alias(of)) = ctx.get_symbol(basetype) {
+                            basetype = *of;
+                        } else {
+                            break false;
                         }
-                        _ => {}
-                    }
-                    break false;
-                }
-            };
+                    },
+                    _ => false,
+                })
+                .unwrap_or(false);
 
             match group {
                 // Apply `Handle` kind if it qualifies as a handle
@@ -187,18 +177,14 @@ fn generate_list<'a>(parameters: &'a [Declaration], ctx: &Context) -> Vec<Parame
                 },
                 _ => unreachable!(),
             }
-
-            // if param.name.resolve_original() == "pAllocator" {
-            //     println!("{:?}", param_kind);
-            // }
         }
     }
 
     kinds
 }
 
-pub fn get_handle_type(parameters: &[Declaration], ctx: &Context) -> Option<Type> {
-    match get_command_kind(parameters, ctx) {
+pub fn get_handle_type(kind: CommandKind, ctx: &Context) -> Option<Type> {
+    match kind {
         CommandKind::Entry => None,
         CommandKind::Instance => Some(Type::from_only_basetype(ctx.strings.VkInstance)),
         CommandKind::Device => Some(Type::from_only_basetype(ctx.strings.VkDevice)),
@@ -230,6 +216,7 @@ pub fn fmt_command_wrapper(
     w: &mut SectionWriter,
     function_name: UniqueStr,
     body: &SymbolBody,
+    kind: CommandKind,
     ctx: &Context,
 ) {
     #[derive(Clone, Copy, PartialEq)]
@@ -255,7 +242,7 @@ pub fn fmt_command_wrapper(
         return_type,
     } = body
     {
-        let kinds = generate_list(params, ctx);
+        let kinds = generate_list(params, kind, ctx);
 
         let extra_call_info = RefCell::new(None);
 
@@ -310,7 +297,10 @@ pub fn fmt_command_wrapper(
                     What::ReturnInit => {}
                     What::LengthInit => {}
                     What::Call => {
-                        let default = get_default_value(param, ctx);
+                        let default = Fun(|w| {
+                            fmt_default_value(w, &param, ctx);
+                            Ok(())
+                        });
                         code!(
                             w,
                             match #name {
@@ -334,7 +324,7 @@ pub fn fmt_command_wrapper(
                     What::Return => {}
                     What::ReturnInit => {}
                     What::LengthInit => {}
-                    What::Call => code!(w, self.handle(),),
+                    What::Call => code!(w, self.handle,),
                     What::ReturnValues => {}
                 },
                 ParameterRole::CStr => match state {
@@ -343,7 +333,10 @@ pub fn fmt_command_wrapper(
                     What::ReturnInit => {}
                     What::LengthInit => {}
                     What::Call => {
-                        let default = get_default_value(param, ctx);
+                        let default = Fun(|w| {
+                            fmt_default_value(w, &param, ctx);
+                            Ok(())
+                        });
                         code!(
                             w,
                             match #name {
@@ -354,11 +347,14 @@ pub fn fmt_command_wrapper(
                     }
                     What::ReturnValues => {}
                 },
-                ParameterRole::ValueWrittenTo { inner } => match state {
+                &ParameterRole::ValueWrittenTo { inner } => match state {
                     What::Params => {}
-                    What::Return => code!(w, #import!(*inner),),
+                    What::Return => code!(w, #import!(inner),),
                     What::ReturnInit => {
-                        let default = get_default_value_with_overlay(param, *inner, ctx);
+                        let default = Fun(|w| {
+                            fmt_default_value_with_overlay(w, &param, inner, ctx);
+                            Ok(())
+                        });
                         code!(
                             w,
                             let mut #name = #default;
@@ -369,7 +365,10 @@ pub fn fmt_command_wrapper(
                     What::ReturnValues => code!(w, #name,),
                 },
                 &ParameterRole::ArrayWrittenTo { inner, length } => {
-                    let default = get_default_value_with_overlay(param, inner, ctx);
+                    let default = Fun(|w| {
+                        fmt_default_value_with_overlay(w, &param, inner, ctx);
+                        Ok(())
+                    });
                     let len_path = len_paths(length.resolve(), ctx);
 
                     match state {
@@ -535,7 +534,10 @@ pub fn fmt_command_wrapper(
         });
         let extra_call = Fun(|w| {
             extra_call_info.borrow().as_ref().map(|info| {
-                let default = get_default_value_with_overlay(info.param, info.inner, ctx);
+                let default = Fun(|w| {
+                    fmt_default_value_with_overlay(w, info.param, info.inner, ctx);
+                    Ok(())
+                });
 
                 let length_index = info.length_index;
                 let array_indices = info.array_indices;
@@ -644,10 +646,10 @@ pub fn fmt_command_wrapper(
 
         code!(
             w,
-            #doc_boilerplate!(function_name)
             ##[track_caller]
+            #doc_boilerplate!(function_name)
             pub unsafe fn #function_name(&self, #function_arguments) #function_return {
-                let #function_name = (*self.table()).#function_name.unwrap();
+                let #function_name = (*self.table).#function_name.unwrap();
                 #extra_call
                 #length_init
                 #return_init

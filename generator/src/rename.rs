@@ -8,11 +8,7 @@ use generator_lib::{
 
 use crate::{is_std_type, resolve_alias, switch, AddedVariants, Context};
 
-pub fn apply_renames(
-    symbols: &[(usize, u32)],
-    added_variants: &HashMap<UniqueStr, Vec<AddedVariants>>,
-    ctx: &Context,
-) {
+pub fn apply_renames(added_variants: &HashMap<UniqueStr, Vec<AddedVariants>>, ctx: &Context) {
     let renames = &[
         // rust-native integer types
         ("uint8_t", "u8"),
@@ -62,7 +58,7 @@ pub fn apply_renames(
         extension.name.rename(buf.intern(ctx));
     }
 
-    'outer: for &(i, _) in symbols {
+    'outer: for &(i, _) in &ctx.symbols {
         let Symbol(name, _) = &ctx.reg.symbols[i];
 
         let str = name.resolve();
@@ -93,7 +89,7 @@ pub fn apply_renames(
 
     // collect all enums that alias a given other enum
     let mut enum_aliases: HashMap<UniqueStr, Vec<UniqueStr>> = HashMap::new();
-    for &(i, _) in symbols {
+    for &(i, _) in &ctx.symbols {
         let &Symbol(name, ref body) = &ctx.reg.symbols[i];
 
         match body {
@@ -112,7 +108,7 @@ pub fn apply_renames(
         }
     }
 
-    for &(i, _) in symbols {
+    for &(i, _) in &ctx.symbols {
         let &Symbol(name, ref body) = &ctx.reg.symbols[i];
 
         match body {

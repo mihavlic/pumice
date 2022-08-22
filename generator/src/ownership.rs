@@ -22,7 +22,10 @@ pub fn resolve_ownership(ctx: &mut Context) {
                 // QUIRK
                 //   types like uint8_t and such are removed from the registry as they are always replaced by references into the standard library
                 //   video.xml puts the name of its header which obviously is not a symbol in the <require> tag of its extension
-                if is_std_type(name, ctx) {
+                //   workaround.rs may mark deleted symbols by renaming them to the placeholder
+                if is_std_type(name, ctx)
+                    || name.eq_resolve(ctx.strings.__RESERVED_INVALID_PLACEHOLDER)
+                {
                     continue;
                 }
                 panic!("[{}] Unknown symbol.", name);

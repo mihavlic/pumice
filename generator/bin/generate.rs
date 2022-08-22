@@ -1,6 +1,7 @@
 use std::{collections::HashSet, env::args_os, fs::read_to_string};
 
 use dependencies::get_sections;
+
 use generator::{write_bindings, Context};
 use generator_lib::{configuration::GenConfig, interner::Intern, process_registry_xml, Registry};
 
@@ -37,7 +38,8 @@ fn main() {
             .expect("Expected a comma separated list of ascii identifiers for section selection.")
             .replace(
                 "@surface",
-                "VK_KHR_surface,
+                "\
+VK_KHR_surface,
 VK_KHR_xlib_surface,
 VK_KHR_xcb_surface,
 VK_KHR_wayland_surface,
@@ -73,7 +75,7 @@ VK_QNX_screen_surface,",
         protect: HashSet::new(),
     };
 
-    let ctx = Context::new(conf, reg);
+    let mut ctx = Context::new(conf, reg);
 
-    write_bindings(ctx, glue, out).unwrap();
+    write_bindings(&mut ctx, glue, out).unwrap();
 }

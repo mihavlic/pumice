@@ -73,7 +73,7 @@ pub fn broadcast_to_constituents(
 
     *cell = to;
 
-    match &ctx.symbols[index].1 {
+    match &ctx.reg.symbols[index].1 {
         SymbolBody::Alias(of) => broadcast_to_constituents(*of, symbol_overlay, to, ctx),
         SymbolBody::Redeclaration(method) => match method {
             RedeclarationMethod::Type(ty) => {
@@ -109,7 +109,7 @@ pub fn logical_and_constituents<
     symbol_overlay: &mut [Option<bool>],
     ctx: &Context,
 ) -> bool {
-    debug_assert!(symbol_overlay.len() >= ctx.symbols.len());
+    debug_assert!(symbol_overlay.len() >= ctx.reg.symbols.len());
 
     let index = if let Some(index) = ctx.get_symbol_index(name) {
         index as usize
@@ -121,7 +121,7 @@ pub fn logical_and_constituents<
         return computed;
     }
 
-    let symbol = &ctx.symbols[index];
+    let symbol = &ctx.reg.symbols[index];
     let fresh = match &symbol.1 {
         SymbolBody::Alias(of) => {
             logical_and_constituents(*of, on_leaf, on_type, symbol_overlay, ctx)

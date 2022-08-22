@@ -1,14 +1,16 @@
 [package]
-name = "slag-sys"
+name = "slag"
 version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["linked", "surface", "global_commands"]
+default = ["linked", "surface", "wrappers"]
 linked = []
 loaded = ["libloading"]
 surface = ["raw-window-handle"]
-global_commands = []
+global = []
+raw = []
+wrappers = []
 
 [dependencies]
 libloading = { version = "0.7", optional = true }
