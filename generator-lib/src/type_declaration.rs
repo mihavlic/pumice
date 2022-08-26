@@ -2,109 +2,328 @@ use std::{
     borrow::{Borrow, Cow},
     fmt::{Debug, Display, Write},
     iter::Peekable,
-    marker::PhantomData,
     ops::{Deref, DerefMut},
-    slice::{self},
 };
 
 use smallvec::SmallVec;
 
 use crate::{interner::UniqueStr, Intern, Interner};
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum NumberLiteral {
+    U32(u32),
+    I32(i32),
+    U64(u64),
+    I64(i64),
+    F32(f32),
+    F64(f64),
+    Usize(usize),
+    Isize(isize),
+}
+
+impl NumberLiteral {
+    #[track_caller]
+    pub fn get_integer(&self) -> i64 {
+        match *self {
+            // unsigned
+            NumberLiteral::U32(i) => TryInto::<i64>::try_into(i).unwrap(),
+            NumberLiteral::U64(i) => TryInto::<i64>::try_into(i).unwrap(),
+            NumberLiteral::Usize(i) => TryInto::<i64>::try_into(i).unwrap(),
+            // signed
+            NumberLiteral::I32(i) => TryInto::<i64>::try_into(i).unwrap(),
+            NumberLiteral::I64(i) => i,
+            NumberLiteral::Isize(i) => TryInto::<i64>::try_into(i).unwrap(),
+            // float, bleh
+            NumberLiteral::F32(_) | NumberLiteral::F64(_) => {
+                unreachable!("Arrays cannot be sized by a floating point value.")
+            }
+        }
+    }
+}
+
+impl Display for NumberLiteral {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NumberLiteral::U32(a) => Display::fmt(a, f),
+            NumberLiteral::I32(a) => Display::fmt(a, f),
+            NumberLiteral::U64(a) => Display::fmt(a, f),
+            NumberLiteral::I64(a) => Display::fmt(a, f),
+            NumberLiteral::F32(a) => Display::fmt(a, f),
+            NumberLiteral::F64(a) => Display::fmt(a, f),
+            NumberLiteral::Usize(a) => Display::fmt(a, f),
+            NumberLiteral::Isize(a) => Display::fmt(a, f),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Token<'a> {
-    Alphanumeric(&'a str),
-    Ptr,
+    Number(NumberLiteral),
+    Ident(&'a str),
+    Struct,
     Const,
     LBracket,
     RBracket,
     LParen,
     RParen,
+    LBrace,
+    RBrace,
     DoubleColon,
+    // operators
+    Tilde,
+    Exclamation,
+    Percent,
+    Caret,
+    Ampersand,
+    Star,
+    Slash,
+    Plus,
+    Minus,
+    // field acess
+    Dot,
+    Arrow,
+    // misc
+    Unknown(char),
+    End,
 }
 
-pub struct CLexer<'a> {
-    cur: *const u8,
-    end: *const u8,
-    ident: Option<*const u8>,
-    phantom: PhantomData<&'a ()>,
-}
+// "inspired" by https://github.com/gfx-rs/naga/blob/48e79388b506535d668df4f6c7be4e681812ab81/src/front/wgsl/lexer.rs#L8
+pub fn next_token(mut str: &str) -> (Token<'_>, &str) {
+    let mut chars = str.chars();
+    loop {
+        str = chars.as_str();
+        let cur = match chars.next() {
+            Some(c) => c,
+            None => return (Token::End, ""),
+        };
 
-impl<'a> CLexer<'a> {
-    pub fn new(str: &'a str) -> Self {
-        unsafe {
-            Self {
-                cur: str.as_ptr(),
-                end: str.as_ptr().add(str.len()),
-                ident: None,
-                phantom: PhantomData,
-            }
+        macro_rules! two_char_token {
+            ($($char:pat => $token:expr),+ ; $single:expr) => {
+                match chars.clone().next() {
+                    $(
+                        Some($char) => {
+                            chars.next();
+                            $token
+                        },
+                    )+
+                        _  => $single
+                }
+            };
         }
+
+        let tok = match cur {
+            '[' => Token::LBracket,
+            ']' => Token::RBracket,
+            '(' => Token::LParen,
+            ')' => Token::RParen,
+            '{' => Token::LBrace,
+            '}' => Token::RBrace,
+            ':' => Token::DoubleColon,
+            '~' => Token::Tilde,
+            '!' => Token::Exclamation,
+            '%' => Token::Percent,
+            '^' => Token::Caret,
+            '&' => Token::Ampersand,
+            '*' => Token::Star,
+            '/' => Token::Slash,
+            '+' => Token::Plus,
+            '-' => two_char_token!(
+                '>' => Token::Arrow
+                ; Token::Minus
+            ),
+            '.' => two_char_token!(
+                '0'..='9' => {
+                    let (number, next) = consume_number(str);
+                    return (Token::Number(number), next);
+                }
+                ; Token::Dot
+            ),
+            '0'..='9' => {
+                let (number, next) = consume_number(str);
+                return (Token::Number(number), next);
+            }
+            _ if is_blankspace(cur) => continue,
+            _ if is_identifier(cur) => {
+                let (ident, rest) = consume_any(str, is_identifier);
+                let tok = match ident {
+                    "const" => Token::Const,
+                    "struct" => Token::Struct,
+                    _ => Token::Ident(ident),
+                };
+                return (tok, rest);
+            }
+            _ => Token::Unknown(cur),
+        };
+
+        return (tok, chars.as_str());
     }
 }
 
-impl<'a> Iterator for CLexer<'a> {
-    type Item = Token<'a>;
+fn consume_any(input: &str, what: impl Fn(char) -> bool) -> (&str, &str) {
+    let pos = input.find(|c| !what(c)).unwrap_or(input.len());
+    input.split_at(pos)
+}
 
-    fn next(&mut self) -> Option<Self::Item> {
-        unsafe fn str_from_ptr_range(start: *const u8, end: *const u8) -> &'static str {
-            let bytes = slice::from_raw_parts(start, end.offset_from(start) as usize);
-            std::str::from_utf8_unchecked(bytes)
-        }
+fn is_blankspace(c: char) -> bool {
+    c.is_whitespace()
+}
 
-        let Self {
-            cur, end, ident, ..
-        } = self;
+fn is_identifier(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
 
-        loop {
-            unsafe {
-                if cur == end {
-                    return None;
+fn consume_number(str: &str) -> (NumberLiteral, &str) {
+    // https://en.cppreference.com/w/cpp/language/integer_literal
+    // https://stackoverflow.com/a/5026592
+    // 1.01
+    // .01
+    // 1
+    // 1.0F
+    // 1ULL
+
+    #[derive(PartialEq, Eq)]
+    enum State {
+        Start,
+        Hexadecimal,
+        Decimal,
+        Fractional,
+        Suffix,
+    }
+
+    let mut state = State::Start;
+    let mut chars = str.char_indices();
+
+    let mut is_hexadecimal = false;
+    let mut is_fractional = false;
+    let mut suffix_start = None;
+    let mut string_end = None;
+    while let Some((i, c)) = chars.next() {
+        match state {
+            State::Start => match c {
+                '0' if matches!(chars.clone().next().map(|(_, c)| c), Some('x' | 'X')) => {
+                    chars.next();
+                    is_hexadecimal = true;
+                    state = State::Hexadecimal;
                 }
-
-                let char = str_from_ptr_range(*cur, *end)
-                    .chars()
-                    .next()
-                    .unwrap_unchecked();
-                let next = cur.add(char.len_utf8());
-                let alphanumeric = char.is_ascii_alphanumeric() || char == '_';
-
-                if alphanumeric {
-                    if ident.is_none() {
-                        // this character is potentially the start of a multi-character token
-                        *ident = Some(*cur);
-                    }
-                    *cur = next;
+                '0'..='9' => state = State::Decimal,
+                '.' => {
+                    is_fractional = true;
+                    state = State::Fractional;
                 }
-
-                // we're either on the last character or the current ident has ended
-                if !alphanumeric || next == *end {
-                    if let Some(ident) = ident.take() {
-                        let ident = str_from_ptr_range(ident, *cur);
-                        match ident {
-                            // struct in type declaration is ignored
-                            "struct" => continue,
-                            "const" => return Some(Token::Const),
-                            _ => return Some(Token::Alphanumeric(ident)),
-                        };
-                    } else {
-                        // note that we increment after this character only after we've potentially returned an ident
-                        // looped around, and now we're actually handling the single-character token
-                        *cur = next;
-                        match char {
-                            '*' => return Some(Token::Ptr),
-                            '[' => return Some(Token::LBracket),
-                            ']' => return Some(Token::RBracket),
-                            '(' => return Some(Token::LParen),
-                            ')' => return Some(Token::RParen),
-                            ':' => return Some(Token::DoubleColon),
-                            _ => continue,
-                        }
-                    }
+                _ => panic!("Unexpected character '{}' : \"{}\"", c, &str[..=i]),
+            },
+            State::Decimal => match c {
+                '.' => {
+                    is_fractional = true;
+                    state = State::Fractional;
                 }
-            }
+                '0'..='9' => {}
+                'U' | 'u' | 'L' | 'l' | 'Z' | 'z' => {
+                    suffix_start = Some(i);
+                    state = State::Suffix;
+                }
+                _ => {
+                    string_end = Some(i);
+                    break;
+                }
+            },
+            State::Hexadecimal => match c {
+                '0'..='9' | 'a'..='f' => {}
+                _ if c.is_whitespace() => {
+                    string_end = Some(i);
+                }
+                _ => {
+                    string_end = Some(i);
+                    break;
+                }
+            },
+            State::Fractional => match c {
+                '0'..='9' => {}
+                'U' | 'u' | 'L' | 'l' | 'Z' | 'z' => {
+                    suffix_start = Some(i);
+                    state = State::Suffix;
+                }
+                _ => {
+                    string_end = Some(i);
+                    break;
+                }
+            },
+            State::Suffix => match c {
+                'U' | 'u' | 'L' | 'l' | 'Z' | 'z' => {}
+                _ => {
+                    string_end = Some(i);
+                    break;
+                }
+            },
         }
     }
+
+    #[derive(Debug, Clone, Copy)]
+    enum Longness {
+        None,
+        Long,
+        LongLong,
+    }
+
+    let mut longness = Longness::None;
+    let mut unsigned = false;
+    let mut float = false;
+    let mut size = false;
+
+    if let Some(suffix) = suffix_start {
+        let suffix = &str[suffix..string_end.unwrap_or(str.len())];
+
+        if suffix.contains(['U', 'u']) {
+            unsigned = true;
+        }
+        if suffix.contains(['F', 'f']) {
+            float = true;
+        }
+        if suffix.contains(['Z', 'z']) {
+            size = true;
+        }
+        if suffix.contains("LL") || suffix.contains("ll") {
+            longness = Longness::LongLong;
+        } else if suffix.contains(['L', 'l']) {
+            longness = Longness::Long;
+        }
+    }
+
+    let end = suffix_start.or(string_end).unwrap_or(str.len());
+    let number = if is_hexadecimal {
+        &str[2..end]
+    } else {
+        &str[..end]
+    };
+
+    macro_rules! int {
+        ($int:ident) => {
+            if is_hexadecimal {
+                $int::from_str_radix(number, 16).unwrap()
+            } else {
+                $int::from_str_radix(number, 10).unwrap()
+            }
+        };
+    }
+
+    let number = match (is_hexadecimal, longness, unsigned, is_fractional, float, size) {
+        (_, Longness::None, true, false, false, false) => NumberLiteral::U32(int!(u32)),
+        (_, Longness::None, false, false, false, false) => NumberLiteral::I32(int!(i32)),
+        (_, Longness::Long | Longness::LongLong, true, false, false, false) => NumberLiteral::U64(int!(u64)),
+        (_, Longness::Long | Longness::LongLong, false, false, false, false) => NumberLiteral::I64(int!(i64)),
+        (false, Longness::None, false, true, true, false) => NumberLiteral::F32(number.parse().unwrap()),
+        (false, Longness::None, false, true, false, false) => NumberLiteral::F64(number.parse().unwrap()),
+        (_, Longness::None, true, false, false, true) => NumberLiteral::Usize(int!(usize)),
+        (_, Longness::None, false, false, false, true) => NumberLiteral::Isize(int!(isize)),
+        _ => panic!(
+            "\
+Error parsing '{number}'.
+The following combination is invalid:
+    (hexadecimal: {is_hexadecimal}, longness: {:?}, unsigned: {unsigned}, fractional: {is_fractional}, float: {float}, size: {size})",
+    longness
+        )
+    };
+    (number, &str[end..])
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,6 +428,13 @@ impl TypeRef {
             if let &TyToken::BaseType(s) = &self.0[0] {
                 return Some(s);
             }
+        }
+
+        None
+    }
+    pub fn try_not_only_basetype(&self) -> Option<UniqueStr> {
+        if self.0.len() != 1 {
+            return Some(self.get_basetype());
         }
 
         None
@@ -421,11 +647,30 @@ pub fn fmt_type_tokens_impl<
     Ok(())
 }
 
-pub struct Lexer<'a>(Peekable<CLexer<'a>>);
+pub struct TokenIter<'a>(&'a str);
 
-impl<'a> Lexer<'a> {
+impl<'a> TokenIter<'a> {
     pub fn new(str: &'a str) -> Self {
-        Self(CLexer::new(str).peekable())
+        Self(str)
+    }
+}
+
+impl<'a> Iterator for TokenIter<'a> {
+    type Item = Token<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (token, next) = next_token(&self.0);
+        self.0 = next;
+        (token != Token::End).then(|| token)
+    }
+}
+
+pub struct Lexer<'a, T: Iterator<Item = Token<'a>> + 'a>(Peekable<T>);
+
+impl<'a, T: Iterator<Item = Token<'a>> + 'a> Lexer<'a, T> {
+    pub fn new(iter: T) -> Self {
+        let iter = iter.peekable();
+        Self(iter)
     }
     pub fn next(&mut self) -> Option<Token> {
         self.0.next()
@@ -435,7 +680,7 @@ impl<'a> Lexer<'a> {
     }
     pub fn expect(&mut self, tok: Token) {
         let next = self.next();
-        assert!(Some(tok) == next, "Expected '{:?}', got {:?}", tok, next);
+        assert!(Some(tok) == next, "Expected '{:?}', got '{:?}'", tok, next);
     }
     pub fn consume_all(&mut self, tok: Token) -> usize {
         let mut i = 0;
@@ -478,6 +723,22 @@ impl<'a> Lexer<'a> {
     }
 }
 
+struct NoStructFilter<'a>(TokenIter<'a>);
+impl<'a> Iterator for NoStructFilter<'a> {
+    type Item = Token<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.0.next() {
+                Some(Token::Struct) => continue,
+                other => return other,
+            }
+        }
+    }
+}
+
+type TypeLexer<'a> = Lexer<'a, NoStructFilter<'a>>;
+
 // Bloody hell, C type decls are such a mess!
 // Resources used:
 //   https://eli.thegreenplace.net/2008/07/18/reading-c-type-declarations/
@@ -485,13 +746,13 @@ impl<'a> Lexer<'a> {
 //   https://cdecl.org/
 // TODO support function pointers
 pub fn parse_type_decl(str: &str, int: &Interner) -> (Option<UniqueStr>, Type, Option<u8>) {
-    let mut l = Lexer::new(str);
+    let mut l = Lexer::new(NoStructFilter(TokenIter::new(str)));
     let parens = l.consume_all(Token::LParen);
 
     let mut tokens = SmallVec::new();
 
     match l.next().unwrap() {
-        Token::Alphanumeric(s) => {
+        Token::Ident(s) => {
             tokens.push(TyToken::BaseType(s.intern(int)));
             if let Some(Token::Const) = l.peek() {
                 tokens.push(TyToken::Const);
@@ -499,7 +760,7 @@ pub fn parse_type_decl(str: &str, int: &Interner) -> (Option<UniqueStr>, Type, O
             }
         }
         Token::Const => {
-            if let Some(Token::Alphanumeric(s)) = l.next() {
+            if let Some(Token::Ident(s)) = l.next() {
                 tokens.push(TyToken::BaseType(s.intern(int)));
                 tokens.push(TyToken::Const);
             } else {
@@ -542,7 +803,7 @@ pub fn parse_type_decl(str: &str, int: &Interner) -> (Option<UniqueStr>, Type, O
 }
 
 fn recursive_parse(
-    l: &mut Lexer,
+    l: &mut TypeLexer,
     tokens: &mut SmallVec<[TyToken; 1]>,
     name: &mut Option<UniqueStr>,
     bitfield: &mut Option<u8>,
@@ -552,14 +813,22 @@ fn recursive_parse(
     let mut later = SmallVec::new();
     while let Some(next) = l.next() {
         match next {
-            Token::Ptr => tokens.push(TyToken::Ptr),
+            Token::Star => tokens.push(TyToken::Ptr),
             Token::Const => tokens.push(TyToken::Const),
             Token::LBracket => {
                 let size = match l.next().unwrap() {
-                    Token::Alphanumeric(s) => {
+                    Token::Ident(s) => {
                         let s = s.intern(int);
                         l.expect(Token::RBracket);
                         Some(s)
+                    }
+                    Token::Number(num) => {
+                        l.expect(Token::RBracket);
+                        let len: usize = num.get_integer().try_into().unwrap();
+                        let mut buf: SmallVec<[u8; 16]> = SmallVec::new();
+                        use std::io::Write;
+                        write!(buf, "{}", len).unwrap();
+                        Some(unsafe { std::str::from_utf8_unchecked(buf.as_slice()).intern(int) })
                     }
                     Token::RBracket => None,
                     _ => unreachable!(),
@@ -574,21 +843,24 @@ fn recursive_parse(
                     break;
                 }
             }
-            Token::Alphanumeric(s) => {
+            Token::Ident(s) => {
                 // any alphanumeric in this place must be a name
                 assert!(name.is_none());
                 *name = Some(s.intern(int));
             }
-            Token::DoubleColon => {
-                if let Some(Token::Alphanumeric(bits)) = l.next() {
-                    assert!(bitfield.is_none());
-                    *bitfield = Some(bits.parse().unwrap());
-                    break;
-                } else {
-                    unreachable!()
+            Token::DoubleColon => match l.next() {
+                // technically preprocessor defines could be used here, however I quite don't care
+                Some(Token::Ident(_)) => {
+                    panic!("Currently cannot use symbols for bitfields.")
                 }
-            }
-            Token::RBracket | Token::RParen => unreachable!(),
+                Some(Token::Number(num)) => {
+                    assert!(bitfield.is_none());
+                    *bitfield = Some(num.get_integer().try_into().unwrap());
+                    break;
+                }
+                _ => unreachable!(),
+            },
+            _ => unreachable!("Unexpected token '{:?}'", next),
         }
 
         if let Some(Token::RParen) = l.peek() {
@@ -603,35 +875,43 @@ fn recursive_parse(
 fn test_lex_type() {
     let data: &[(&str, &[Token])] = &[
         (
+            "null-terminated",
+            &[
+                Token::Ident("null"),
+                Token::Minus,
+                Token::Ident("terminated"),
+            ],
+        ),
+        (
             "const char*",
-            &[Token::Const, Token::Alphanumeric("char"), Token::Ptr],
+            &[Token::Const, Token::Ident("char"), Token::Star],
         ),
         (
             "ůůAaůů *   I ඞ",
             &[
                 // only recognizes ascii characters
-                Token::Alphanumeric("Aa"),
-                Token::Ptr,
-                Token::Alphanumeric("I"),
+                Token::Ident("Aa"),
+                Token::Star,
+                Token::Ident("I"),
             ],
         ),
         (
             "name1 2 ** [size] \n next ",
             &[
-                Token::Alphanumeric("name1"),
-                Token::Alphanumeric("2"),
-                Token::Ptr,
-                Token::Ptr,
+                Token::Ident("name1"),
+                Token::Ident("2"),
+                Token::Star,
+                Token::Star,
                 Token::LBracket,
-                Token::Alphanumeric("size"),
+                Token::Ident("size"),
                 Token::RBracket,
-                Token::Alphanumeric("next"),
+                Token::Ident("next"),
             ],
         ),
     ];
 
     for (str, expect) in data {
-        let tokens = CLexer::new(str).collect::<Vec<_>>();
+        let tokens = TokenIter::new(str).collect::<Vec<_>>();
         assert_eq!(tokens.as_slice(), *expect);
     }
 }

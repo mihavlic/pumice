@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use generator_lib::{foreach_uniquestr::ForeachUniquestr, interner::UniqueStr, Symbol, SymbolBody};
 
-use crate::{is_std_type, Context};
+use crate::codegen_support::is_std_type;
+
+use super::Context;
 
 pub fn undangle(ctx: &mut Context) {
     let mut map: HashMap<UniqueStr, UniqueStr> = HashMap::new();

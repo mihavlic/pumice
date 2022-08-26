@@ -5,7 +5,10 @@ use generator_lib::{
     InterfaceItem, Registry, SymbolBody,
 };
 
-use crate::{is_std_type, resolve_alias, Context, Section, SectionKind};
+use crate::{
+    codegen_support::{is_std_type, resolve_alias},
+    context::{Context, Section, SectionKind},
+};
 
 // given that the registry is modelled as a global soup of types and functions from which the subsequent categories pick a subset
 // we would like to split the definition into multiple files so that commit diffs aren't enormous, editor doesn't choke, and things are more organised

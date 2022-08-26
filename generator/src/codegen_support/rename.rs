@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
+use super::{is_std_type, resolve_alias, AddedVariants};
+use crate::{context::Context, switch};
 use generator_lib::{
     interner::{Intern, UniqueStr},
     Declaration, Symbol, SymbolBody,
 };
-
-use crate::{is_std_type, resolve_alias, switch, AddedVariants, Context};
 
 pub fn apply_renames(added_variants: &HashMap<UniqueStr, Vec<AddedVariants>>, ctx: &Context) {
     let renames = &[
@@ -20,6 +20,12 @@ pub fn apply_renames(added_variants: &HashMap<UniqueStr, Vec<AddedVariants>>, ct
         ("int32_t", "i32"),
         ("int64_t", "i64"),
         ("size_t", "usize"),
+        // ffi types
+        ("void", "c_void"),
+        ("int", "c_int"),
+        ("char", "c_char"),
+        ("float", "c_float"),
+        ("double", "c_double"),
         // avoid conflicts
         ("type", "kind"),
         // the normal renaming makes it into "common" which is confusing

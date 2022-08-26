@@ -12,7 +12,7 @@ use generator_lib::{
     type_declaration::{fmt_type_tokens_impl, Type, TypeRef},
 };
 
-use crate::{Context, SectionFunctions, SectionIdent};
+use crate::context::{Context, SectionFunctions, SectionIdent};
 
 pub struct SectionWriter<'a> {
     pub section: SectionIdent,
@@ -146,12 +146,13 @@ impl<T, I: IntoIterator<Item = T>, F: FnMut(&mut SectionWriter<'_>, T)> Extended
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct Concat<'a, const S: usize>(pub [&'a dyn Display; S]);
 
-impl<'a, const S: usize> ExtendedFormat for &Concat<'a, S> {
-    fn efmt(self, w: &mut SectionWriter) -> std::fmt::Result {
+impl<'a, const S: usize> Display for Concat<'a, S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for it in self.0 {
-            write!(w, "{}", it)?;
+            write!(f, "{it}")?;
         }
         Ok(())
     }
@@ -250,7 +251,7 @@ pub struct Import<T>(pub T);
 #[macro_export]
 macro_rules! import {
     ($e:expr) => {
-        $crate::format_utils::Import($e)
+        $crate::codegen_support::format_utils::Import($e)
     };
 }
 
@@ -259,7 +260,7 @@ pub use import;
 #[macro_export]
 macro_rules! import_str {
     ($e:expr, $ctx:expr) => {
-        $crate::format_utils::Import(
+        $crate::codegen_support::format_utils::Import(
             $e.try_intern($ctx)
                 .unwrap_or_else(|| panic!("String '{}' is not in the interner!", $e)),
         )
@@ -271,7 +272,7 @@ pub use import_str;
 #[macro_export]
 macro_rules! string {
     ($e:expr) => {
-        $crate::format_utils::Concat([&'"', &$e, &'"'])
+        $crate::codegen_support::format_utils::Concat([&'"', &$e, &'"'])
     };
 }
 
@@ -280,7 +281,7 @@ pub use string;
 #[macro_export]
 macro_rules! cstring {
     ($e:expr) => {
-        $crate::format_utils::Concat([&"cstr!(\"", &$e, &"\")"])
+        $crate::codegen_support::format_utils::Concat([&"crate::cstr!(\"", &$e, &"\")"])
     };
 }
 
@@ -289,7 +290,7 @@ pub use cstring;
 #[macro_export]
 macro_rules! cat {
     ($($e:expr),+) => {
-        $crate::format_utils::Concat([$(& $e),+])
+        $crate::codegen_support::format_utils::Concat([$(& $e),+])
     };
 }
 
@@ -298,7 +299,7 @@ pub use cat;
 #[macro_export]
 macro_rules! doc_comment {
     ($($e:expr),+) => {
-        $crate::format_utils::Concat([&"///", $(& $e),+, &'\n'])
+        $crate::codegen_support::format_utils::Concat([&"///", $(& $e),+, &'\n'])
     };
 }
 
@@ -307,7 +308,7 @@ pub use doc_comment;
 #[macro_export]
 macro_rules! doc_boilerplate {
     ($name:expr) => {
-        $crate::format_utils::Fun(|w| {
+        $crate::codegen_support::format_utils::Fun(|w| {
             let original = $name.resolve_original();
             if !$name.is_original() {
                 writeln!(w,r#"#[doc(alias = "{}")]"#, original)?;
@@ -361,9 +362,11 @@ fn fmt_symbol_path(
     crate::switch!(
         name;
         // these ffi types are imported into every module
-        s.void, s.int, s.char, s.float, s.double, s.bool,
+        s.void, s.int, s.char, s.float, s.double => {
+            write!(f, "std::os::raw::")?;
+        };
         // stdint.h types are always renamed to their rust-native counterparts
-        s.uint8_t, s.uint16_t, s.uint32_t, s.uint64_t, s.int8_t, s.int16_t, s.int32_t, s.int64_t, s.size_t => {};
+        s.bool, s.uint8_t, s.uint16_t, s.uint32_t, s.uint64_t, s.int8_t, s.int16_t, s.int32_t, s.int64_t, s.size_t => {};
         s.usize, s.u8, s.u16, s.u32, s.u64, s.i8, s.i16, s.i32, s.i64 => unreachable!("Rust-native types shouldn't ever be used by our code!");
         @ {
             let section = ctx

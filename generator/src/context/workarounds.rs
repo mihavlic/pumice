@@ -1,12 +1,11 @@
 use std::fmt::Write;
 
+use super::Context;
 use generator_lib::{
     interner::{Intern, UniqueStr},
     type_declaration::parse_type_decl,
     ConstantValue, FeatureExtensionItem, InterfaceItem, RedeclarationMethod, Symbol, SymbolBody,
 };
-
-use crate::Context;
 
 enum Workaround {
     Remove,

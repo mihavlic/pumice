@@ -1,7 +1,5 @@
 use std::ffi::CStr;
 
-use crate::cstr;
-
 pub struct ExtensionMetadata {
     pub name: &'static CStr,
     /// true - instance, false - device

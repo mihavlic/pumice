@@ -1,9 +1,8 @@
 use crate::{
     cstr,
     loader::{DeviceLoad, EntryLoad, InstanceLoad},
-    util::{char, double, float, int, void, ApiLoadConfig},
+    util::config::ApiLoadConfig,
 };
-use std::mem::MaybeUninit;
 
 /// Oh, yes. Little Bobby Tables we call him.
 

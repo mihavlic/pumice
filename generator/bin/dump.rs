@@ -5,7 +5,7 @@ use std::{
 };
 
 use dependencies::get_sections;
-use generator::{Context, SectionFunctions};
+use generator::context::{Context, SectionFunctions};
 use generator_lib::{
     configuration::GenConfig, interner::Intern, process_registry_xml, Registry, Symbol,
 };

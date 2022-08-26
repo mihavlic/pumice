@@ -2,7 +2,7 @@ use std::{collections::HashSet, env::args_os, fs::read_to_string};
 
 use dependencies::get_sections;
 
-use generator::{write_bindings, Context};
+use generator::{codegen::write_bindings, context::Context};
 use generator_lib::{configuration::GenConfig, interner::Intern, process_registry_xml, Registry};
 
 mod dependencies;

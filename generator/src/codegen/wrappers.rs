@@ -1,16 +1,22 @@
+use format_macro::code;
 use generator_lib::{
-    interner::{Interner, UniqueStr},
-    type_declaration::{TyToken, Type, TypeRef},
+    interner::{Intern, UniqueStr},
+    type_declaration::{Token, TokenIter, TyToken, Type, TypeRef},
     Declaration, Optional, SymbolBody,
 };
 
-use crate::{
-    cat, code, doc_boilerplate, fmt_default_value, fmt_default_value_with_overlay,
-    format_utils::{Cond, ExtendedFormat, Fun, Iter, SectionWriter, Separated},
-    import, is_std_type, try_ptr_target, CommandKind, Context,
-};
-
 use std::{cell::RefCell, fmt::Write};
+
+use crate::{
+    cat,
+    codegen::symbols::{fmt_default_value, fmt_default_value_with_overlay},
+    codegen_support::{
+        format_utils::{Cond, ExtendedFormat, Fun, Iter, SectionWriter},
+        is_std_type, try_ptr_target, CommandKind,
+    },
+    context::Context,
+    doc_boilerplate, import,
+};
 
 /// All of these algorithms are adapted straight from Erupt
 
@@ -65,22 +71,7 @@ fn generate_list<'a>(
                 continue;
             }
 
-            let void_ptr = try_ptr_target(&param.ty, ctx)
-                .map(|ty| match ty.as_slice() {
-                    &[TyToken::BaseType(mut basetype)]
-                    | &[TyToken::Const, TyToken::BaseType(mut basetype)] => loop {
-                        if basetype == ctx.strings.void {
-                            break true;
-                        }
-                        if let Some(SymbolBody::Alias(of)) = ctx.get_symbol(basetype) {
-                            basetype = *of;
-                        } else {
-                            break false;
-                        }
-                    },
-                    _ => false,
-                })
-                .unwrap_or(false);
+            let void_ptr = is_void_pointer(&param.ty, ctx);
 
             match group {
                 // Apply `Handle` kind if it qualifies as a handle
@@ -181,6 +172,25 @@ fn generate_list<'a>(
     }
 
     kinds
+}
+
+pub fn is_void_pointer(ty: &TypeRef, ctx: &Context) -> bool {
+    try_ptr_target(ty, ctx)
+        .map(|ty| match ty.as_slice() {
+            &[TyToken::BaseType(mut basetype)]
+            | &[TyToken::Const, TyToken::BaseType(mut basetype)] => loop {
+                if basetype == ctx.strings.void {
+                    break true;
+                }
+                if let Some(SymbolBody::Alias(of)) = ctx.get_symbol(basetype) {
+                    basetype = *of;
+                } else {
+                    break false;
+                }
+            },
+            _ => false,
+        })
+        .unwrap_or(false)
 }
 
 pub fn get_handle_type(kind: CommandKind, ctx: &Context) -> Option<Type> {
@@ -369,7 +379,13 @@ pub fn fmt_command_wrapper(
                         fmt_default_value_with_overlay(w, &param, inner, ctx);
                         Ok(())
                     });
-                    let len_path = len_paths(length.resolve(), ctx);
+                    let len_path = len_paths(
+                        length.resolve(),
+                        |_| VarSource::InScope,
+                        |s| strip_pointer_stuff(s),
+                        ".",
+                        ctx,
+                    );
 
                     match state {
                         What::Return => code!(w, Vec<#import!(inner)>,),
@@ -679,28 +695,73 @@ fn strip_pointer_stuff(str: &str) -> &str {
     return str;
 }
 
-pub fn len_paths<'a>(str: &'a str, ctx: &'a Interner) -> impl ExtendedFormat + 'a {
-    // let mut state = 0;
-    // std::iter::from_fn(move || match state {
-    //     0 => {
-    //         state = 1;
-    //         return Some(idents.next().unwrap());
-    //     }
-    //     1 => {
-    //         if idents.peek().is_some() {
-    //             state = 0;
-    //             return Some(".");
-    //         } else {
-    //             return None;
-    //         }
-    //     }
-    //     _ => unreachable!(),
-    // })
-    Separated::display(
-        str.split("->")
-            .map(move |s| ctx.apply_rename(s))
-            .map(strip_pointer_stuff)
-            .peekable(),
-        ".",
-    )
+#[derive(Clone, Copy, PartialEq)]
+pub enum VarSource {
+    InScope,
+    InSelf,
+    Import,
+}
+
+pub fn len_paths<'a>(
+    str: &'a str,
+    get_source: impl Fn(UniqueStr) -> VarSource + 'a,
+    on_ident: impl Fn(&str) -> &str + 'a,
+    deref_acess: &'a str,
+    ctx: &'a Context,
+) -> impl ExtendedFormat + 'a {
+    let mut state = 0;
+    Fun(move |w| {
+        for token in TokenIter::new(str) {
+            let str = match token {
+                Token::Number(num) => {
+                    code!(w, #num);
+                    continue;
+                }
+                Token::Ident(str) => match state {
+                    0 => {
+                        state = 1;
+                        let uniq = str.intern(ctx);
+                        match get_source(uniq) {
+                            VarSource::InScope => code!(w, #(on_ident(uniq.resolve()))),
+                            VarSource::InSelf => code!(w, self.#(on_ident(uniq.resolve()))),
+                            VarSource::Import => code!(w, #import!(uniq)),
+                        }
+                        continue;
+                    }
+                    1 => {
+                        let renamed = ctx.reg.apply_rename(str);
+                        code!(w, .#(on_ident(renamed)));
+                        continue;
+                    }
+                    _ => unreachable!(),
+                },
+                Token::Struct => panic!("Token '{:?}' cannot occur in a path!", token),
+                Token::Const => panic!("Token '{:?}' cannot occur in a path!", token),
+                Token::LBracket => "[",
+                Token::RBracket => "]",
+                Token::LParen => "(",
+                Token::RParen => ")",
+                Token::LBrace => "{",
+                Token::RBrace => "}",
+                Token::DoubleColon => ":",
+                Token::Tilde => "~",
+                Token::Exclamation => "!",
+                Token::Percent => "%",
+                Token::Caret => "^",
+                Token::Ampersand => "&",
+                Token::Star => "*",
+                Token::Slash => "/",
+                Token::Plus => "+",
+                Token::Minus => "-",
+                Token::Dot => ".",
+                // since this is rust we don't have a concise way to dereference AND access a pointer
+                Token::Arrow => deref_acess,
+                Token::Unknown(c) => panic!("Unknown character '{c}' in '{str}'"),
+                Token::End => unreachable!(),
+            };
+            state = 0;
+            code!(w, #str);
+        }
+        Ok(())
+    })
 }

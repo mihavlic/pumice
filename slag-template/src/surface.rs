@@ -1,8 +1,7 @@
 use crate::{
-    cstr,
     extensions::khr_surface,
     loader::tables::InstanceTable,
-    util::{char, VulkanResult},
+    util::result::VulkanResult,
     vk::{
         EXT_METAL_SURFACE_EXTENSION_NAME, KHR_ANDROID_SURFACE_EXTENSION_NAME,
         KHR_WAYLAND_SURFACE_EXTENSION_NAME, KHR_WIN32_SURFACE_EXTENSION_NAME,

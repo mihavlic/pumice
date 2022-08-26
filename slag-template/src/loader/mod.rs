@@ -1,25 +1,22 @@
-use crate::vk;
-use crate::{
-    cstr,
-    util::{char, double, float, int, void, ApiLoadConfig},
-};
-
 pub mod tables;
+
+use crate::vk;
+use std::os::raw::{c_char, c_void};
 
 #[cfg(feature = "linked")]
 extern "system" {
-    fn vkGetInstanceProcAddr(instance: vk::Instance, name: *const char) -> vk::PfnVoidFunction;
+    fn vkGetInstanceProcAddr(instance: vk::Instance, name: *const c_char) -> vk::PfnVoidFunction;
 }
 
 pub trait FunctionLoad {
-    unsafe fn load(&self, name: *const char) -> vk::PfnVoidFunction;
+    unsafe fn load(&self, name: *const c_char) -> vk::PfnVoidFunction;
 }
 
 pub trait EntryLoad: FunctionLoad {
     #[allow(non_snake_case)]
     unsafe fn get_vkGetInstanceProcAddr(
         &self,
-    ) -> unsafe extern "system" fn(vk::Instance, name: *const char) -> vk::PfnVoidFunction;
+    ) -> unsafe extern "system" fn(vk::Instance, name: *const c_char) -> vk::PfnVoidFunction;
 }
 pub trait InstanceLoad: FunctionLoad {}
 pub trait DeviceLoad: FunctionLoad {}
@@ -37,20 +34,20 @@ pub struct LinkedEntryLoader;
 pub struct LoadedEntryLoader {
     _lib: libloading::Library,
     vkGetInstanceProcAddr:
-        unsafe extern "system" fn(vk::Instance, name: *const char) -> vk::PfnVoidFunction,
+        unsafe extern "system" fn(vk::Instance, name: *const c_char) -> vk::PfnVoidFunction,
 }
 
 #[allow(non_snake_case)]
 pub struct InstanceLoader {
     vkGetInstanceProcAddr:
-        unsafe extern "system" fn(vk::Instance, name: *const char) -> vk::PfnVoidFunction,
+        unsafe extern "system" fn(vk::Instance, name: *const c_char) -> vk::PfnVoidFunction,
     instance: vk::Instance,
 }
 
 #[allow(non_snake_case)]
 pub struct DeviceLoader {
     vkGetDeviceProcAddr:
-        unsafe extern "system" fn(vk::Device, name: *const char) -> vk::PfnVoidFunction,
+        unsafe extern "system" fn(vk::Device, name: *const c_char) -> vk::PfnVoidFunction,
     device: vk::Device,
 }
 
@@ -58,13 +55,13 @@ pub struct DeviceLoader {
 impl EntryLoad for LinkedEntryLoader {
     unsafe fn get_vkGetInstanceProcAddr(
         &self,
-    ) -> unsafe extern "system" fn(vk::Instance, name: *const char) -> vk::PfnVoidFunction {
+    ) -> unsafe extern "system" fn(vk::Instance, name: *const c_char) -> vk::PfnVoidFunction {
         vkGetInstanceProcAddr
     }
 }
 #[cfg(feature = "linked")]
 impl FunctionLoad for LinkedEntryLoader {
-    unsafe fn load(&self, name: *const char) -> vk::PfnVoidFunction {
+    unsafe fn load(&self, name: *const c_char) -> vk::PfnVoidFunction {
         // in this case it is correct to pass in null
         // https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkGetInstanceProcAddr.html
         vkGetInstanceProcAddr(std::mem::transmute(0u64), name)
@@ -75,13 +72,13 @@ impl FunctionLoad for LinkedEntryLoader {
 impl EntryLoad for LoadedEntryLoader {
     unsafe fn get_vkGetInstanceProcAddr(
         &self,
-    ) -> unsafe extern "system" fn(vk::Instance, name: *const char) -> vk::PfnVoidFunction {
+    ) -> unsafe extern "system" fn(vk::Instance, name: *const c_char) -> vk::PfnVoidFunction {
         self.vkGetInstanceProcAddr
     }
 }
 #[cfg(feature = "loaded")]
 impl FunctionLoad for LoadedEntryLoader {
-    unsafe fn load(&self, name: *const char) -> vk::PfnVoidFunction {
+    unsafe fn load(&self, name: *const c_char) -> vk::PfnVoidFunction {
         (self.vkGetInstanceProcAddr)(std::mem::transmute(0u64), name)
     }
 }
@@ -89,14 +86,14 @@ impl FunctionLoad for LoadedEntryLoader {
 impl InstanceLoad for InstanceLoader {}
 impl DeviceLoad for InstanceLoader {}
 impl FunctionLoad for InstanceLoader {
-    unsafe fn load(&self, name: *const char) -> vk::PfnVoidFunction {
+    unsafe fn load(&self, name: *const c_char) -> vk::PfnVoidFunction {
         (self.vkGetInstanceProcAddr)(self.instance, name)
     }
 }
 
 impl DeviceLoad for DeviceLoader {}
 impl FunctionLoad for DeviceLoader {
-    unsafe fn load(&self, name: *const char) -> vk::PfnVoidFunction {
+    unsafe fn load(&self, name: *const c_char) -> vk::PfnVoidFunction {
         // https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkGetDeviceProcAddr.html
         (self.vkGetDeviceProcAddr)(self.device, name)
     }
@@ -168,7 +165,7 @@ impl DeviceLoader {
     pub fn new(device: vk::Device, entry: &impl DeviceLoad) -> Self {
         let ptr = unsafe { entry.load("vkGetDeviceProcAddr\0".as_ptr().cast()) };
         assert!(
-            (ptr as *const void).is_null(),
+            (ptr as *const c_void).is_null(),
             "vkGetInstanceProcAddr returned a null pointer, that's not good!"
         );
         let fun = unsafe { std::mem::transmute(ptr) };
