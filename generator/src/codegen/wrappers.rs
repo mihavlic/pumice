@@ -12,7 +12,8 @@ use crate::{
     codegen::symbols::{fmt_default_value, fmt_default_value_with_overlay},
     codegen_support::{
         format_utils::{Cond, ExtendedFormat, Fun, Iter, SectionWriter},
-        is_std_type, try_ptr_target, CommandKind,
+        type_analysis::{is_std_type, is_void_pointer},
+        CommandKind,
     },
     context::Context,
     doc_boilerplate, import,
@@ -172,25 +173,6 @@ fn generate_list<'a>(
     }
 
     kinds
-}
-
-pub fn is_void_pointer(ty: &TypeRef, ctx: &Context) -> bool {
-    try_ptr_target(ty, ctx)
-        .map(|ty| match ty.as_slice() {
-            &[TyToken::BaseType(mut basetype)]
-            | &[TyToken::Const, TyToken::BaseType(mut basetype)] => loop {
-                if basetype == ctx.strings.void {
-                    break true;
-                }
-                if let Some(SymbolBody::Alias(of)) = ctx.get_symbol(basetype) {
-                    basetype = *of;
-                } else {
-                    break false;
-                }
-            },
-            _ => false,
-        })
-        .unwrap_or(false)
 }
 
 pub fn get_handle_type(kind: CommandKind, ctx: &Context) -> Option<Type> {
@@ -522,17 +504,9 @@ pub fn fmt_command_wrapper(
                             ctx,
                         );
                     });
-                    let len = w.buf.len();
-                    if len > 0 {
-                        // uhh remove trailing comma
-                        if &w.buf[len - 1..len] == "," {
-                            let buf = std::mem::replace(&mut w.buf, String::new());
-                            let mut bytes = buf.into_bytes();
-                            bytes.pop();
-                            let _ = std::mem::replace(&mut w.buf, unsafe {
-                                String::from_utf8_unchecked(bytes)
-                            });
-                        }
+
+                    if Some(',') == w.last_character() {
+                        w.pop_last_character();
                     }
                 }
                 if parens {
@@ -633,18 +607,11 @@ pub fn fmt_command_wrapper(
                         );
                     });
                 }
-                let len = w.buf.len();
-                if len > 0 {
-                    // uhh remove trailing comma
-                    if &w.buf[len - 1..len] == "," {
-                        let buf = std::mem::replace(&mut w.buf, String::new());
-                        let mut bytes = buf.into_bytes();
-                        bytes.pop();
-                        let _ = std::mem::replace(&mut w.buf, unsafe {
-                            String::from_utf8_unchecked(bytes)
-                        });
-                    }
+
+                if Some(',') == w.last_character() {
+                    w.pop_last_character();
                 }
+
                 if parens {
                     w.write_char(')')?;
                 }
@@ -754,7 +721,7 @@ pub fn len_paths<'a>(
                 Token::Plus => "+",
                 Token::Minus => "-",
                 Token::Dot => ".",
-                // since this is rust we don't have a concise way to dereference AND access a pointer
+                // since this is rust we don't have a concise way to dereference AND accessing a pointer
                 Token::Arrow => deref_acess,
                 Token::Unknown(c) => panic!("Unknown character '{c}' in '{str}'"),
                 Token::End => unreachable!(),

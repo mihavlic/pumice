@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
-use super::{is_std_type, resolve_alias, AddedVariants};
+use super::{
+    type_analysis::{is_std_type, resolve_alias},
+    AddedVariants,
+};
 use crate::{context::Context, switch};
 use generator_lib::{
     interner::{Intern, UniqueStr},
@@ -118,6 +121,7 @@ pub fn apply_renames(added_variants: &HashMap<UniqueStr, Vec<AddedVariants>>, ct
         let &Symbol(name, ref body) = &ctx.reg.symbols[i];
 
         match body {
+            // don't forget to make snake case commands that are just aliases
             &SymbolBody::Alias(of) => {
                 if !is_std_type(of, &ctx) {
                     let (_, body) = resolve_alias(of, &ctx);

@@ -134,6 +134,18 @@ impl<T: DumbHash> DumbHash for [T] {
     }
 }
 
+impl<T> DumbHash for *const T {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::ptr::hash(*self, state)
+    }
+}
+
+impl<T> DumbHash for *mut T {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::ptr::hash(*self, state)
+    }
+}
+
 macro_rules! dumb_hash_passthrough_impl {
     ($($name:path),+) => {
         $(

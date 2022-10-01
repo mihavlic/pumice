@@ -6,10 +6,11 @@ use std::{
 use crate::{
     cat,
     codegen_support::{
-        derives::DeriveData,
         format_utils::{Cond, ExtendedFormat, Fun, Separated},
+        type_analysis::is_void_pointer,
+        type_query::DeriveData,
     },
-    import,
+    import, symbol_or_value,
 };
 use crate::{
     codegen_support::format_utils::{Iter, SectionWriter},
@@ -38,30 +39,32 @@ pub fn write_deep_copy(derives: &mut DeriveData, out: &Path, ctx: &Context) {
         let &Symbol(name, ref body) = &ctx.reg.symbols[symbol_index];
 
         match body {
-            SymbolBody::Alias(_) |
-            SymbolBody::Redeclaration(_) |
-            SymbolBody::Included { .. } |
-            SymbolBody::Define { .. } |
-            SymbolBody::Basetype { .. } |
-            SymbolBody::Constant { .. } |
-            SymbolBody::Command { .. } |
-            // function pointers are just aliases so we can't implement anything on them
-            SymbolBody::Funcpointer { .. } => continue,
-            _ => {
-                if derives.is_no_void(name, ctx) == false {
-                    continue;
-                }
-            }
+            SymbolBody::Alias(_)
+            | SymbolBody::Redeclaration(_)
+            | SymbolBody::Included { .. }
+            | SymbolBody::Define { .. }
+            | SymbolBody::Basetype { .. }
+            | SymbolBody::Constant { .. }
+            | SymbolBody::Command { .. }
+            | SymbolBody::Funcpointer { .. } => continue,
+            _ => {}
         }
 
+        // if derives.is_no_void(name, ctx) == false {
+        //     continue;
+        // }
+
         match body {
-            SymbolBody::Enum { .. } | SymbolBody::Handle { .. } => value_types.push(name),
-            SymbolBody::Struct { union, members } => {
+            SymbolBody::Enum { .. }
+            | SymbolBody::Handle { .. }
+            | SymbolBody::Struct { union: true, .. } => value_types.push(name),
+            SymbolBody::Struct {
+                union: false,
+                members,
+            } => {
                 if derives.is_value_type(name, ctx) {
                     value_types.push(name);
                 } else {
-                    assert!(*union == false);
-
                     let non_value = members
                         .iter()
                         .filter(|m| !derives.type_is_value(&m.ty, ctx))
@@ -77,7 +80,7 @@ pub fn write_deep_copy(derives: &mut DeriveData, out: &Path, ctx: &Context) {
                                 measure.measure_pnext(#ptr);
                             );
                         } else {
-                            fmt_deepcopy_measure(w, &ptr, &d.ty, &d.metadata.length, ctx);
+                            fmt_deepcopy_measure(w, &ptr, &d.ty, &d.metadata.length, 0, ctx);
                         }
                     });
                     let copy = Iter(&non_value, |w, d| {
@@ -92,7 +95,7 @@ pub fn write_deep_copy(derives: &mut DeriveData, out: &Path, ctx: &Context) {
                                 #copy = writer.write_pnext(#ptr) #cast;
                             );
                         } else {
-                            fmt_deepcopy_copy(w, &ptr, &copy, &d.ty, &d.metadata.length, ctx);
+                            fmt_deepcopy_copy(w, &ptr, &copy, &d.ty, &d.metadata.length, 0, ctx);
                         }
                     });
                     code!(
@@ -133,14 +136,23 @@ fn fmt_deepcopy_measure(
     name: &dyn Display,
     ty: &TypeRef,
     len: &[UniqueStr],
+    depth: usize,
     ctx: &Context,
 ) {
-    match ty.as_slice() {
-        &[TyToken::BaseType(_)] => {
-            code!(
-                w,
-                measure.measure_ptr(&#name);
-            )
+    match ty.resolve_alias(ctx).as_slice() {
+        &[TyToken::BaseType(basetype)] => {
+            if is_void_pointer(ty, ctx) {
+                // do nothing, we have no information
+            } else {
+                if let Some(SymbolBody::Funcpointer { .. }) = ctx.get_symbol(basetype) {
+                    // was already copied with the containing struct
+                } else {
+                    code!(
+                        w,
+                        measure.measure_ptr(&#name);
+                    )
+                }
+            }
         }
         &[TyToken::Ptr, TyToken::BaseType(basetype)]
         | &[TyToken::Ptr, TyToken::Const, TyToken::BaseType(basetype)] => {
@@ -154,20 +166,24 @@ fn fmt_deepcopy_measure(
                     let path = len_paths_deepcopy(&len, ctx);
                     code!(
                         w,
-                        measure.measure_raw_arr(#name.cast::<u8>(), (#path) as usize);
+                        measure.measure_arr_ptr(#name.cast::<u8>(), (#path) as usize);
                     )
                 } else {
                     let path = len_paths_deepcopy(&len, ctx);
                     code!(
                         w,
-                        measure.measure_raw_arr(#name, (#path) as usize);
+                        measure.measure_arr_ptr(#name, (#path) as usize);
                     )
                 }
             } else {
-                code!(
-                    w,
-                    measure.measure_ptr(#name);
-                )
+                if is_void_pointer(ty, ctx) {
+                    // do nothing, we have no information
+                } else {
+                    code!(
+                        w,
+                        measure.measure_ptr(#name);
+                    )
+                }
             }
         }
         &[TyToken::Ptr, ..] => {
@@ -178,6 +194,7 @@ fn fmt_deepcopy_measure(
                     &"ptr",
                     ty,
                     len.split_first().map(|(_, e)| e).unwrap_or(&[]),
+                    depth + 1,
                     ctx,
                 );
                 Ok(())
@@ -186,7 +203,7 @@ fn fmt_deepcopy_measure(
                 let len = len_paths_deepcopy(&len, ctx);
                 code!(w,
                     let len = (#len) as usize;
-                    measure.alloc_raw_arr::<#import!(ty)>(len);
+                    measure.alloc_arr::<#import!(ty)>(len);
                     for i in 0..len {
                         let ptr = *#name.add(i);
                         #measure
@@ -196,12 +213,33 @@ fn fmt_deepcopy_measure(
                 code!(
                     w,
                     let ptr = *(#name);
-                    measure.alloc_raw::<#import!(ty)>();
+                    measure.alloc::<#import!(ty)>();
                     #measure
                 )
             }
         }
-        _ => unreachable!("{name}: {ty}"),
+        &[TyToken::Array(Some(const_len)), ..] => {
+            let letter = ['i', 'j', 'k', 'l', 'm'][depth];
+            let ty = ty.descend();
+            let measure = Fun(|w| {
+                fmt_deepcopy_measure(
+                    w,
+                    &cat!(name, '[', letter, ']'),
+                    ty,
+                    len.split_first().map(|(_, e)| e).unwrap_or(&[]),
+                    depth + 1,
+                    ctx,
+                );
+                Ok(())
+            });
+            code!(
+                w,
+                for #letter in 0..#symbol_or_value!(const_len) as usize {
+                    #measure
+                }
+            )
+        }
+        _ => unimplemented!("{name}: {:?}", ty.as_slice()),
     }
 }
 
@@ -211,14 +249,23 @@ fn fmt_deepcopy_copy(
     copy: &dyn Display,
     ty: &TypeRef,
     len: &[UniqueStr],
+    depth: usize,
     ctx: &Context,
 ) {
-    match ty.as_slice() {
-        &[TyToken::BaseType(_)] => {
-            code!(
-                w,
-                #name.copy(&mut #copy, writer);
-            )
+    match ty.resolve_alias(ctx).as_slice() {
+        &[TyToken::BaseType(basetype)] => {
+            if is_void_pointer(ty, ctx) {
+                // do nothing, we have no information
+            } else {
+                if let Some(SymbolBody::Funcpointer { .. }) = ctx.get_symbol(basetype) {
+                    // was already copied with the containing struct
+                } else {
+                    code!(
+                        w,
+                        #name.copy(&mut #copy, writer);
+                    )
+                }
+            }
         }
         &[TyToken::Ptr, TyToken::BaseType(basetype)]
         | &[TyToken::Ptr, TyToken::Const, TyToken::BaseType(basetype)] => {
@@ -232,23 +279,28 @@ fn fmt_deepcopy_copy(
                     let path = len_paths_deepcopy(&len, ctx);
                     code!(
                         w,
-                        #copy = writer.write_raw_arr(#name.cast::<u8>(), (#path) as usize).cast::<c_void>();
+                        #copy = writer.write_arr_ptr(#name.cast::<u8>(), (#path) as usize).cast::<c_void>();
                     )
                 } else {
                     let path = len_paths_deepcopy(&len, ctx);
                     code!(
                         w,
-                        #copy = writer.write_raw_arr(#name, (#path) as usize);
+                        #copy = writer.write_arr_ptr(#name, (#path) as usize);
                     )
                 }
             } else {
-                code!(
-                    w,
-                    #copy = writer.write_ptr(#name);
-                )
+                if is_void_pointer(ty, ctx) {
+                    // do nothing, we have no information
+                } else {
+                    code!(
+                        w,
+                        #copy = writer.write_ptr(#name);
+                    )
+                }
             }
         }
-        &[TyToken::Ptr, ..] => {
+        slice @ &[TyToken::Ptr, ..] => {
+            let cast = Cond(slice[1] == TyToken::Const, ".cast_mut()");
             let ty = ty.descend();
             let recurse = Fun(|w| {
                 fmt_deepcopy_copy(
@@ -257,6 +309,7 @@ fn fmt_deepcopy_copy(
                     &"*copy",
                     ty,
                     len.split_first().map(|(_, e)| e).unwrap_or(&[]),
+                    depth + 1,
                     ctx,
                 );
                 Ok(())
@@ -265,10 +318,10 @@ fn fmt_deepcopy_copy(
                 let len = len_paths_deepcopy(&len, ctx);
                 code!(w,
                     let len = (#len) as usize;
-                    *addr_of_mut!(#copy) = writer.alloc_raw_arr::<#import!(ty)>(len);
+                    #copy = writer.alloc_arr::<#import!(ty)>(len);
                     for i in 0..len {
                         let ptr = *#name.add(i);
-                        let copy = #copy.add(i) as *mut _;
+                        let copy = #copy.add(i) #cast;
                         #recurse
                     }
                 );
@@ -276,20 +329,48 @@ fn fmt_deepcopy_copy(
                 code!(
                     w,
                     let ptr = *(#name);
-                    *addr_of_mut!(#copy) = writer.alloc_raw::<#import!(ty)>();
-                    let copy = #copy;
+                    #copy = writer.alloc::<#import!(ty)>();
                     #recurse
                 )
             }
+        }
+        &[TyToken::Array(Some(const_len)), ..] => {
+            let ty = ty.descend();
+            let recurse = Fun(|w| {
+                fmt_deepcopy_copy(
+                    w,
+                    &"*ptr",
+                    &"*copy",
+                    ty,
+                    len.split_first().map(|(_, e)| e).unwrap_or(&[]),
+                    depth + 1,
+                    ctx,
+                );
+                Ok(())
+            });
+            code!(
+                w,
+                for i in 0..#symbol_or_value!(const_len) as usize {
+                    let ptr = &#name[i];
+                    let copy = &mut #copy[i];
+                    #recurse
+                }
+            )
         }
         _ => unreachable!("{name}: {ty}"),
     }
 }
 
-fn len_paths_deepcopy<'a>(len: &'a UniqueStr, ctx: &'a Context) -> impl ExtendedFormat + 'a {
+pub fn len_paths_deepcopy<'a>(len: &'a UniqueStr, ctx: &'a Context) -> impl ExtendedFormat + 'a {
     len_paths(
         len.resolve(),
-        |_| VarSource::InSelf,
+        |s| {
+            if ctx.get_symbol(s).is_some() {
+                VarSource::Import
+            } else {
+                VarSource::InSelf
+            }
+        },
         |s| {
             // QUIRK rasterization_samples is not an integer but an enum whose variants are made to interpret correctly as integers
             if s == "rasterization_samples" {

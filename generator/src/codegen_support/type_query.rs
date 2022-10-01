@@ -4,9 +4,9 @@ use generator_lib::{
     Declaration, RedeclarationMethod, Symbol, SymbolBody,
 };
 
-use crate::{codegen::wrappers::is_void_pointer, context::Context, switch};
+use crate::{context::Context, switch};
 
-use super::is_std_type;
+use super::type_analysis::{is_std_type, is_void_pointer};
 
 pub struct DeriveData {
     eq: Vec<Option<bool>>,
@@ -43,35 +43,34 @@ impl DeriveData {
             no_void: vec![None; ctx.reg.symbols.len()],
         }
     }
-    pub fn is_copy<'a>(&self, name: UniqueStr, ctx: &Context) -> bool {
+    pub fn is_copy(&self, name: UniqueStr, ctx: &Context) -> bool {
         let index = ctx.get_symbol_index(name).unwrap() as usize;
         self.force_copy[index]
     }
-    pub fn is_eq<'a>(&mut self, name: UniqueStr, ctx: &Context) -> bool {
+    pub fn is_eq(&mut self, name: UniqueStr, ctx: &Context) -> bool {
         symbol_is_hashable(name, &mut self.eq, ctx)
     }
-    pub fn is_zeroable<'a>(&mut self, name: UniqueStr, ctx: &Context) -> bool {
+    pub fn is_zeroable(&mut self, name: UniqueStr, ctx: &Context) -> bool {
         symbol_is_zeroable(name, &mut self.default, ctx)
     }
-    pub fn is_value_type<'a>(&mut self, name: UniqueStr, ctx: &Context) -> bool {
+    pub fn is_value_type(&mut self, name: UniqueStr, ctx: &Context) -> bool {
         symbol_is_value(name, &mut self.value, ctx)
     }
     /// This means that the type doesn't contain any void pointers that are not pNext or don't have an associated size
-    pub fn is_no_void<'a>(&mut self, name: UniqueStr, ctx: &Context) -> bool {
+    pub fn is_no_void(&mut self, name: UniqueStr, ctx: &Context) -> bool {
         symbol_is_no_void(name, &mut self.no_void, ctx)
     }
-
-    pub fn type_is_eq<'a>(&mut self, ty: &TypeRef, ctx: &Context) -> bool {
+    pub fn type_is_eq(&mut self, ty: &TypeRef, ctx: &Context) -> bool {
         type_is_hashable(ty, &mut self.eq, ctx)
     }
-    pub fn type_is_zeroable<'a>(&mut self, ty: &TypeRef, ctx: &Context) -> bool {
+    pub fn type_is_zeroable(&mut self, ty: &TypeRef, ctx: &Context) -> bool {
         type_is_zeroable(ty, &mut self.default, ctx)
     }
-    pub fn type_is_value<'a>(&mut self, ty: &TypeRef, ctx: &Context) -> bool {
+    pub fn type_is_value(&mut self, ty: &TypeRef, ctx: &Context) -> bool {
         type_is_value(ty, &mut self.value, ctx)
     }
     /// This means that the type doesn't contain any void pointers that are not pNext or don't have an associated size
-    pub fn type_is_no_void<'a>(&mut self, ty: &TypeRef, ctx: &Context) -> bool {
+    pub fn type_is_no_void(&mut self, ty: &TypeRef, ctx: &Context) -> bool {
         type_is_no_void(ty, &mut self.no_void, ctx)
     }
 }

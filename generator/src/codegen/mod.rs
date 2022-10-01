@@ -5,14 +5,14 @@ pub mod wrappers;
 
 use crate::codegen::dumb_hash::write_dumb_hash;
 use crate::codegen::symbols::fmt_command_preamble;
-use crate::codegen_support::derives::DeriveData;
 use crate::codegen_support::format_utils::{
     Cond, ExtendedFormat, Fun, Iter, SectionWriter, Separated,
 };
 use crate::codegen_support::rename::apply_renames;
+use crate::codegen_support::type_analysis::{is_std_type, resolve_alias};
+use crate::codegen_support::type_query::DeriveData;
 use crate::codegen_support::{
-    get_command_kind, get_enum_added_variants, is_std_type, resolve_alias, AddedVariants,
-    CommandKind,
+    get_command_kind, get_enum_added_variants, merge_bitfield_members, AddedVariants, CommandKind,
 };
 use crate::context::{Context, SectionFunctions};
 use crate::context::{Section, SectionKind};
@@ -32,7 +32,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use self::symbols::write_item;
+use self::symbols::write_symbol;
 
 pub fn write_bindings(
     ctx: &mut Context,
@@ -143,6 +143,30 @@ pub fn write_bindings(
         ctx.section_add_symbols_str(ident, items.iter().cloned());
     }
 
+    {
+        // since rust can't express C bitfields we emulate the behaviour by just merging such struct fields with the same algorithm
+        // and leaving to the programmer to deal with packing and upacking the values, also since any of the passes could be doing something
+        // with struct fields we do this at the earliest time possible
+        for &(index, _) in &ctx.symbols {
+            let Symbol(_, body) = &ctx.reg.symbols[index];
+            if let SymbolBody::Struct {
+                union: false,
+                members,
+            } = body
+            {
+                let merged = merge_bitfield_members(&members, &ctx);
+
+                // FIXME do this more elegantly, borrow checker woes
+                let Symbol(_, body) = &mut ctx.reg.symbols[index];
+                if let SymbolBody::Struct { members, .. } = body {
+                    *members = merged;
+                } else {
+                    unreachable!()
+                }
+            }
+        }
+    }
+
     let mut added_variants = get_enum_added_variants(&ctx);
 
     {
@@ -188,6 +212,7 @@ pub fn write_bindings(
 
     write_vk_module(&features, &extensions, out, ctx);
 
+    // sort the symbols by their owning section (its index)
     let sorted_symbols = {
         let mut clone = ctx.symbols.clone();
         clone.sort_by_key(|i| i.1);
@@ -241,7 +266,7 @@ fn write_sections(
 
         let Symbol(name, body) = &ctx.reg.symbols[symbol_index];
 
-        write_item(*name, body, writer, derives, &added_variants, &ctx);
+        write_symbol(*name, body, writer, derives, &added_variants, &ctx);
     }
 }
 
@@ -270,9 +295,9 @@ fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Context) {
             if is_std_type(of, &ctx) {
                 continue;
             }
-            let (of, body) = resolve_alias(of, &ctx);
+            let (_, body) = resolve_alias(of, &ctx);
             if let SymbolBody::Command { params, .. } = body {
-                let what = (section_idx, of, body);
+                let what = (section_idx, name, body);
                 match get_command_kind(&params, &ctx) {
                     CommandKind::Entry => entry.push(what),
                     CommandKind::Instance => instance.push(what),

@@ -16,18 +16,14 @@ use crate::context::{Context, SectionFunctions, SectionIdent};
 
 pub struct SectionWriter<'a> {
     pub section: SectionIdent,
-    pub buf: String,
+    buf: String,
     pub ctx: &'a Context,
     pub path: PathBuf,
-    pub ends_whitespace: bool,
     pub append: bool,
 }
 
 impl<'a> std::fmt::Write for SectionWriter<'a> {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        if let Some(last) = s.chars().last() {
-            self.ends_whitespace = last.is_ascii_whitespace();
-        }
         self.buf.write_str(s)
     }
 }
@@ -44,7 +40,6 @@ impl<'a> SectionWriter<'a> {
             buf: String::new(),
             ctx,
             path: path.as_ref().to_path_buf(),
-            ends_whitespace: true,
             append,
         }
     }
@@ -84,10 +79,19 @@ impl<'a> SectionWriter<'a> {
         let out = prettyplease::unparse(&syn_file);
         file.write_all(out.as_bytes())
     }
+    pub fn pop_last_character(&mut self) {
+        self.buf.pop();
+    }
+    pub fn last_character(&self) -> Option<char> {
+        self.buf.chars().rev().next()
+    }
     pub fn separate_idents(&mut self) {
-        if !self.ends_whitespace {
+        if self
+            .last_character()
+            .map(|c| !c.is_ascii_whitespace())
+            .unwrap_or(false)
+        {
             self.buf.push(' ');
-            self.ends_whitespace = true;
         }
     }
 }
@@ -256,6 +260,28 @@ macro_rules! import {
 }
 
 pub use import;
+
+pub struct SymbolOrValue(pub UniqueStr);
+
+impl ExtendedFormat for SymbolOrValue {
+    fn efmt(self, w: &mut SectionWriter) -> std::fmt::Result {
+        let str = self.0.resolve();
+        if str.parse::<u64>().is_ok() {
+            w.write_str(str)
+        } else {
+            fmt_symbol_path(self.0, &w.section, &w.ctx, &mut w.buf)
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! symbol_or_value {
+    ($e:expr) => {
+        $crate::codegen_support::format_utils::SymbolOrValue($e)
+    };
+}
+
+pub use symbol_or_value;
 
 #[macro_export]
 macro_rules! import_str {

@@ -6,10 +6,11 @@ use std::{
 use crate::{
     cat,
     codegen_support::{
-        derives::DeriveData,
         format_utils::{Cond, ExtendedFormat, Fun, Separated},
+        type_analysis::is_void_pointer,
+        type_query::DeriveData,
     },
-    import,
+    import, symbol_or_value,
 };
 use crate::{codegen_support::format_utils::SectionWriter, context::Context};
 use format_macro::code;
@@ -19,7 +20,7 @@ use generator_lib::{
     Symbol, SymbolBody,
 };
 
-use super::wrappers::{len_paths, VarSource};
+use super::deep_copy::len_paths_deepcopy;
 
 pub fn write_dumb_hash(derives: &mut DeriveData, out: &Path, ctx: &Context) {
     let mut w = SectionWriter::new(
@@ -34,28 +35,27 @@ pub fn write_dumb_hash(derives: &mut DeriveData, out: &Path, ctx: &Context) {
         let &Symbol(name, ref body) = &ctx.reg.symbols[symbol_index];
 
         match body {
-            SymbolBody::Enum { .. } |
-            SymbolBody::Handle { .. }  => {
+            SymbolBody::Enum { .. } | SymbolBody::Handle { .. } => {
                 passthrough.push(name);
                 continue;
-            },
-            SymbolBody::Alias(_) |
-            SymbolBody::Redeclaration(_) |
-            SymbolBody::Included { .. } |
-            SymbolBody::Define { .. } |
-            SymbolBody::Basetype { .. } |
-            SymbolBody::Constant { .. } |
-            SymbolBody::Command { .. } |
-            // function pointers are just aliases so we can't implement anything on them
-            SymbolBody::Funcpointer { .. } => continue,
-            _ => {
-                if derives.is_no_void(name, ctx) == false {
-                    continue;
-                } else if derives.is_eq(name, ctx) {
-                    passthrough.push(name);
-                    continue;
-                }
             }
+            SymbolBody::Alias(_)
+            | SymbolBody::Redeclaration(_)
+            | SymbolBody::Included { .. }
+            | SymbolBody::Define { .. }
+            | SymbolBody::Basetype { .. }
+            | SymbolBody::Constant { .. }
+            | SymbolBody::Command { .. }
+            | SymbolBody::Funcpointer { .. } => continue,
+            _ => {}
+        }
+
+        // if derives.is_no_void(name, ctx) == false {
+        //     continue;
+        // } else
+        if derives.is_eq(name, ctx) {
+            passthrough.push(name);
+            continue;
         }
 
         match body {
@@ -129,11 +129,18 @@ fn fmt_dumb_hash(
     ctx: &Context,
 ) {
     match ty.as_slice() {
-        &[TyToken::BaseType(_)] | &[TyToken::Array(_), TyToken::BaseType(_)] => {
-            code!(
-                w,
-                #name.hash(state);
-            )
+        &[TyToken::BaseType(basetype)] | &[TyToken::Array(_), TyToken::BaseType(basetype)] => {
+            if let Some(SymbolBody::Funcpointer { .. }) = ctx.get_symbol(basetype) {
+                code!(
+                    w,
+                    std::ptr::hash(#name as *const (), state);
+                )
+            } else {
+                code!(
+                    w,
+                    #name.hash(state);
+                )
+            }
         }
         &[TyToken::Ptr, TyToken::BaseType(basetype)]
         | &[TyToken::Ptr, TyToken::Const, TyToken::BaseType(basetype)] => {
@@ -157,14 +164,22 @@ fn fmt_dumb_hash(
                     )
                 }
             } else {
-                code!(
-                    w,
-                    hash_ptr(#name, state);
-                )
+                if is_void_pointer(ty, ctx) {
+                    // we have no information, the best we can do is hash the adress
+                    code!(
+                        w,
+                        #name.hash(state);
+                    )
+                } else {
+                    code!(
+                        w,
+                        hash_ptr(#name, state);
+                    )
+                }
             }
         }
         &[TyToken::Ptr, ..] => {
-            let measure = Fun(|w| {
+            let recurse = Fun(|w| {
                 fmt_dumb_hash(
                     w,
                     &"ptr",
@@ -182,7 +197,7 @@ fn fmt_dumb_hash(
                     len.hash(state);
                     for i in 0..len {
                         let ptr = *#name.add(i);
-                        #measure
+                        #recurse
                     }
                 );
             } else {
@@ -190,27 +205,31 @@ fn fmt_dumb_hash(
                     w,
                     let ptr = *(#name);
                     #i.hash(state);
-                    #measure
+                    #recurse
                 )
             }
         }
+        &[TyToken::Array(Some(const_len)), ..] => {
+            let ty = ty.descend();
+            let recurse = Fun(|w| {
+                fmt_dumb_hash(
+                    w,
+                    &"ptr",
+                    ty.descend(),
+                    i + 1,
+                    len.split_first().map(|(_, e)| e).unwrap_or(&[]),
+                    ctx,
+                );
+                Ok(())
+            });
+            code!(
+                w,
+                for i in 0..#symbol_or_value!(const_len) as usize {
+                    let ptr = &#name[i];
+                    #recurse
+                }
+            )
+        }
         _ => unreachable!("{name}: {ty}"),
     }
-}
-
-fn len_paths_deepcopy<'a>(len: &'a UniqueStr, ctx: &'a Context) -> impl ExtendedFormat + 'a {
-    len_paths(
-        len.resolve(),
-        |_| VarSource::InSelf,
-        |s| {
-            // QUIRK rasterization_samples is not an integer but an enum whose variants are made to interpret correctly as integers
-            if s == "rasterization_samples" {
-                "rasterization_samples.0"
-            } else {
-                s
-            }
-        },
-        ".deref().",
-        ctx,
-    )
 }

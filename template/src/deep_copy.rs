@@ -1,15 +1,17 @@
+#![allow(unused)]
+
 use std::{
     alloc::Layout,
     borrow::Borrow,
     ffi::CStr,
     ops::{Deref, DerefMut},
     os::raw::{c_char, c_void},
-    ptr::{self, addr_of_mut, NonNull},
+    ptr::{self, NonNull},
 };
 
 pub struct DeepCopyBox<T> {
     copy: NonNull<T>,
-    layout: Layout,
+    measure: CopyMeasure,
 }
 
 impl<T> Deref for DeepCopyBox<T> {
@@ -28,13 +30,12 @@ impl<T> DerefMut for DeepCopyBox<T> {
 impl<T: DeepCopy> Clone for DeepCopyBox<T> {
     fn clone(&self) -> Self {
         unsafe {
-            let measure = CopyMeasure::from_layout(self.layout);
-            let mut writer = CopyWriter::new(&measure);
+            let mut writer = CopyWriter::new(&self.measure);
             writer.write_ptr(self.copy.as_ptr());
 
             Self {
                 copy: NonNull::new(writer.finish().cast()).unwrap(),
-                layout: self.layout,
+                measure: self.measure.clone(),
             }
         }
     }
@@ -43,7 +44,7 @@ impl<T: DeepCopy> Clone for DeepCopyBox<T> {
 impl<T> Drop for DeepCopyBox<T> {
     fn drop(&mut self) {
         unsafe {
-            std::alloc::dealloc(self.copy.as_ptr().cast(), self.layout);
+            std::alloc::dealloc(self.copy.as_ptr().cast(), self.measure.layout());
         }
     }
 }
@@ -52,7 +53,8 @@ pub unsafe trait DeepCopy: Sized {
     fn measure(&self, measure: &mut CopyMeasure);
     unsafe fn copy(&self, copy: *mut Self, writer: &mut CopyWriter);
     unsafe fn deep_copy(&self) -> DeepCopyBox<Self> {
-        let mut measure = CopyMeasure::new_for::<Self>();
+        let mut measure = CopyMeasure::new();
+        measure.alloc::<Self>();
         self.measure(&mut measure);
 
         let mut writer = CopyWriter::new(&measure);
@@ -60,42 +62,34 @@ pub unsafe trait DeepCopy: Sized {
 
         DeepCopyBox {
             copy: NonNull::new(writer.finish().cast()).unwrap(),
-            layout: measure.layout,
+            measure,
         }
     }
 }
 
+#[derive(Clone)]
 pub struct CopyMeasure {
     layout: Layout,
 }
 
 impl CopyMeasure {
-    fn new_for<T>() -> Self {
+    fn new() -> Self {
         Self {
-            layout: Layout::new::<T>(),
+            layout: Layout::new::<()>(),
         }
     }
     pub fn layout(&self) -> Layout {
         self.layout
     }
-    pub fn from_layout(layout: Layout) -> Self {
-        Self { layout }
-    }
     pub unsafe fn measure_ptr<T: DeepCopy>(&mut self, what: *const T) {
         if let Some(what) = what.as_ref() {
-            layout_extend::<T>(&mut self.layout);
+            self.alloc::<T>();
             what.measure(self);
         }
     }
-    pub unsafe fn measure_cstr(&mut self, ptr: *const c_char) {
-        if !ptr.is_null() {
-            let len = CStr::from_ptr(ptr).to_bytes_with_nul().len();
-            layout_extend_arr::<c_char>(&mut self.layout, len);
-        }
-    }
-    pub unsafe fn measure_raw_arr<T: DeepCopy>(&mut self, ptr: *const T, len: usize) {
+    pub unsafe fn measure_arr_ptr<T: DeepCopy>(&mut self, ptr: *const T, len: usize) {
         if !ptr.is_null() && len > 0 {
-            layout_extend_arr::<T>(&mut self.layout, len);
+            self.alloc_arr::<T>(len);
 
             let slice = std::slice::from_raw_parts(ptr, len);
             for element in slice {
@@ -103,11 +97,11 @@ impl CopyMeasure {
             }
         }
     }
-    pub unsafe fn alloc_raw<T>(&mut self) {
-        layout_extend::<T>(&mut self.layout);
-    }
-    pub unsafe fn alloc_raw_arr<T>(&mut self, len: usize) {
-        layout_extend_arr::<T>(&mut self.layout, len);
+    pub unsafe fn measure_cstr(&mut self, ptr: *const c_char) {
+        if !ptr.is_null() {
+            let len = CStr::from_ptr(ptr).to_bytes_with_nul().len();
+            self.alloc_arr::<c_char>(len);
+        }
     }
     #[track_caller]
     pub unsafe fn measure_pnext(&mut self, mut p_next: *const c_void) {
@@ -120,6 +114,12 @@ impl CopyMeasure {
                 self.measure_ptr((&&*object).get_or_die())
             );
         }
+    }
+    pub unsafe fn alloc<T>(&mut self) {
+        layout_extend::<T>(&mut self.layout);
+    }
+    pub unsafe fn alloc_arr<T>(&mut self, len: usize) {
+        layout_extend_arr::<T>(&mut self.layout, len);
     }
 }
 
@@ -137,8 +137,7 @@ impl CopyWriter {
     }
     pub unsafe fn write_ptr<T: DeepCopy>(&mut self, what: *const T) -> *mut T {
         if let Some(what_ref) = what.as_ref() {
-            let offset = layout_extend::<T>(&mut self.layout);
-            let ptr = self.buf.add(offset).cast();
+            let ptr = self.alloc::<T>();
 
             ptr::copy_nonoverlapping(what, ptr, 1);
             what_ref.copy(ptr, self);
@@ -147,25 +146,10 @@ impl CopyWriter {
             ptr::null_mut()
         }
     }
-    pub unsafe fn write_cstr(&mut self, what: *const c_char) -> *const c_char {
-        if !what.is_null() {
-            let len = CStr::from_ptr(what).to_bytes_with_nul().len();
-
-            let offset = layout_extend_arr::<c_char>(&mut self.layout, len);
-            let ptr = self.buf.add(offset).cast();
-
-            ptr::copy_nonoverlapping(what, ptr, len);
-            ptr
-        } else {
-            ptr::null()
-        }
-    }
-    pub unsafe fn write_raw_arr<T: DeepCopy>(&mut self, ptr: *const T, len: usize) -> *mut T {
+    pub unsafe fn write_arr_ptr<T: DeepCopy>(&mut self, ptr: *const T, len: usize) -> *mut T {
         if !ptr.is_null() && len > 0 {
             let slice = std::slice::from_raw_parts(ptr, len);
-
-            let offset = layout_extend_arr::<T>(&mut self.layout, len);
-            let ptr = self.buf.add(offset).cast();
+            let ptr = self.alloc_arr::<T>(len);
 
             ptr::copy_nonoverlapping(slice.as_ptr(), ptr, len);
             for (i, element) in slice.iter().enumerate() {
@@ -177,15 +161,16 @@ impl CopyWriter {
             ptr::null_mut()
         }
     }
-    pub unsafe fn alloc_raw<T>(&mut self) -> *mut T {
-        let offset = layout_extend::<T>(&mut self.layout);
-        let ptr = self.buf.add(offset).cast();
-        ptr
-    }
-    pub unsafe fn alloc_raw_arr<T>(&mut self, len: usize) -> *mut T {
-        let offset = layout_extend_arr::<T>(&mut self.layout, len);
-        let ptr = self.buf.add(offset).cast();
-        ptr
+    pub unsafe fn write_cstr(&mut self, what: *const c_char) -> *const c_char {
+        if !what.is_null() {
+            let len = CStr::from_ptr(what).to_bytes_with_nul().len();
+            let ptr = self.alloc_arr::<c_char>(len);
+
+            ptr::copy_nonoverlapping(what, ptr, len);
+            ptr
+        } else {
+            ptr::null()
+        }
     }
     #[track_caller]
     pub unsafe fn write_pnext(&mut self, mut p_next: *const c_void) -> *mut c_void {
@@ -209,6 +194,16 @@ impl CopyWriter {
             );
         }
         first.unwrap_or(ptr::null_mut())
+    }
+    pub unsafe fn alloc<T>(&mut self) -> *mut T {
+        let offset = layout_extend::<T>(&mut self.layout);
+        let ptr = self.buf.add(offset).cast();
+        ptr
+    }
+    pub unsafe fn alloc_arr<T>(&mut self, len: usize) -> *mut T {
+        let offset = layout_extend_arr::<T>(&mut self.layout, len);
+        let ptr = self.buf.add(offset).cast();
+        ptr
     }
     pub unsafe fn finish(self) -> *mut u8 {
         self.buf

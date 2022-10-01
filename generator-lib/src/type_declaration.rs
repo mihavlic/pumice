@@ -7,7 +7,7 @@ use std::{
 
 use smallvec::SmallVec;
 
-use crate::{interner::UniqueStr, Intern, Interner};
+use crate::{interner::UniqueStr, Intern, Interner, RedeclarationMethod, Registry, SymbolBody};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum NumberLiteral {
@@ -451,6 +451,34 @@ impl TypeRef {
             s
         } else {
             unreachable!()
+        }
+    }
+    pub fn resolve_alias<'a>(&'a self, reg: &'a Registry) -> &'a TypeRef {
+        let mut ty = self;
+        'outer: loop {
+            match ty.as_slice() {
+                &[TyToken::BaseType(basetype)] => {
+                    let mut name = basetype;
+                    'inner: loop {
+                        if let Some(body) = reg.get_symbol(name) {
+                            match body {
+                                SymbolBody::Redeclaration(RedeclarationMethod::Type(new_ty)) => {
+                                    ty = &new_ty;
+                                    continue 'outer;
+                                }
+                                SymbolBody::Alias(s) => {
+                                    name = *s;
+                                    continue 'inner;
+                                }
+                                _ => return ty,
+                            }
+                        } else {
+                            return ty;
+                        }
+                    }
+                }
+                _ => return ty,
+            }
         }
     }
     pub fn descend(&self) -> &TypeRef {

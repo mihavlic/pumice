@@ -4,10 +4,11 @@ use crate::{
     cat,
     codegen::wrappers::fmt_command_wrapper,
     codegen_support::{
-        derives::DeriveData,
         format_utils::{Cond, ExtendedFormat, Fun, Iter, SectionWriter, Separated},
-        get_command_kind, get_underlying_type, is_std_type, merge_bitfield_members, resolve_alias,
-        try_ptr_target, AddedVariants, CommandKind,
+        get_command_kind,
+        type_analysis::{get_underlying_type, is_std_type, resolve_alias, try_ptr_target},
+        type_query::DeriveData,
+        AddedVariants, CommandKind,
     },
     context::Context,
     cstring, doc_boilerplate, import, import_str, string,
@@ -20,7 +21,7 @@ use generator_lib::{
 };
 use std::fmt::Write;
 
-pub fn write_item(
+pub fn write_symbol(
     name: UniqueStr,
     body: &SymbolBody,
     writer: &mut SectionWriter<'_>,
@@ -179,13 +180,12 @@ pub fn write_item(
                 true => "union",
                 false => "struct",
             };
-            let merged = merge_bitfield_members(&members, &ctx);
-            let members = Separated::args(merged.iter(), |w, decl| {
+            let fields = Separated::args(members.iter(), |w, decl| {
                 code!(w, pub #(decl.name): #import!(&decl.ty));
                 Ok(())
             });
 
-            let default_members = Separated::args(merged.iter(), |w, decl| {
+            let default_members = Separated::args(members.iter(), |w, decl| {
                 let default = Fun(|w| {
                     fmt_default_value(w, &decl, ctx);
                     Ok(())
@@ -222,7 +222,7 @@ pub fn write_item(
                 ##[repr(C)]
                 #doc_boilerplate!(name)
                 pub #keyword #name {
-                    #members
+                    #fields
                 }
                 #(Cond(zeroable, Fun(|w| {code!(w,
                     impl Default for #name {

@@ -14,7 +14,9 @@ fn main() {
     let video_xml = &args[1];
     let glue = &args[2];
     let out = &args[3];
-    let sections = &args[4];
+    let sections = &args[4]
+        .to_str()
+        .expect("Expected a comma separated list of ascii identifiers for section selection.");
 
     let mut reg = Registry::new();
 
@@ -29,16 +31,12 @@ fn main() {
     reg.finalize();
 
     let mut _tmp = None;
-    let selected =
-        if sections == "@all" {
-            None
-        } else {
-            _tmp = Some(sections
-            .to_str()
-            .expect("Expected a comma separated list of ascii identifiers for section selection.")
-            .replace(
-                "@surface",
-                "\
+    let selected = if sections.contains("@all") {
+        None
+    } else {
+        _tmp = Some(sections.replace(
+            "@surface",
+            "\
 VK_KHR_surface,
 VK_KHR_xlib_surface,
 VK_KHR_xcb_surface,
@@ -55,16 +53,16 @@ VK_EXT_metal_surface,
 VK_EXT_headless_surface,
 VK_EXT_directfb_surface,
 VK_QNX_screen_surface,",
-            ));
+        ));
 
-            Some(
-                _tmp.as_ref()
-                    .unwrap()
-                    .split(',')
-                    .map(|s| s.trim())
-                    .filter(|s| !s.is_empty()),
-            )
-        };
+        Some(
+            _tmp.as_ref()
+                .unwrap()
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty()),
+        )
+    };
     let (feature, extensions) = get_sections(selected, &reg);
 
     let conf = GenConfig {

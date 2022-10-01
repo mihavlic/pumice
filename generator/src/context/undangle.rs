@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use generator_lib::{foreach_uniquestr::ForeachUniquestr, interner::UniqueStr, Symbol, SymbolBody};
 
-use crate::codegen_support::is_std_type;
+use crate::codegen_support::type_analysis::is_std_type;
 
 use super::Context;
 

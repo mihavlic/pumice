@@ -2,6 +2,8 @@ use std::{
     collections::HashSet,
     fs::File,
     io::{BufWriter, Write},
+    path::PathBuf,
+    str::FromStr,
 };
 
 use dependencies::get_sections;
@@ -13,13 +15,15 @@ use generator_lib::{
 mod dependencies;
 
 fn main() {
-    let mut reg_file = BufWriter::new(
-        File::create(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../generated/dump.ron"
-        ))
-        .unwrap(),
-    );
+    let reg_path = PathBuf::from_str(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../generated/dump.ron"
+    ))
+    .unwrap();
+
+    std::fs::create_dir_all(reg_path.parent().unwrap()).unwrap();
+
+    let mut reg_file = BufWriter::new(File::create(reg_path).unwrap());
 
     let vk = true;
     let video = true;

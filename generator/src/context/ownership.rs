@@ -6,7 +6,7 @@ use generator_lib::{
 };
 
 use crate::{
-    codegen_support::{is_std_type, resolve_alias},
+    codegen_support::type_analysis::{is_std_type, resolve_alias},
     context::{Context, Section, SectionKind},
 };
 
