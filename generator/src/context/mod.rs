@@ -71,7 +71,7 @@ common_strings! {
     usize, u8, u16, u32, u64, i8, i16, i32, i64,
     vk_platform, disabled,
     VkDevice, VkCommandBuffer, VkQueue,
-    VkInstance, VkPhysicalDevice, slag,
+    VkInstance, VkPhysicalDevice, pumice,
     pNext, sType,
     // just some string that we can use as a placeholder that will have no collisions with existing strings
     __RESERVED_INVALID_PLACEHOLDER
@@ -122,17 +122,17 @@ impl Context {
         };
 
         {
-            let slag = s.strings.slag;
+            let pumice = s.strings.pumice;
             for (i, feature) in s.reg.features.iter().enumerate() {
                 s.sections.push(Section {
-                    ident: slag..feature.name,
+                    ident: pumice..feature.name,
                     kind: SectionKind::Feature(i as u32),
                 });
             }
 
             for (i, extension) in s.reg.extensions.iter().enumerate() {
                 s.sections.push(Section {
-                    ident: slag..extension.name,
+                    ident: pumice..extension.name,
                     kind: SectionKind::Extension(i as u32),
                 });
             }
@@ -204,7 +204,7 @@ impl Context {
         }
     }
     pub fn create_section(&self, name: &str) -> SectionIdent {
-        self.strings.slag..name.intern(self)
+        self.strings.pumice..name.intern(self)
     }
 }
 

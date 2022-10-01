@@ -15,19 +15,19 @@ fi
 if test -z "$1"; then
     echo \
 'Missing bindings output path, example usage:
-  ./gen-bindings.sh ~/Dev/slag "VK_VERSION_1_0, @surface, VK_KHR_SWAPCHAIN"'
+  ./gen-bindings.sh $OUT_PATH "VK_VERSION_1_0, @surface, VK_KHR_SWAPCHAIN"'
     exit 1
 fi
 
 if test -z "$2"; then
     echo \
 'Missing generated extensions / features selection, example usage:
-  ./gen-bindings.sh ~/Dev/slag "VK_VERSION_1_0, @surface, VK_KHR_SWAPCHAIN"'
+  ./gen-bindings.sh $OUT_PATH "VK_VERSION_1_0, @surface, VK_KHR_SWAPCHAIN"'
     exit 1
 fi
 
 if command -v mold &> /dev/null; then
-    mold -run cargo run --bin generate $(realpath vk.xml)  $(realpath video.xml) ./slag-template "$1" "$2"
+    mold -run cargo run --bin generate $(realpath vk.xml)  $(realpath video.xml) ./template "$1" "$2"
 else 
-    cargo run --bin generate $(realpath vk.xml)  $(realpath video.xml) ./slag-template "$1" "$2"
+    cargo run --bin generate $(realpath vk.xml)  $(realpath video.xml) ./template "$1" "$2"
 fi

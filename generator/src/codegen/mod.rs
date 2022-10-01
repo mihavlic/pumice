@@ -57,7 +57,7 @@ pub fn write_bindings(
         copy_dir_recursive(template, out).unwrap();
     }
 
-    // manually input sections and their contained symbols for the slag-template handwritten files
+    // manually input sections and their contained symbols for the template handwritten files
     macro_rules! manual_symbols {
         ($($path:literal: $symbols:expr),+) => {
             &[
@@ -67,6 +67,7 @@ pub fn write_bindings(
             ]
         };
     }
+
     let register_symbols: &[(&str, &[&str])] = manual_symbols!(
         "crate": [
             "EntryWrapper",
@@ -134,7 +135,7 @@ pub fn write_bindings(
             .map(|(i, _)| i + 1)
             .unwrap_or(0);
         let (path, name) = path.split_at(divide);
-        let ident = ctx.strings.slag..name.intern(&ctx);
+        let ident = ctx.strings.pumice..name.intern(&ctx);
         ctx.register_section(Section {
             ident: ident.clone(),
             kind: SectionKind::Path(path.to_owned()),

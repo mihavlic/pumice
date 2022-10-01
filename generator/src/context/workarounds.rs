@@ -58,7 +58,7 @@ pub fn apply_workarounds(ctx: &mut Context) {
     let ownership = |arg: &str| -> Workaround {
         let name = arg.intern(ctx);
         Workaround::SetOwnership(
-            ctx.get_section_idx(ctx.strings.slag..name)
+            ctx.get_section_idx(ctx.strings.pumice..name)
                 .unwrap_or_else(|| panic!("No such section '{}'", arg)),
         )
     };
