@@ -6,7 +6,7 @@ use crate::{
     codegen_support::{
         format_utils::{Cond, ExtendedFormat, Fun, Iter, SectionWriter, Separated},
         get_command_kind,
-        type_analysis::{get_underlying_type, is_std_type, resolve_alias, try_ptr_target},
+        type_analysis::{get_underlying_type, resolve_alias, try_ptr_target},
         type_query::DeriveData,
         AddedVariants, CommandKind,
     },
@@ -46,29 +46,27 @@ pub fn write_symbol(
 
     match body {
         &SymbolBody::Alias(of) => {
-            if !is_std_type(of, &ctx) {
-                let target = resolve_alias(of, &ctx);
-                match target.1 {
-                    SymbolBody::Alias { .. } | SymbolBody::Define { .. } => {
-                        unreachable!();
-                    }
-                    SymbolBody::Constant { .. } => {
-                        let ty = get_underlying_type(target.0, &ctx);
-                        code!(
-                            writer,
-                            pub const #name: #ty = #import!(target.0);
-                        );
-                        return;
-                    }
-                    SymbolBody::Command {
-                        return_type,
-                        params,
-                    } => {
-                        fmt_global_command(writer, name, target.0, params, return_type, ctx);
-                        return;
-                    }
-                    _ => {}
+            let target = resolve_alias(of, &ctx);
+            match target.1 {
+                SymbolBody::Alias { .. } | SymbolBody::Define { .. } => {
+                    unreachable!();
                 }
+                SymbolBody::Constant { .. } => {
+                    let ty = get_underlying_type(target.0, &ctx);
+                    code!(
+                        writer,
+                        pub const #name: #ty = #import!(target.0);
+                    );
+                    return;
+                }
+                SymbolBody::Command {
+                    return_type,
+                    params,
+                } => {
+                    fmt_global_command(writer, name, target.0, params, return_type, ctx);
+                    return;
+                }
+                _ => {}
             };
 
             code!(
@@ -140,7 +138,7 @@ pub fn write_symbol(
             unreachable!("[{}]", name);
         }
         SymbolBody::Basetype { .. } => {
-            unreachable!("[{}] Cannot process C preprocessor code, this type should be manually replaced in a workaround.", name);
+            // at this point the meaning of a basetype is changed to be a primitive type, as such no code generation is required
         }
         &SymbolBody::Handle {
             object_type,

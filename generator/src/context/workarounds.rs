@@ -80,6 +80,7 @@ pub fn apply_workarounds(ctx: &mut Context) {
         (Workaround::Remove, "VK_VERSION_MINOR"),
         (Workaround::Remove, "VK_VERSION_PATCH"),
         (Workaround::Remove, "VK_API_VERSION"),
+        // manually reimplemented version macros, it seems that erupt can do this arbitrarily but this is significantly less effort 
         (
             redeclare_custom(|w| 
                 write!(w,
@@ -175,20 +176,6 @@ pub fn apply_workarounds(ctx: &mut Context) {
         (Workaround::Remove, "VK_KHR_MAINTENANCE3_EXTENSION_NAME"),
         (Workaround::Remove, "VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO_INTEL"),
         (Workaround::Remove, "VK_GOOGLE_HLSL_FUNCTIONALITY1_SPEC_VERSION"),
-        // base types that are incluided from the cursed `vk_platform`, they are removed and then have a special case in the path resolution function
-        (Workaround::Remove, "void"),
-        (Workaround::Remove, "char"),
-        (Workaround::Remove, "float"),
-        (Workaround::Remove, "double"),
-        (Workaround::Remove, "uint8_t"),
-        (Workaround::Remove, "uint16_t"),
-        (Workaround::Remove, "uint32_t"),
-        (Workaround::Remove, "uint64_t"),
-        (Workaround::Remove, "int8_t"),
-        (Workaround::Remove, "int16_t"),
-        (Workaround::Remove, "int32_t"),
-        (Workaround::Remove, "int64_t"),
-        (Workaround::Remove, "size_t"),
         // hardcoded types that are normally included from headers
         // from https://github.com/Friz64/erupt/blob/9bce30f1a1239d0198258abc60473e3c9f1d6f8a/generator/src/declaration.rs#L100
         (alias("void"),             "Display"),
@@ -249,6 +236,35 @@ pub fn apply_workarounds(ctx: &mut Context) {
         (redeclare("void *"),       "MTLSharedEvent_id"),
         (redeclare("void *"),       "IOSurfaceRef"),
     ].into_iter().map(|(method, name)| (name.intern(ctx), method)).collect::<Vec<_>>();
+
+    // base types that are included from the cursed `vk_platform`, they are removed and then have a special case in the path resolution function
+    // the meaning of basetype is changed from that of the registry to mean a primitive type that cannot be decomposed rather than a weird edge case
+    let basetypes = [
+        "void", "int", "char", "float", "double", "bool", "uint8_t", "uint16_t", "uint32_t",
+        "uint64_t", "int8_t", "int16_t", "int32_t", "int64_t", "size_t",
+    ];
+
+    {
+        let vk10 = ctx
+            .get_section_idx(ctx.strings.pumice..ctx.strings.VK_VERSION_1_0)
+            .unwrap();
+
+        for base in basetypes {
+            let name = base.intern(ctx);
+
+            let body = SymbolBody::Basetype {
+                code: "__implementation_detail".to_owned(),
+            };
+
+            if ctx.get_symbol_index(name).is_some() {
+                workarounds.push((name, Workaround::Replace(body)));
+            } else {
+                ctx.reg.add_symbol(name, body);
+            }
+
+            workarounds.push((name, Workaround::SetOwnership(vk10)));
+        }
+    }
 
     workarounds.sort_by_key(|s| s.0);
 

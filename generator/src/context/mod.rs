@@ -74,7 +74,8 @@ common_strings! {
     VkInstance, VkPhysicalDevice, pumice,
     pNext, sType,
     // just some string that we can use as a placeholder that will have no collisions with existing strings
-    __RESERVED_INVALID_PLACEHOLDER
+    __RESERVED_INVALID_PLACEHOLDER,
+    VK_VERSION_1_0
     @
     null_terminated: "null-terminated"
 }

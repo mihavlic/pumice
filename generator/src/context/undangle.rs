@@ -2,8 +2,6 @@ use std::collections::HashMap;
 
 use generator_lib::{foreach_uniquestr::ForeachUniquestr, interner::UniqueStr, Symbol, SymbolBody};
 
-use crate::codegen_support::type_analysis::is_std_type;
-
 use super::Context;
 
 pub fn undangle(ctx: &mut Context) {
@@ -18,10 +16,6 @@ pub fn undangle(ctx: &mut Context) {
             let name = *name;
             let of = *of;
             if ctx.symbol_get_section_idx(of).is_none() {
-                if is_std_type(of, ctx) {
-                    continue;
-                }
-
                 let target =
                     ctx.get_symbol_index(of)
                         .unwrap_or_else(|| panic!("{} {}", name, of)) as usize;
@@ -31,7 +25,7 @@ pub fn undangle(ctx: &mut Context) {
                 let ptr1: *mut _ = &mut ctx.reg.symbols[symbol_idx].1;
                 let ptr2: *mut _ = &mut ctx.reg.symbols[target].1;
                 unsafe {
-                    // we are overwriting a SymbolBOdy::Alias which is pod so we can afford not to drop it
+                    // we are overwriting a SymbolBody::Alias which is pod so we can afford not to drop it
                     std::ptr::write(ptr1, std::ptr::read(ptr2));
                     // some symbols may still refer to the replaced definition
                     // so we point it to the one which is now "oficial"

@@ -39,10 +39,6 @@ impl ExtendedFormat for UnderlyingType {
 pub fn get_underlying_type(name: UniqueStr, ctx: &Context) -> UnderlyingType {
     let mut symbol = name;
     loop {
-        if is_std_type(symbol, &ctx) {
-            return UnderlyingType::Basetype(symbol);
-        }
-
         let top = ctx.get_symbol(symbol).unwrap();
         match top {
             SymbolBody::Alias(of) => symbol = *of,

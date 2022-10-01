@@ -12,7 +12,7 @@ use crate::{
     codegen::symbols::{fmt_default_value, fmt_default_value_with_overlay},
     codegen_support::{
         format_utils::{Cond, ExtendedFormat, Fun, Iter, SectionWriter},
-        type_analysis::{is_std_type, is_void_pointer},
+        type_analysis::is_void_pointer,
         CommandKind,
     },
     context::Context,
@@ -142,13 +142,11 @@ fn generate_list<'a>(
                         *param_kind = ParameterRole::ValueWrittenTo { inner: to };
 
                         if let Some(basetype) = to.try_only_basetype() {
-                            if !is_std_type(basetype, ctx) {
-                                if let SymbolBody::Struct { members, .. } =
-                                    ctx.get_symbol(basetype).unwrap()
-                                {
-                                    if contains_pnext(members, ctx) {
-                                        *param_kind = ParameterRole::Regular;
-                                    }
+                            if let SymbolBody::Struct { members, .. } =
+                                ctx.get_symbol(basetype).unwrap()
+                            {
+                                if contains_pnext(members, ctx) {
+                                    *param_kind = ParameterRole::Regular;
                                 }
                             }
                         }

@@ -6,7 +6,7 @@ use generator_lib::{
 
 use crate::{context::Context, switch};
 
-use super::type_analysis::{is_std_type, is_void_pointer};
+use super::type_analysis::is_void_pointer;
 
 pub struct DeriveData {
     eq: Vec<Option<bool>>,
@@ -81,10 +81,6 @@ pub fn broadcast_to_constituents(
     to: bool,
     ctx: &Context,
 ) {
-    if is_std_type(name, ctx) {
-        return;
-    }
-
     let index = ctx.get_symbol_index(name).unwrap() as usize;
 
     let cell = &mut symbol_overlay[index];
@@ -110,12 +106,13 @@ pub fn broadcast_to_constituents(
                 broadcast_to_constituents(member.ty.get_basetype(), symbol_overlay, to, ctx)
             }
         }
-        SymbolBody::Handle { .. } | SymbolBody::Funcpointer { .. } => {}
+        SymbolBody::Basetype { .. }
+        | SymbolBody::Handle { .. }
+        | SymbolBody::Funcpointer { .. } => {}
         SymbolBody::Constant { .. }
         | SymbolBody::Command { .. }
         | SymbolBody::Included { .. }
-        | SymbolBody::Define { .. }
-        | SymbolBody::Basetype { .. } => {
+        | SymbolBody::Define { .. } => {
             unreachable!()
         }
     };
@@ -135,11 +132,7 @@ pub fn logical_and_constituents<
 ) -> bool {
     debug_assert!(symbol_overlay.len() >= ctx.reg.symbols.len());
 
-    let index = if let Some(index) = ctx.get_symbol_index(name) {
-        index as usize
-    } else {
-        return on_type(&Type::from_only_basetype(name), symbol_overlay);
-    };
+    let index = ctx.get_symbol_index(name).unwrap() as usize;
 
     if let Some(computed) = symbol_overlay[index] {
         return computed;
@@ -162,14 +155,14 @@ pub fn logical_and_constituents<
                 false
             }
         }
-        SymbolBody::Enum { .. } | SymbolBody::Handle { .. } | SymbolBody::Funcpointer { .. } => {
-            on_leaf(symbol)
-        }
+        SymbolBody::Basetype { .. }
+        | SymbolBody::Enum { .. }
+        | SymbolBody::Handle { .. }
+        | SymbolBody::Funcpointer { .. } => on_leaf(symbol),
         SymbolBody::Constant { .. }
         | SymbolBody::Command { .. }
         | SymbolBody::Included { .. }
-        | SymbolBody::Define { .. }
-        | SymbolBody::Basetype { .. } => {
+        | SymbolBody::Define { .. } => {
             unreachable!()
         }
     };
@@ -187,6 +180,13 @@ pub fn symbol_is_hashable(
         name,
         |body| match &body.1 {
             // unions are not hashable
+            SymbolBody::Basetype { .. } => {
+                let s = &ctx.strings;
+                switch!(body.0;
+                    s.void, s.float, s.double => false;
+                    @ true
+                )
+            }
             SymbolBody::Struct { union, .. } => *union == false,
             SymbolBody::Enum { .. } => true,
             SymbolBody::Handle { .. } => true,
@@ -203,15 +203,7 @@ pub fn symbol_is_hashable(
 
 pub fn type_is_hashable(ty: &TypeRef, symbol_overlay: &mut [Option<bool>], ctx: &Context) -> bool {
     if let Some(basetype) = ty.try_only_basetype() {
-        let s = &ctx.strings;
-        switch!(basetype;
-            s.void, s.float, s.double => return false;
-            s.int, s.char, s.uint8_t, s.uint16_t, s.uint32_t, s.uint64_t, s.int8_t, s.int16_t, s.int32_t, s.int64_t, s.size_t => return true;
-            @ {
-                assert!(ctx.get_symbol_index(basetype).is_some(), "Only a symbol should pass here.");
-                return symbol_is_hashable(basetype, symbol_overlay, ctx);
-            }
-        );
+        return symbol_is_hashable(basetype, symbol_overlay, ctx);
     } else {
         for token in ty.as_slice() {
             match token {
@@ -237,6 +229,7 @@ pub fn symbol_is_zeroable(
     logical_and_constituents(
         name,
         |body| match &body.1 {
+            SymbolBody::Basetype { .. } => true,
             SymbolBody::Struct { .. } => true,
             SymbolBody::Enum { .. } => true,
             SymbolBody::Handle { .. } => true,
@@ -252,9 +245,6 @@ pub fn symbol_is_zeroable(
 
 fn type_is_zeroable(ty: &TypeRef, overlay: &mut [Option<bool>], ctx: &Context) -> bool {
     if let Some(ty) = ty.try_only_basetype() {
-        if is_std_type(ty, ctx) {
-            return true;
-        }
         symbol_is_zeroable(ty, overlay, ctx)
     } else {
         true
@@ -269,6 +259,7 @@ pub fn symbol_is_value(
     logical_and_constituents(
         name,
         |body| match &body.1 {
+            SymbolBody::Basetype { .. } => true,
             SymbolBody::Struct { .. } => true,
             SymbolBody::Enum { .. } => true,
             SymbolBody::Handle { .. } => true,
@@ -284,11 +275,7 @@ pub fn symbol_is_value(
 
 pub fn type_is_value(ty: &TypeRef, symbol_overlay: &mut [Option<bool>], ctx: &Context) -> bool {
     if let Some(basetype) = ty.try_only_basetype() {
-        if is_std_type(basetype, ctx) {
-            return true;
-        } else {
-            return symbol_is_value(basetype, symbol_overlay, ctx);
-        }
+        return symbol_is_value(basetype, symbol_overlay, ctx);
     } else {
         for token in ty.as_slice() {
             match token {

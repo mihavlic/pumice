@@ -6,7 +6,7 @@ use generator_lib::{
 };
 
 use crate::{
-    codegen_support::type_analysis::{is_std_type, resolve_alias},
+    codegen_support::type_analysis::resolve_alias,
     context::{Context, Section, SectionKind},
 };
 
@@ -23,12 +23,8 @@ pub fn resolve_ownership(ctx: &mut Context) {
                 ctx.symbol_ownership.entry(name).or_insert(i as u32);
             } else {
                 // QUIRK
-                //   types like uint8_t and such are removed from the registry as they are always replaced by references into the standard library
-                //   video.xml puts the name of its header which obviously is not a symbol in the <require> tag of its extension
                 //   workaround.rs may mark deleted symbols by renaming them to the placeholder
-                if is_std_type(name, ctx)
-                    || name.eq_resolve(ctx.strings.__RESERVED_INVALID_PLACEHOLDER)
-                {
+                if name.eq_resolve(ctx.strings.__RESERVED_INVALID_PLACEHOLDER) {
                     continue;
                 }
                 panic!("[{}] Unknown symbol.", name);
@@ -46,11 +42,6 @@ pub fn resolve_ownership(ctx: &mut Context) {
         }
 
         if let SymbolBody::Alias(of) = symbol.1 {
-            // std types are not in the registry, see workarounds.rs
-            if is_std_type(of, &ctx) {
-                break;
-            }
-
             // aliases to BitmaskBits are allowed to be unowned
             if let &SymbolBody::Enum { bitmask, .. } = resolve_alias(of, ctx).1 {
                 if bitmask {

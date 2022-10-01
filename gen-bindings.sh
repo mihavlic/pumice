@@ -27,7 +27,13 @@ if test -z "$2"; then
 fi
 
 if command -v mold &> /dev/null; then
-    mold -run cargo run ${@:3} --bin generate $(realpath vk.xml)  $(realpath video.xml) ./template "$1" "$2"
+    if test -n "$DEBUG"; then
+        echo mold -run cargo run ${@:3} --bin generate $(realpath vk.xml)  $(realpath video.xml) ./pumice-template "$1" "$2"
+    fi
+    mold -run cargo run ${@:3} --bin generate $(realpath vk.xml)  $(realpath video.xml) ./pumice-template "$1" "$2"
 else 
-    cargo run ${@:3} --bin generate $(realpath vk.xml)  $(realpath video.xml) ./template "$1" "$2"
+    if test -n "$DEBUG"; then
+        echo cargo run ${@:3} --bin generate $(realpath vk.xml)  $(realpath video.xml) ./pumice-template "$1" "$2"
+    fi
+    cargo run ${@:3} --bin generate $(realpath vk.xml)  $(realpath video.xml) ./pumice-template "$1" "$2"
 fi

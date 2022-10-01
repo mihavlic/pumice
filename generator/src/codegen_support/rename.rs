@@ -1,10 +1,7 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
-use super::{
-    type_analysis::{is_std_type, resolve_alias},
-    AddedVariants,
-};
+use super::{type_analysis::resolve_alias, AddedVariants};
 use crate::{context::Context, switch};
 use generator_lib::{
     interner::{Intern, UniqueStr},
@@ -103,15 +100,13 @@ pub fn apply_renames(added_variants: &HashMap<UniqueStr, Vec<AddedVariants>>, ct
 
         match body {
             &SymbolBody::Alias(of) => {
-                if !is_std_type(of, &ctx) {
-                    let (target_name, body) = resolve_alias(of, &ctx);
-                    match body {
-                        SymbolBody::Alias { .. } => {
-                            enum_aliases.entry(target_name).or_default().push(name);
-                        }
-                        _ => {}
+                let (target_name, body) = resolve_alias(of, &ctx);
+                match body {
+                    SymbolBody::Alias { .. } => {
+                        enum_aliases.entry(target_name).or_default().push(name);
                     }
-                };
+                    _ => {}
+                }
             }
             _ => {}
         }
@@ -121,18 +116,16 @@ pub fn apply_renames(added_variants: &HashMap<UniqueStr, Vec<AddedVariants>>, ct
         let &Symbol(name, ref body) = &ctx.reg.symbols[i];
 
         match body {
-            // don't forget to make snake case commands that are just aliases
+            // don't forget to make commands that are just aliases into snake case too
             &SymbolBody::Alias(of) => {
-                if !is_std_type(of, &ctx) {
-                    let (_, body) = resolve_alias(of, &ctx);
-                    match body {
-                        SymbolBody::Command { .. } => {
-                            camel_to_snake(name.resolve(), &mut buf);
-                            name.rename(buf.intern(&ctx));
-                        }
-                        _ => {}
+                let (_, body) = resolve_alias(of, &ctx);
+                match body {
+                    SymbolBody::Command { .. } => {
+                        camel_to_snake(name.resolve(), &mut buf);
+                        name.rename(buf.intern(&ctx));
                     }
-                };
+                    _ => {}
+                }
             }
             SymbolBody::Enum { members, .. } => {
                 let aliases = enum_aliases.get(&name);
