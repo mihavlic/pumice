@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
-use super::{type_analysis::resolve_alias, AddedVariants};
+use super::{type_analysis::get_underlying_symbol, AddedVariants};
 use crate::{context::Context, switch};
 use generator_lib::{
     interner::{Intern, UniqueStr},
@@ -100,7 +100,7 @@ pub fn apply_renames(added_variants: &HashMap<UniqueStr, Vec<AddedVariants>>, ct
 
         match body {
             &SymbolBody::Alias(of) => {
-                let (target_name, body) = resolve_alias(of, &ctx);
+                let (target_name, body) = get_underlying_symbol(of, &ctx);
                 match body {
                     SymbolBody::Alias { .. } => {
                         enum_aliases.entry(target_name).or_default().push(name);
@@ -118,7 +118,7 @@ pub fn apply_renames(added_variants: &HashMap<UniqueStr, Vec<AddedVariants>>, ct
         match body {
             // don't forget to make commands that are just aliases into snake case too
             &SymbolBody::Alias(of) => {
-                let (_, body) = resolve_alias(of, &ctx);
+                let (_, body) = get_underlying_symbol(of, &ctx);
                 match body {
                     SymbolBody::Command { .. } => {
                         camel_to_snake(name.resolve(), &mut buf);

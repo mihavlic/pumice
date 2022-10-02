@@ -9,7 +9,7 @@ use crate::codegen_support::format_utils::{
     Cond, ExtendedFormat, Fun, Iter, SectionWriter, Separated,
 };
 use crate::codegen_support::rename::apply_renames;
-use crate::codegen_support::type_analysis::resolve_alias;
+use crate::codegen_support::type_analysis::get_underlying_symbol;
 use crate::codegen_support::type_query::DeriveData;
 use crate::codegen_support::{
     get_command_kind, get_enum_added_variants, merge_bitfield_members, AddedVariants, CommandKind,
@@ -292,7 +292,7 @@ fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Context) {
                 CommandKind::Device => device.push(what),
             }
         } else if let &SymbolBody::Alias(of) = body {
-            let (_, body) = resolve_alias(of, &ctx);
+            let (_, body) = get_underlying_symbol(of, &ctx);
             if let SymbolBody::Command { params, .. } = body {
                 let what = (section_idx, name, body);
                 match get_command_kind(&params, &ctx) {

@@ -213,7 +213,7 @@ pub fn merge_bitfield_members<'a>(members: &'a [Declaration], ctx: &Context) -> 
                 .expect("Only a base raw integer can be a bitfield.");
 
             let s = &ctx.strings;
-            let underlying = get_underlying_type(basetype, ctx).try_basetype().unwrap();
+            let underlying = get_underlying_type(basetype, ctx).get_basetype();
             let type_bits = switch!(underlying;
                 s.uint8_t,  s.int8_t => 8;
                 s.uint16_t, s.int16_t => 16;

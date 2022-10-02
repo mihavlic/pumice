@@ -6,7 +6,7 @@ use crate::{
     codegen_support::{
         format_utils::{Cond, ExtendedFormat, Fun, Iter, SectionWriter, Separated},
         get_command_kind,
-        type_analysis::{get_underlying_type, resolve_alias, try_ptr_target},
+        type_analysis::{get_underlying_symbol, get_underlying_type},
         type_query::DeriveData,
         AddedVariants, CommandKind,
     },
@@ -46,7 +46,7 @@ pub fn write_symbol(
 
     match body {
         &SymbolBody::Alias(of) => {
-            let target = resolve_alias(of, &ctx);
+            let target = get_underlying_symbol(of, &ctx);
             match target.1 {
                 SymbolBody::Alias { .. } | SymbolBody::Define { .. } => {
                     unreachable!();
@@ -55,7 +55,7 @@ pub fn write_symbol(
                     let ty = get_underlying_type(target.0, &ctx);
                     code!(
                         writer,
-                        pub const #name: #ty = #import!(target.0);
+                        pub const #name: #import!(ty) = #import!(target.0);
                     );
                     return;
                 }
@@ -247,14 +247,15 @@ pub fn write_symbol(
                 Ok(())
             });
 
-            code!(writer, pub const #name: #ty = #val;)
+            code!(writer, pub const #name: #import!(ty) = #val;)
         }
         SymbolBody::Enum {
             ty,
             members,
             bitmask,
         } => {
-            let ty = get_underlying_type(*ty, &ctx);
+            let tmp = get_underlying_type(*ty, &ctx);
+            let ty = import!(tmp);
 
             let eq = select!(derives.is_eq(name, ctx), ", Eq, Hash", "");
 
@@ -540,7 +541,7 @@ pub fn fmt_default_value_with_overlay<'a>(
             #import!(&ctx.types.VkStructureType)::#(decl.metadata.values.get(0).unwrap().resolve())
         )
     } else {
-        let str = if let Some(target) = try_ptr_target(ty, ctx) {
+        let str = if let Some(target) = ty.resolve_alias(ctx).try_ptr_target() {
             if let Some(TyToken::Const) = target.as_slice().first() {
                 "std::ptr::null()"
             } else {

@@ -240,8 +240,23 @@ pub fn apply_workarounds(ctx: &mut Context) {
     // base types that are included from the cursed `vk_platform`, they are removed and then have a special case in the path resolution function
     // the meaning of basetype is changed from that of the registry to mean a primitive type that cannot be decomposed rather than a weird edge case
     let basetypes = [
-        "void", "int", "char", "float", "double", "bool", "uint8_t", "uint16_t", "uint32_t",
-        "uint64_t", "int8_t", "int16_t", "int32_t", "int64_t", "size_t",
+        "void",
+        "int",
+        "char",
+        "float",
+        "double",
+        "bool",
+        "uint8_t",
+        "uint16_t",
+        "uint32_t",
+        "uint64_t",
+        "int8_t",
+        "int16_t",
+        "int32_t",
+        "int64_t",
+        "size_t",
+        // an edge case for cstring constants because we're using `std::ffi::CStr` for them and not `*const c_char`
+        "__cstring_constant_type",
     ];
 
     {
@@ -259,6 +274,7 @@ pub fn apply_workarounds(ctx: &mut Context) {
             if ctx.get_symbol_index(name).is_some() {
                 workarounds.push((name, Workaround::Replace(body)));
             } else {
+                // some of these may not be used in the registry and only emitted by our code so we make sure that they are always proper symbols
                 ctx.reg.add_symbol(name, body);
             }
 

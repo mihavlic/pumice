@@ -9,7 +9,7 @@ use std::{
 
 use generator_lib::{
     interner::UniqueStr,
-    type_declaration::{fmt_type_tokens_impl, Type, TypeRef},
+    type_declaration::{fmt_type_tokens_impl, BasetypeOrRef, Type, TypeRef},
 };
 
 use crate::context::{Context, SectionFunctions, SectionIdent};
@@ -250,7 +250,10 @@ impl<
     }
 }
 
+#[derive(Clone)]
 pub struct Import<T>(pub T);
+
+impl<T: Clone + Copy> Copy for Import<T> {}
 
 #[macro_export]
 macro_rules! import {
@@ -378,6 +381,12 @@ impl ExtendedFormat for Import<&TypeRef> {
     }
 }
 
+impl<'a> ExtendedFormat for Import<BasetypeOrRef<'a>> {
+    fn efmt(self, writer: &mut SectionWriter) -> std::fmt::Result {
+        import!(self.0.deref()).efmt(writer)
+    }
+}
+
 fn fmt_symbol_path(
     name: UniqueStr,
     current_section: &SectionIdent,
@@ -387,11 +396,14 @@ fn fmt_symbol_path(
     let s = &ctx.strings;
     crate::switch!(
         name;
-        // these ffi types are imported into every module
         s.void, s.int, s.char, s.float, s.double => {
             write!(f, "std::os::raw::")?;
         };
-        // stdint.h types are always renamed to their rust-native counterparts
+        // an edge case for cstring constants because we're using `std::ffi::CStr` for them and not `*const c_char`
+        s.__cstring_constant_type => {
+            return write!(f, "&std::ffi::CStr");
+        };
+        // stdint.h types are always renamed to their rust-native counterparts and as such are always in scope
         s.bool, s.uint8_t, s.uint16_t, s.uint32_t, s.uint64_t, s.int8_t, s.int16_t, s.int32_t, s.int64_t, s.size_t => {};
         s.usize, s.u8, s.u16, s.u32, s.u64, s.i8, s.i16, s.i32, s.i64 => unreachable!("Rust-native types shouldn't ever be used by our code!");
         @ {

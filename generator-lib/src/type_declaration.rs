@@ -356,6 +356,12 @@ impl DerefMut for Type {
     }
 }
 
+impl From<UniqueStr> for Type {
+    fn from(from: UniqueStr) -> Self {
+        Type::from_only_basetype(from)
+    }
+}
+
 impl Type {
     pub fn from_only_basetype(basetype: UniqueStr) -> Self {
         Self(smallvec::smallvec![TyToken::BaseType(basetype)])
@@ -406,6 +412,29 @@ impl Type {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BasetypeOrRef<'a> {
+    Ref(&'a TypeRef),
+    BaseType(TyToken),
+}
+
+impl<'a> BasetypeOrRef<'a> {
+    pub fn basetype(basetype: UniqueStr) -> Self {
+        BasetypeOrRef::BaseType(TyToken::BaseType(basetype))
+    }
+}
+
+impl<'a> Deref for BasetypeOrRef<'a> {
+    type Target = TypeRef;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            &BasetypeOrRef::Ref(ty) => ty,
+            BasetypeOrRef::BaseType(ty) => TypeRef::from_slice(std::slice::from_ref(ty)),
+        }
+    }
+}
+
 #[repr(transparent)]
 #[derive(PartialEq, Eq)]
 pub struct TypeRef([TyToken]);
@@ -432,6 +461,17 @@ impl TypeRef {
 
         None
     }
+    pub fn try_ptr_target(&self) -> Option<&TypeRef> {
+        match self.as_slice() {
+            tokens @ [TyToken::Ptr, TyToken::Const, ..] => {
+                return Some(TypeRef::from_slice(&tokens[2..]));
+            }
+            tokens @ [TyToken::Ptr, ..] => {
+                return Some(TypeRef::from_slice(&tokens[1..]));
+            }
+            _ => return None,
+        }
+    }
     pub fn try_not_only_basetype(&self) -> Option<UniqueStr> {
         if self.0.len() != 1 {
             return Some(self.get_basetype());
@@ -453,27 +493,25 @@ impl TypeRef {
             unreachable!()
         }
     }
-    pub fn resolve_alias<'a>(&'a self, reg: &'a Registry) -> &'a TypeRef {
-        let mut ty = self;
+    /// Jumps through aliases and SymbolBody::Redeclaration, otherwise returns self which is possibly a basetype of a symbol (that is neither an alias nor a redeclaration)
+    pub fn resolve_alias<'a>(&'a self, reg: &'a Registry) -> BasetypeOrRef<'a> {
+        let mut ty = BasetypeOrRef::Ref(self);
         'outer: loop {
             match ty.as_slice() {
                 &[TyToken::BaseType(basetype)] => {
                     let mut name = basetype;
                     'inner: loop {
-                        if let Some(body) = reg.get_symbol(name) {
-                            match body {
-                                SymbolBody::Redeclaration(RedeclarationMethod::Type(new_ty)) => {
-                                    ty = &new_ty;
-                                    continue 'outer;
-                                }
-                                SymbolBody::Alias(s) => {
-                                    name = *s;
-                                    continue 'inner;
-                                }
-                                _ => return ty,
+                        match reg.get_symbol(name).unwrap() {
+                            SymbolBody::Redeclaration(RedeclarationMethod::Type(new_ty)) => {
+                                ty = BasetypeOrRef::Ref(&new_ty);
+                                continue 'outer;
                             }
-                        } else {
-                            return ty;
+                            SymbolBody::Alias(s) => {
+                                ty = BasetypeOrRef::basetype(*s);
+                                name = *s;
+                                continue 'inner;
+                            }
+                            _ => return ty,
                         }
                     }
                 }

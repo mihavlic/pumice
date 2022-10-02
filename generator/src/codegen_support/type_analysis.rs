@@ -1,42 +1,30 @@
-use std::fmt::Write;
+use std::ops::Deref;
 
 use generator_lib::{
     interner::UniqueStr,
-    type_declaration::{TyToken, TypeRef},
-    ConstantValue, RedeclarationMethod, Registry, SymbolBody,
+    type_declaration::{BasetypeOrRef, TypeRef},
+    ConstantValue, Registry, SymbolBody,
 };
 
 use crate::{context::Context, switch};
 
-use super::format_utils::{ExtendedFormat, SectionWriter};
+// #[derive(Clone, Copy, Debug)]
+// pub enum UnderlyingType {
+//     Basetype(UniqueStr),
+//     CString,
+// }
 
-#[derive(Clone, Copy, Debug)]
-pub enum UnderlyingType {
-    Basetype(UniqueStr),
-    CString,
-}
+// impl UnderlyingType {
+//     pub fn try_basetype(&self) -> Option<UniqueStr> {
+//         match self {
+//             UnderlyingType::Basetype(b) => Some(*b),
+//             UnderlyingType::CString => None,
+//         }
+//     }
+// }
 
-impl UnderlyingType {
-    pub fn try_basetype(&self) -> Option<UniqueStr> {
-        match self {
-            UnderlyingType::Basetype(b) => Some(*b),
-            UnderlyingType::CString => None,
-        }
-    }
-}
-
-impl ExtendedFormat for UnderlyingType {
-    fn efmt(self, writer: &mut SectionWriter) -> std::fmt::Result {
-        match self {
-            UnderlyingType::Basetype(b) => crate::import!(b).efmt(writer),
-            UnderlyingType::CString => write!(writer, "&std::ffi::CStr"),
-        }
-    }
-}
-
-// Get the underlying type of a symbol.
-// The difference between this and `resolve_alias()` is that this also jumps through "transparent" symbols, such as handles or constants.
-pub fn get_underlying_type(name: UniqueStr, ctx: &Context) -> UnderlyingType {
+/// The difference between this and `resolve_alias()` is that this also jumps through "transparent" symbols, such as handles or constants.
+pub fn get_underlying_type(name: UniqueStr, ctx: &Context) -> BasetypeOrRef {
     let mut symbol = name;
     loop {
         let top = ctx.get_symbol(symbol).unwrap();
@@ -51,61 +39,51 @@ pub fn get_underlying_type(name: UniqueStr, ctx: &Context) -> UnderlyingType {
                     match val {
                         ConstantValue::Bitpos(_) => unreachable!(),
                         ConstantValue::Literal(_) | ConstantValue::Expression(_) => {
-                            return UnderlyingType::Basetype(ctx.strings.uint32_t)
+                            return BasetypeOrRef::basetype(ctx.strings.uint32_t)
                         }
                         ConstantValue::Symbol(s) => symbol = *s,
-                        ConstantValue::String(_) => return UnderlyingType::CString,
+                        ConstantValue::String(_) => {
+                            return BasetypeOrRef::basetype(ctx.strings.__cstring_constant_type)
+                        }
                     }
                 }
             }
             // really the only macros that are left are version constants so this is good enough for now
-            SymbolBody::Define { .. } => return UnderlyingType::Basetype(ctx.strings.uint32_t),
+            SymbolBody::Define { .. } => return BasetypeOrRef::basetype(ctx.strings.uint32_t),
             SymbolBody::Redeclaration(_)
             | SymbolBody::Basetype { .. }
             | SymbolBody::Included { .. }
             | SymbolBody::Struct { .. }
-            | SymbolBody::Funcpointer { .. } => return UnderlyingType::Basetype(symbol),
+            | SymbolBody::Funcpointer { .. } => return BasetypeOrRef::basetype(symbol),
             SymbolBody::Command { .. } => unreachable!(),
         }
     }
 }
 
-pub fn try_ptr_target<'a>(ty: &'a TypeRef, ctx: &'a Context) -> Option<&'a TypeRef> {
-    match ty.as_slice() {
-        &[TyToken::BaseType(mut basetype)] => loop {
-            match ctx.get_symbol(basetype) {
-                Some(SymbolBody::Alias(of)) => basetype = *of,
-                Some(SymbolBody::Redeclaration(RedeclarationMethod::Type(ty))) => {
-                    return try_ptr_target(ty, ctx);
-                }
-                _ => return None,
-            }
-        },
-        tokens @ &[TyToken::Ptr, ..] => {
-            return Some(TypeRef::from_slice(&tokens[1..]));
-        }
-        _ => return None,
-    }
-}
-
-// jumps through as many aliases (Symbol::Alias) as needed and returns the resulting non-alias symbol,
-// in cases where the provided identifier is not an alias it is immediatelly returned back
-pub fn resolve_alias<'a>(alias: UniqueStr, reg: &'a Registry) -> (UniqueStr, &'a SymbolBody) {
-    let mut next = alias;
+/// Jumps through as many aliases (Symbol::Alias) as needed and returns the resulting non-alias symbol,
+/// in cases where the provided identifier is not an alias it is immediatelly returned back
+pub fn get_underlying_symbol<'a>(
+    mut name: UniqueStr,
+    reg: &'a Registry,
+) -> (UniqueStr, &'a SymbolBody) {
     loop {
-        let symbol = reg
-            .get_symbol(next)
-            .unwrap_or_else(|| panic!("'{}' Not in registry", { next }));
+        let symbol = reg.get_symbol(name).unwrap();
         match symbol {
             &SymbolBody::Alias(of) => {
-                next = of;
+                name = of;
             }
-            _ => return (next, symbol),
+            _ => return (name, symbol),
         }
     }
 }
 
-// whether the type is provided from the rust standard library and as such has no entry in the Registry
+pub fn is_void_pointer(ty: &TypeRef, ctx: &Context) -> bool {
+    ty.resolve_alias(ctx)
+        .try_ptr_target()
+        .map(|ty| ty.resolve_alias(ctx).deref() == ctx.types.void.deref())
+        .unwrap_or(false)
+}
+
 pub fn is_std_type(ty: UniqueStr, ctx: &Context) -> bool {
     let s = &ctx.strings;
     switch!(ty;
@@ -113,23 +91,4 @@ pub fn is_std_type(ty: UniqueStr, ctx: &Context) -> bool {
         s.uint8_t, s.uint16_t, s.uint32_t, s.uint64_t, s.int8_t, s.int16_t, s.int32_t, s.int64_t, s.size_t => true;
         @ false
     )
-}
-
-pub fn is_void_pointer(ty: &TypeRef, ctx: &Context) -> bool {
-    try_ptr_target(ty, ctx)
-        .map(|ty| match ty.as_slice() {
-            &[TyToken::BaseType(mut basetype)]
-            | &[TyToken::Const, TyToken::BaseType(mut basetype)] => loop {
-                if basetype == ctx.strings.void {
-                    break true;
-                }
-                if let Some(SymbolBody::Alias(of)) = ctx.get_symbol(basetype) {
-                    basetype = *of;
-                } else {
-                    break false;
-                }
-            },
-            _ => false,
-        })
-        .unwrap_or(false)
 }

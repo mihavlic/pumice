@@ -6,7 +6,7 @@ use generator_lib::{
 };
 
 use crate::{
-    codegen_support::type_analysis::resolve_alias,
+    codegen_support::type_analysis::get_underlying_symbol,
     context::{Context, Section, SectionKind},
 };
 
@@ -43,7 +43,7 @@ pub fn resolve_ownership(ctx: &mut Context) {
 
         if let SymbolBody::Alias(of) = symbol.1 {
             // aliases to BitmaskBits are allowed to be unowned
-            if let &SymbolBody::Enum { bitmask, .. } = resolve_alias(of, ctx).1 {
+            if let &SymbolBody::Enum { bitmask, .. } = get_underlying_symbol(of, ctx).1 {
                 if bitmask {
                     continue;
                 }
