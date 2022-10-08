@@ -147,6 +147,14 @@ pub fn apply_workarounds(ctx: &mut Context) {
         (Workaround::Remove, "vk_video/vulkan_video_codecs_common.h"),
         (Workaround::Remove, "vk_video/vulkan_video_codec_h264std.h"),
         (Workaround::Remove, "vk_video/vulkan_video_codec_h265std.h"),
+        // missing ownership of video.xml stuff
+        // TODO check if this is still needed
+        (ownership("vulkan_video_codec_h265std"), "StdVideoH265ProfileTierLevelFlags"),
+        (ownership("vulkan_video_codec_h265std"), "StdVideoH265ProfileTierLevel"),
+        (ownership("vulkan_video_codec_h265std"), "StdVideoH265ShortTermRefPicSetFlags"),
+        (ownership("vulkan_video_codec_h265std"), "StdVideoH265ShortTermRefPicSet"),
+        (ownership("vulkan_video_codec_h265std"), "StdVideoH265LongTermRefPicsSps"),
+        (ownership("vulkan_video_codec_h265std_encode"), "StdVideoEncodeH265SliceSegmentLongTermRefPics"),
         // VK_PIPELINE_CREATE_DISPATCH_BASE is a typo without the BIT, yet VK_PIPELINE_CREATE_DISPATCH_BASE_KHR is derived off it
         (Workaround::Remove, "VK_PIPELINE_CREATE_DISPATCH_BASE"),
         (alias_extend("VK_PIPELINE_CREATE_DISPATCH_BASE_BIT"), "VK_PIPELINE_CREATE_DISPATCH_BASE_KHR"),
