@@ -6,7 +6,9 @@ use crate::{
     codegen_support::{
         format_utils::{Cond, ExtendedFormat, Fun, Iter, SectionWriter, Separated},
         get_command_kind,
-        type_analysis::{get_underlying_symbol, get_underlying_type},
+        type_analysis::{
+            get_underlying_symbol, get_underlying_type, is_function_pointer, TypeAnalysis,
+        },
         type_query::DeriveData,
         AddedVariants, CommandKind,
     },
@@ -179,7 +181,11 @@ pub fn write_symbol(
                 false => "struct",
             };
             let fields = Separated::args(members.iter(), |w, decl| {
-                code!(w, pub #(decl.name): #import!(&decl.ty));
+                if decl.ty.is_function_pointer(ctx) {
+                    code!(w, pub #(decl.name): Option<#import!(&decl.ty)>);
+                } else {
+                    code!(w, pub #(decl.name): #import!(&decl.ty));
+                }
                 Ok(())
             });
 
@@ -212,7 +218,7 @@ pub fn write_symbol(
 
             let copy = Cond(derives.is_copy(name, ctx), ", Copy");
             let eq = Cond(derives.is_eq(name, ctx), ", PartialEq, Eq, Hash");
-            let zeroable = derives.is_zeroable(name, ctx);
+            let zeroable = derives.is_defaultable(name, ctx);
 
             code!(
                 writer,
@@ -529,7 +535,7 @@ pub fn fmt_default_value<'a>(writer: &mut SectionWriter, decl: &'a Declaration, 
 pub fn fmt_default_value_with_overlay<'a>(
     writer: &mut SectionWriter,
     decl: &'a Declaration,
-    ty: &TypeRef,
+    overlay: &TypeRef,
     ctx: &Context,
 ) {
     if decl.name == ctx.strings.sType
@@ -541,25 +547,18 @@ pub fn fmt_default_value_with_overlay<'a>(
             #import!(&ctx.types.VkStructureType)::#(decl.metadata.values.get(0).unwrap().resolve())
         )
     } else {
-        let str = if let Some(target) = ty.resolve_alias(ctx).try_ptr_target() {
-            if let Some(TyToken::Const) = target.as_slice().first() {
-                "std::ptr::null()"
-            } else {
-                "std::ptr::null_mut()"
-            }
-        } else {
-            match ty.first() {
-                TyToken::Ref => unreachable!("Cannot default-construct a reference!"),
-                TyToken::Ptr => {
-                    if let Some(TyToken::Const) = decl.ty.as_slice().get(1) {
-                        "std::ptr::null()"
-                    } else {
-                        "std::ptr::null_mut()"
-                    }
+        let str = match overlay.resolve_alias(ctx).as_slice() {
+            [TyToken::Ptr, TyToken::Const, ..] => "std::ptr::null()",
+            [TyToken::Ptr, ..] => "std::ptr::null_mut()",
+            [TyToken::Array(_), ..] => "unsafe { std::mem::zeroed() }",
+            [TyToken::BaseType(basetype)] => {
+                if is_function_pointer(*basetype, ctx) {
+                    "None"
+                } else {
+                    "Default::default()"
                 }
-                TyToken::Array(_) => "unsafe { std::mem::zeroed() }",
-                TyToken::BaseType(_) | TyToken::Const => "Default::default()",
             }
+            _ => panic!("Invalid type '{overlay}' for default initialization"),
         };
         writer.write_str(str).unwrap();
     }

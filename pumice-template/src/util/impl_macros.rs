@@ -1,6 +1,12 @@
 #[macro_export]
 macro_rules! enum_impl {
     ($name:ident: $ty:ident, $($variant:ident),*) => {
+        impl $name {
+            #[inline]
+            pub fn as_raw(self) -> $ty {
+                self.0
+            }
+        }
         impl std::fmt::Debug for $name {
             fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 f.write_str(
@@ -43,6 +49,10 @@ macro_rules! bitflags_impl {
             #[inline]
             pub fn contains(self, other: $name) -> bool {
                 self & other == other
+            }
+            #[inline]
+            pub fn as_raw(self) -> $ty {
+                self.0
             }
         }
         impl ::std::ops::BitOr for $name {
@@ -136,7 +146,8 @@ macro_rules! bitflags_impl {
 
 pub trait ObjectHandle {
     const TYPE: crate::vk10::ObjectType;
-    fn to_raw(self) -> u64;
+    fn null() -> Self;
+    fn as_raw(self) -> u64;
     fn from_raw(raw: u64) -> Self;
 }
 
@@ -144,7 +155,7 @@ pub trait ObjectHandle {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! non_dispatchable_handle {
-    ($name:ident, $ty:ident, $doc:literal, $doc_alias:literal) => {
+    ($name:ident, $ty:ident, $doc_alias:literal, $doc:literal) => {
         #[doc = $doc]
         #[doc(alias = $doc_alias)]
         #[repr(transparent)]
@@ -154,10 +165,17 @@ macro_rules! non_dispatchable_handle {
         impl $crate::util::impl_macros::ObjectHandle for $name {
             const TYPE: $crate::vk10::ObjectType = $crate::vk10::ObjectType::$ty;
 
-            fn to_raw(self) -> u64 {
+            #[inline]
+            fn null() -> Self {
+                Self(0)
+            }
+
+            #[inline]
+            fn as_raw(self) -> u64 {
                 self.0
             }
 
+            #[inline]
             fn from_raw(raw: u64) -> Self {
                 $name(raw)
             }
@@ -191,10 +209,17 @@ macro_rules! dispatchable_handle {
         impl $crate::util::impl_macros::ObjectHandle for $name {
             const TYPE: $crate::vk10::ObjectType = $crate::vk10::ObjectType::$ty;
 
-            fn to_raw(self) -> u64 {
+            #[inline]
+            fn null() -> Self {
+                Self(std::ptr::null_mut())
+            }
+
+            #[inline]
+            fn as_raw(self) -> u64 {
                 self.0 as u64
             }
 
+            #[inline]
             fn from_raw(raw: u64) -> Self {
                 $name(raw as _)
             }

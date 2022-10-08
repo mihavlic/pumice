@@ -7,7 +7,7 @@ use crate::{
     cat,
     codegen_support::{
         format_utils::{Cond, ExtendedFormat, Fun, Separated},
-        type_analysis::is_void_pointer,
+        type_analysis::{is_function_pointer, TypeAnalysis},
         type_query::DeriveData,
     },
     import, symbol_or_value,
@@ -130,10 +130,10 @@ fn fmt_dumb_hash(
 ) {
     match ty.as_slice() {
         &[TyToken::BaseType(basetype)] | &[TyToken::Array(_), TyToken::BaseType(basetype)] => {
-            if let Some(SymbolBody::Funcpointer { .. }) = ctx.get_symbol(basetype) {
+            if is_function_pointer(basetype, ctx) {
                 code!(
                     w,
-                    std::ptr::hash(#name as *const (), state);
+                    std::ptr::hash(std::mem::transmute::<_, *const ()>(#name), state);
                 )
             } else {
                 code!(
@@ -164,7 +164,7 @@ fn fmt_dumb_hash(
                     )
                 }
             } else {
-                if is_void_pointer(ty, ctx) {
+                if ty.is_void_pointer(ctx) {
                     // we have no information, the best we can do is hash the adress
                     code!(
                         w,

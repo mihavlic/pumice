@@ -6,7 +6,7 @@ use generator_lib::{
 
 use crate::{context::Context, switch};
 
-use super::type_analysis::is_void_pointer;
+use super::type_analysis::TypeAnalysis;
 
 pub struct DeriveData {
     eq: Vec<Option<bool>>,
@@ -50,8 +50,8 @@ impl DeriveData {
     pub fn is_eq(&mut self, name: UniqueStr, ctx: &Context) -> bool {
         symbol_is_hashable(name, &mut self.eq, ctx)
     }
-    pub fn is_zeroable(&mut self, name: UniqueStr, ctx: &Context) -> bool {
-        symbol_is_zeroable(name, &mut self.default, ctx)
+    pub fn is_defaultable(&mut self, name: UniqueStr, ctx: &Context) -> bool {
+        symbol_is_defaultable(name, &mut self.default, ctx)
     }
     pub fn is_value_type(&mut self, name: UniqueStr, ctx: &Context) -> bool {
         symbol_is_value(name, &mut self.value, ctx)
@@ -64,7 +64,7 @@ impl DeriveData {
         type_is_hashable(ty, &mut self.eq, ctx)
     }
     pub fn type_is_zeroable(&mut self, ty: &TypeRef, ctx: &Context) -> bool {
-        type_is_zeroable(ty, &mut self.default, ctx)
+        type_is_defaultable(ty, &mut self.default, ctx)
     }
     pub fn type_is_value(&mut self, ty: &TypeRef, ctx: &Context) -> bool {
         type_is_value(ty, &mut self.value, ctx)
@@ -190,7 +190,6 @@ pub fn symbol_is_hashable(
             SymbolBody::Struct { union, .. } => *union == false,
             SymbolBody::Enum { .. } => true,
             SymbolBody::Handle { .. } => true,
-            // a function pointer lives forever and is unique, right?
             SymbolBody::Funcpointer { .. } => true,
             _ => unreachable!(),
         },
@@ -221,7 +220,7 @@ pub fn type_is_hashable(ty: &TypeRef, symbol_overlay: &mut [Option<bool>], ctx: 
     }
 }
 
-pub fn symbol_is_zeroable(
+pub fn symbol_is_defaultable(
     name: UniqueStr,
     symbol_overlay: &mut [Option<bool>],
     ctx: &Context,
@@ -233,19 +232,19 @@ pub fn symbol_is_zeroable(
             SymbolBody::Struct { .. } => true,
             SymbolBody::Enum { .. } => true,
             SymbolBody::Handle { .. } => true,
-            SymbolBody::Funcpointer { .. } => false,
+            SymbolBody::Funcpointer { .. } => true,
             _ => unreachable!(),
         },
-        |ty, overlay| type_is_zeroable(ty, overlay, ctx),
-        |decl, overlay| type_is_zeroable(&decl.ty, overlay, ctx),
+        |ty, overlay| type_is_defaultable(ty, overlay, ctx),
+        |decl, overlay| type_is_defaultable(&decl.ty, overlay, ctx),
         symbol_overlay,
         ctx,
     )
 }
 
-fn type_is_zeroable(ty: &TypeRef, overlay: &mut [Option<bool>], ctx: &Context) -> bool {
+fn type_is_defaultable(ty: &TypeRef, overlay: &mut [Option<bool>], ctx: &Context) -> bool {
     if let Some(ty) = ty.try_only_basetype() {
-        symbol_is_zeroable(ty, overlay, ctx)
+        symbol_is_defaultable(ty, overlay, ctx)
     } else {
         true
     }
@@ -318,7 +317,7 @@ pub fn symbol_is_no_void(
 }
 
 fn type_is_no_void(ty: &TypeRef, overlay: &mut [Option<bool>], ctx: &Context) -> bool {
-    !is_void_pointer(ty, ctx)
+    !ty.is_void_pointer(ctx)
         && ty
             .try_not_only_basetype()
             .map(|b| symbol_is_no_void(b, overlay, ctx))

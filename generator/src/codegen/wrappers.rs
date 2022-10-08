@@ -12,7 +12,7 @@ use crate::{
     codegen::symbols::{fmt_default_value, fmt_default_value_with_overlay},
     codegen_support::{
         format_utils::{Cond, ExtendedFormat, Fun, Iter, SectionWriter},
-        type_analysis::is_void_pointer,
+        type_analysis::TypeAnalysis,
         CommandKind,
     },
     context::Context,
@@ -72,7 +72,7 @@ fn generate_list<'a>(
                 continue;
             }
 
-            let void_ptr = is_void_pointer(&param.ty, ctx);
+            let void_ptr = param.ty.is_void_pointer(ctx);
 
             match group {
                 // Apply `Handle` kind if it qualifies as a handle
@@ -130,41 +130,45 @@ fn generate_list<'a>(
                     }
                 }
                 // Apply other kinds
-                5 => match (
-                    &param.metadata.optional,
-                    &param.ty.0.as_slice(),
-                    &param.metadata.length.get(0),
-                ) {
-                    (Optional::Never | Optional::Sometimes, &[TyToken::Ptr, tok, ..], None)
-                        if *tok != TyToken::Const =>
-                    {
-                        let to = param.ty.descend();
-                        *param_kind = ParameterRole::ValueWrittenTo { inner: to };
+                5 => {
+                    let var_name = (
+                        &param.metadata.optional,
+                        &param.ty.0.as_slice(),
+                        &param.metadata.length.get(0),
+                    );
+                    match var_name {
+                        (Optional::Never, &[TyToken::Ptr, tok, ..], None)
+                            if *tok != TyToken::Const =>
+                        {
+                            let to = param.ty.descend();
+                            *param_kind = ParameterRole::ValueWrittenTo { inner: to };
 
-                        if let Some(basetype) = to.try_only_basetype() {
-                            if let SymbolBody::Struct { members, .. } =
-                                ctx.get_symbol(basetype).unwrap()
-                            {
-                                if contains_pnext(members, ctx) {
-                                    *param_kind = ParameterRole::Regular;
-                                }
-                            }
+                            // Why was this here?
+                            // if let Some(basetype) = to.try_only_basetype() {
+                            //     if let SymbolBody::Struct { members, .. } =
+                            //         ctx.get_symbol(basetype).unwrap()
+                            //     {
+                            //         if contains_pnext(members, ctx) {
+                            //             *param_kind = ParameterRole::Regular;
+                            //         }
+                            //     }
+                            // }
                         }
+                        (
+                            Optional::Never | Optional::Always,
+                            &[TyToken::Ptr, tok, ..],
+                            Some(length),
+                        ) if *tok != TyToken::Const => {
+                            *param_kind = ParameterRole::ArrayWrittenTo {
+                                inner: param.ty.descend(),
+                                length: **length,
+                            };
+                        }
+                        (Optional::Always, _, None) => *param_kind = ParameterRole::Optional,
+                        (_, _, Some(_)) => *param_kind = ParameterRole::Array,
+                        (_, _, None) => *param_kind = ParameterRole::Regular,
                     }
-                    (
-                        Optional::Never | Optional::Sometimes,
-                        &[TyToken::Ptr, tok, ..],
-                        Some(length),
-                    ) if *tok != TyToken::Const => {
-                        *param_kind = ParameterRole::ArrayWrittenTo {
-                            inner: param.ty.descend(),
-                            length: **length,
-                        };
-                    }
-                    (Optional::Always, _, None) => *param_kind = ParameterRole::Optional,
-                    (_, _, Some(_)) => *param_kind = ParameterRole::Array,
-                    (_, _, None) => *param_kind = ParameterRole::Regular,
-                },
+                }
                 _ => unreachable!(),
             }
         }
@@ -275,7 +279,7 @@ pub fn fmt_command_wrapper(
                     What::Return => {}
                     What::ReturnInit => {}
                     What::LengthInit => {}
-                    What::Call => code!(w, #name.as_ptr() as _,),
+                    What::Call => code!(w, #name.as_ptr(),),
                     What::ReturnValues => {}
                 },
                 ParameterRole::Optional => match state {
@@ -391,7 +395,7 @@ pub fn fmt_command_wrapper(
                                         if state == What::ReturnInit {
                                             code!(
                                                 w,
-                                                #callback_name(&mut #name)
+                                                #callback_name(&mut #name);
                                             )
                                         }
                                     }

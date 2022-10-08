@@ -347,7 +347,7 @@ fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Context) {
 
                     code!(
                         w,
-                        pub #name: Option<extern "system" #preamble>,
+                        pub #name: Option<unsafe extern "system" #preamble>,
                     )
                 } else {
                     unreachable!()

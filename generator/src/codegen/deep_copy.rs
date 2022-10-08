@@ -7,7 +7,7 @@ use crate::{
     cat,
     codegen_support::{
         format_utils::{Cond, ExtendedFormat, Fun, Separated},
-        type_analysis::is_void_pointer,
+        type_analysis::TypeAnalysis,
         type_query::DeriveData,
     },
     import, symbol_or_value,
@@ -141,7 +141,7 @@ fn fmt_deepcopy_measure(
 ) {
     match ty.resolve_alias(ctx).as_slice() {
         &[TyToken::BaseType(basetype)] => {
-            if is_void_pointer(ty, ctx) {
+            if ty.is_void_pointer(ctx) {
                 // do nothing, we have no information
             } else {
                 if let Some(SymbolBody::Funcpointer { .. }) = ctx.get_symbol(basetype) {
@@ -176,7 +176,7 @@ fn fmt_deepcopy_measure(
                     )
                 }
             } else {
-                if is_void_pointer(ty, ctx) {
+                if ty.is_void_pointer(ctx) {
                     // do nothing, we have no information
                 } else {
                     code!(
@@ -254,7 +254,7 @@ fn fmt_deepcopy_copy(
 ) {
     match ty.resolve_alias(ctx).as_slice() {
         &[TyToken::BaseType(basetype)] => {
-            if is_void_pointer(ty, ctx) {
+            if ty.is_void_pointer(ctx) {
                 // do nothing, we have no information
             } else {
                 if let Some(SymbolBody::Funcpointer { .. }) = ctx.get_symbol(basetype) {
@@ -289,7 +289,7 @@ fn fmt_deepcopy_copy(
                     )
                 }
             } else {
-                if is_void_pointer(ty, ctx) {
+                if ty.is_void_pointer(ctx) {
                     // do nothing, we have no information
                 } else {
                     code!(

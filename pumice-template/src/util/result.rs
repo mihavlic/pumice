@@ -189,3 +189,24 @@ where
         }
     }
 }
+
+/// Like `try!`, but for [`utils::VulkanResult`](utils/struct.VulkanResult.html)
+///
+/// ```ignore
+/// unsafe fn example(device: &DeviceLoader) -> VulkanResult<(Semaphore, Semaphore)> {
+///     let create_info = SemaphoreCreateInfoBuilder::new();
+///
+///     let semaphore1 = try_vk!(device.create_semaphore(&create_info, None, None));
+///     let semaphore2 = try_vk!(device.create_semaphore(&create_info, None, None));
+///     VulkanResult::new_ok((semaphore1, semaphore2))
+/// }
+/// ```
+#[macro_export]
+macro_rules! try_vk {
+    ($expr:expr) => {
+        match $crate::util::result::VulkanResult::result($expr) {
+            Ok(value) => value,
+            Err(raw) => return $crate::util::result::VulkanResult::new_err(raw),
+        }
+    };
+}

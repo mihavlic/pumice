@@ -8,21 +8,6 @@ use generator_lib::{
 
 use crate::{context::Context, switch};
 
-// #[derive(Clone, Copy, Debug)]
-// pub enum UnderlyingType {
-//     Basetype(UniqueStr),
-//     CString,
-// }
-
-// impl UnderlyingType {
-//     pub fn try_basetype(&self) -> Option<UniqueStr> {
-//         match self {
-//             UnderlyingType::Basetype(b) => Some(*b),
-//             UnderlyingType::CString => None,
-//         }
-//     }
-// }
-
 /// The difference between this and `resolve_alias()` is that this also jumps through "transparent" symbols, such as handles or constants.
 pub fn get_underlying_type(name: UniqueStr, ctx: &Context) -> BasetypeOrRef {
     let mut symbol = name;
@@ -77,11 +62,11 @@ pub fn get_underlying_symbol<'a>(
     }
 }
 
-pub fn is_void_pointer(ty: &TypeRef, ctx: &Context) -> bool {
-    ty.resolve_alias(ctx)
-        .try_ptr_target()
-        .map(|ty| ty.resolve_alias(ctx).deref() == ctx.types.void.deref())
-        .unwrap_or(false)
+pub fn is_function_pointer(basetype: UniqueStr, reg: &Registry) -> bool {
+    matches!(
+        get_underlying_symbol(basetype, reg).1,
+        SymbolBody::Funcpointer { .. }
+    )
 }
 
 pub fn is_std_type(ty: UniqueStr, ctx: &Context) -> bool {
@@ -91,4 +76,24 @@ pub fn is_std_type(ty: UniqueStr, ctx: &Context) -> bool {
         s.uint8_t, s.uint16_t, s.uint32_t, s.uint64_t, s.int8_t, s.int16_t, s.int32_t, s.int64_t, s.size_t => true;
         @ false
     )
+}
+
+pub trait TypeAnalysis {
+    fn is_void_pointer(&self, ctx: &Context) -> bool;
+    fn is_function_pointer(&self, ctx: &Context) -> bool;
+}
+
+impl TypeAnalysis for TypeRef {
+    fn is_void_pointer(&self, ctx: &Context) -> bool {
+        self.resolve_alias(ctx)
+            .try_ptr_target()
+            .map(|ty| ty.resolve_alias(ctx).deref() == ctx.types.void.deref())
+            .unwrap_or(false)
+    }
+    fn is_function_pointer(&self, ctx: &Context) -> bool {
+        self.resolve_alias(ctx)
+            .try_only_basetype()
+            .map(|name| is_function_pointer(name, ctx))
+            .unwrap_or(false)
+    }
 }
