@@ -8,20 +8,20 @@ use std::{
 };
 
 pub struct ApiLoadConfig<'a> {
-    core_version: u32,
+    api_version: u32,
     extensions: HashSet<&'a CStr>,
 }
 
 impl<'a> ApiLoadConfig<'a> {
     pub fn new(core_version: u32) -> Self {
         Self {
-            core_version,
+            api_version: core_version,
             extensions: HashSet::new(),
         }
     }
     pub fn new_with_extensions(core_version: u32, extensions: &[&'a CStr]) -> Self {
         let mut s = Self {
-            core_version,
+            api_version: core_version,
             extensions: HashSet::new(),
         };
         for &e in extensions {
@@ -43,38 +43,58 @@ impl<'a> ApiLoadConfig<'a> {
             self.add_extension(meta.name);
         }
     }
+    pub fn get_instance_extensions_iter(&self) -> ExtensionIterator<'_> {
+        ExtensionIterator {
+            instance: true,
+            iter: self.extensions.iter(),
+        }
+    }
     pub fn get_instance_extensions(&self) -> Vec<*const c_char> {
-        self.extensions
-            .iter()
-            .filter(|&&e| get_metadata(e).unwrap().instance == true)
-            .map(|&e| e.as_ptr().cast())
+        self.get_instance_extensions_iter()
+            .map(|e| e.as_ptr().cast())
             .collect()
+    }
+    pub fn get_device_extensions_iter(&self) -> ExtensionIterator<'_> {
+        ExtensionIterator {
+            instance: false,
+            iter: self.extensions.iter(),
+        }
     }
     pub fn get_device_extensions(&self) -> Vec<*const c_char> {
-        self.extensions
-            .iter()
-            .filter(|&&e| get_metadata(e).unwrap().instance == false)
-            .map(|&e| e.as_ptr().cast())
+        self.get_device_extensions_iter()
+            .map(|e| e.as_ptr().cast())
             .collect()
     }
-    pub fn core_enabled(&self, version: u32) -> bool {
-        self.core_version >= version
+    pub fn get_extensions(&self) -> &HashSet<&'a CStr> {
+        &self.extensions
+    }
+    pub fn get_api_version(&self) -> u32 {
+        self.api_version
+    }
+    pub fn api_version_enabled(&self, version: u32) -> bool {
+        self.api_version >= version
     }
     pub fn extension_enabled(&self, name: &CStr) -> bool {
         self.extensions.contains(&name)
+    }
+    #[track_caller]
+    pub fn add_extensions_iter<T: IntoIterator<Item = &'a CStr>>(&mut self, iter: T) {
+        for extension in iter {
+            self.add_extension(extension)
+        }
     }
     #[track_caller]
     pub fn add_extension(&mut self, name: &'a CStr) {
         let meta = get_metadata(name).unwrap_or_else(|| {
             panic!(
                 "'{}' is not a valid extension. Maybe it was not generated?",
-                name.to_str().unwrap_or("Invalid UTF8!")
+                name.to_string_lossy()
             )
         });
-        if meta.core_version < self.core_version {
+        if meta.core_version > self.api_version {
             panic!(
                 "'{}' requires a higher core version than is configured",
-                name.to_str().unwrap_or("Invalid UTF8!")
+                name.to_string_lossy()
             )
         }
         self.extensions.insert(name);
@@ -91,7 +111,7 @@ impl<'a> ApiLoadConfig<'a> {
     fn foreach_extension_dependency(&mut self, name: &CStr) -> Result<(), ApiLoadConfigErr> {
         let extension = get_metadata(name).ok_or(ApiLoadConfigErr::ExtensionNotFound)?;
 
-        if extension.core_version < self.core_version {
+        if extension.core_version < self.api_version {
             return Err(ApiLoadConfigErr::ApiVersionMismatch);
         }
 
@@ -128,3 +148,26 @@ impl Display for ApiLoadConfigErr {
 }
 
 impl Error for ApiLoadConfigErr {}
+
+#[derive(Clone)]
+pub struct ExtensionIterator<'a> {
+    instance: bool,
+    iter: std::collections::hash_set::Iter<'a, &'a CStr>,
+}
+
+impl<'a> Iterator for ExtensionIterator<'a> {
+    type Item = &'a CStr;
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(&next) = self.iter.next() {
+            if let Some(metadata) = get_metadata(next) {
+                if metadata.instance == self.instance {
+                    return Some(next);
+                }
+            } else {
+                continue;
+            }
+        }
+
+        None
+    }
+}

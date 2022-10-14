@@ -433,7 +433,7 @@ fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Context) {
                                 write!(
                                     w,
                                     r#"
-                                        if conf.core_enabled(crate::vk10::make_api_version(0, {}, {}, 0)) {{
+                                        if conf.api_version_enabled(crate::vk10::make_api_version(0, {}, {}, 0)) {{
                                             load_fns!{{self, loader,
                                             "#,
                                     feature.major, feature.minor
