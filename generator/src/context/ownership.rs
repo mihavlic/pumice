@@ -2,13 +2,10 @@ use std::collections::HashSet;
 
 use generator_lib::{
     configuration::GenConfig, interner::UniqueStr, Extension, Feature, FeatureExtensionItem,
-    InterfaceItem, Registry, SymbolBody,
+    InterfaceItem, Registry,
 };
 
-use crate::{
-    codegen_support::type_analysis::get_underlying_symbol,
-    context::{Context, Section, SectionKind},
-};
+use crate::context::{Context, Section, SectionKind};
 
 // given that the registry is modelled as a global soup of types and functions from which the subsequent categories pick a subset
 // we would like to split the definition into multiple files so that commit diffs aren't enormous, editor doesn't choke, and things are more organised
@@ -32,35 +29,9 @@ pub fn resolve_ownership(ctx: &mut Context) {
         }
     }
 
-    // validate ownerships
-    for symbol in &ctx.reg.symbols {
-        // some BitmaskBits are left unowned if they contain no members :(
-        if let SymbolBody::Enum { bitmask, .. } = symbol.1 {
-            if bitmask {
-                continue;
-            }
-        }
-
-        if let SymbolBody::Alias(of) = symbol.1 {
-            // aliases to BitmaskBits are allowed to be unowned
-            if let &SymbolBody::Enum { bitmask, .. } = get_underlying_symbol(of, ctx).1 {
-                if bitmask {
-                    continue;
-                }
-            }
-        }
-
-        match symbol.1 {
-            SymbolBody::Included { .. } => unreachable!("[{}] Types included from headers are opaque and as such must be resolved by other means before this stage.", symbol.0.resolve()),
-            _ => {
-                assert!(
-                    ctx.symbol_ownership.contains_key(&symbol.0),
-                    "[{}] Concrete types should have valid ownership assigned at this point.", symbol.0.resolve()
-
-                )
-            }
-        }
-    }
+    // currently we validate that an item has valid ownership when we format them with `fmt_symbol_path`
+    // this is neccessary as some symbols may end up unowned due to `skip_conf_conditions` skipping whole sections, yet they are then never referenced
+    // it may be useful to re-add the code that was here previously which did early validation of some ofthe edge cases
 }
 
 fn section_used_symbols<'a>(

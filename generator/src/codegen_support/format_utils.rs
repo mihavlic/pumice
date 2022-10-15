@@ -409,7 +409,7 @@ fn fmt_symbol_path(
         @ {
             let section = ctx
                 .symbol_get_section(name)
-                .unwrap_or_else(|| panic!("{}", name));
+                .unwrap_or_else(|| panic!("Symbol '{}' is unowned by any section!", name));
 
             let mut foreign = false;
 
