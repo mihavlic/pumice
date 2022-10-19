@@ -8,7 +8,9 @@ use crate::{
 
 macro_rules! load_fns {
     ($table:ident, $loader:ident, $(($name:ident, $str:literal))+) => {
-        $($table.$name = Some(::std::mem::transmute($loader.load(concat!($str, "\0").as_ptr().cast::<std::os::raw::c_char>())));)+
+        $(
+            $table.$name = ::std::mem::transmute($loader.load($crate::cstr!($str).as_ptr()));
+        )+
     };
 }
 
