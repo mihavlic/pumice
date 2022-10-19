@@ -502,6 +502,11 @@ fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Context) {
             impl #table_name {
                 #commands_funs
             }
+            impl Default for #table_name {
+                fn default() -> Self {
+                    Self::new_empty()
+                }
+            }
         );
     }
 }
@@ -706,6 +711,7 @@ fn write_wrappers(features: &[UniqueStr], extensions: &[&Extension], out: &Path,
 
         code!(
             lib,
+            ##[derive(Clone)]
             pub struct #wrapper {
                 #handle_field
                 pub(crate) table: *const #import!(table),
