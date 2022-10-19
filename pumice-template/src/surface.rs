@@ -7,19 +7,36 @@ use crate::{
         KHR_WAYLAND_SURFACE_EXTENSION_NAME, KHR_WIN32_SURFACE_EXTENSION_NAME,
         KHR_XCB_SURFACE_EXTENSION_NAME, KHR_XLIB_SURFACE_EXTENSION_NAME,
     },
-    vk10, vkcall,
+    vk10, vkcall, InstanceWrapper,
 };
 use khr_surface::KHR_SURFACE_EXTENSION_NAME;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle, RawWindowHandle};
 use std::ffi::CStr;
 
+pub trait HasInstanceTable {
+    fn get_instance_table(&self) -> &InstanceTable;
+}
+
+impl HasInstanceTable for InstanceTable {
+    fn get_instance_table(&self) -> &InstanceTable {
+        self
+    }
+}
+
+impl HasInstanceTable for InstanceWrapper {
+    fn get_instance_table(&self) -> &InstanceTable {
+        unsafe { &*self.table() }
+    }
+}
+
 pub unsafe fn create_surface(
-    table: &InstanceTable,
+    table: &impl HasInstanceTable,
     instance: vk10::Instance,
     window: &(impl HasRawWindowHandle + HasRawDisplayHandle),
     allocation_callbacks: *const vk10::AllocationCallbacks,
 ) -> VulkanResult<khr_surface::SurfaceKHR> {
     use raw_window_handle::{RawDisplayHandle as Rdh, RawWindowHandle as Rwh};
+    let table = table.get_instance_table();
 
     // ripped out from https://github.com/wyatt-herkamp/wgpu/blob/35b19feb3c355f59f7e79808c7f9a0d4cec78b78/wgpu-hal/src/vulkan/instance.rs#L592
     // erupt has not yet updated to raw-window-handle 0.5

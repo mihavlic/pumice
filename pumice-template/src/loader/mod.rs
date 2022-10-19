@@ -21,20 +21,16 @@ pub trait EntryLoad: FunctionLoad {
 pub trait InstanceLoad: FunctionLoad {}
 pub trait DeviceLoad: FunctionLoad {}
 
-#[cfg(feature = "linked")]
-pub type EntryLoader = LinkedEntryLoader;
-#[cfg(all(not(feature = "linked"), feature = "loaded"))]
-pub type EntryLoader = LoadedEntryLoader;
-
-#[cfg(feature = "linked")]
-pub struct LinkedEntryLoader;
-
-#[cfg(feature = "loaded")]
 #[allow(non_snake_case)]
-pub struct LoadedEntryLoader {
-    _lib: libloading::Library,
-    vkGetInstanceProcAddr:
-        unsafe extern "system" fn(vk::Instance, name: *const c_char) -> vk::PfnVoidFunction,
+pub enum EntryLoader {
+    #[cfg(feature = "linked")]
+    Linked,
+    #[cfg(feature = "loaded")]
+    Loaded {
+        _lib: libloading::Library,
+        vkGetInstanceProcAddr:
+            unsafe extern "system" fn(vk::Instance, name: *const c_char) -> vk::PfnVoidFunction,
+    },
 }
 
 #[allow(non_snake_case)]
@@ -51,35 +47,28 @@ pub struct DeviceLoader {
     device: vk::Device,
 }
 
-#[cfg(feature = "linked")]
-impl EntryLoad for LinkedEntryLoader {
+impl EntryLoad for EntryLoader {
+    #[inline]
     unsafe fn get_vkGetInstanceProcAddr(
         &self,
     ) -> unsafe extern "system" fn(vk::Instance, name: *const c_char) -> vk::PfnVoidFunction {
-        vkGetInstanceProcAddr
-    }
-}
-#[cfg(feature = "linked")]
-impl FunctionLoad for LinkedEntryLoader {
-    unsafe fn load(&self, name: *const c_char) -> vk::PfnVoidFunction {
-        // in this case it is correct to pass in null
-        // https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkGetInstanceProcAddr.html
-        vkGetInstanceProcAddr(std::mem::transmute(0u64), name)
+        match self {
+            #[cfg(feature = "linked")]
+            EntryLoader::Linked => vkGetInstanceProcAddr,
+            #[cfg(feature = "loaded")]
+            EntryLoader::Loaded {
+                vkGetInstanceProcAddr,
+                ..
+            } => *vkGetInstanceProcAddr,
+        }
     }
 }
 
-#[cfg(feature = "loaded")]
-impl EntryLoad for LoadedEntryLoader {
-    unsafe fn get_vkGetInstanceProcAddr(
-        &self,
-    ) -> unsafe extern "system" fn(vk::Instance, name: *const c_char) -> vk::PfnVoidFunction {
-        self.vkGetInstanceProcAddr
-    }
-}
-#[cfg(feature = "loaded")]
-impl FunctionLoad for LoadedEntryLoader {
+impl FunctionLoad for EntryLoader {
     unsafe fn load(&self, name: *const c_char) -> vk::PfnVoidFunction {
-        (self.vkGetInstanceProcAddr)(std::mem::transmute(0u64), name)
+        // in this case it is correct to pass in null
+        // https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkGetInstanceProcAddr.html
+        (self.get_vkGetInstanceProcAddr())(std::mem::transmute(0u64), name)
     }
 }
 
@@ -110,17 +99,17 @@ impl std::fmt::Display for LinkedLoadError {
 
 impl std::error::Error for LinkedLoadError {}
 
-#[cfg(feature = "linked")]
-impl LinkedEntryLoader {
-    /// This function never fails, however we want to have it consistent with LoadedEntryLoader
-    pub unsafe fn new() -> Result<Self, LinkedLoadError> {
-        Ok(LinkedEntryLoader)
-    }
-}
-
-#[cfg(feature = "loaded")]
-impl LoadedEntryLoader {
+impl EntryLoader {
     pub unsafe fn new() -> Result<Self, libloading::Error> {
+        #[cfg(feature = "linked")]
+        let entry = Ok(Self::new_linked());
+        #[cfg(all(not(feature = "linked"), feature = "loaded"))]
+        let entry = Self::new_loaded();
+
+        entry
+    }
+    #[cfg(feature = "loaded")]
+    pub unsafe fn new_loaded() -> Result<Self, libloading::Error> {
         #[cfg(windows)]
         const LIB_PATH: &str = "vulkan-1.dll";
 
@@ -136,19 +125,24 @@ impl LoadedEntryLoader {
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         const LIB_PATH: &str = "libvulkan.dylib";
 
-        Self::new_with_path(LIB_PATH)
+        Self::new_loaded_with_path(LIB_PATH)
     }
-    pub unsafe fn new_with_path(path: &str) -> Result<Self, libloading::Error> {
+    #[cfg(feature = "loaded")]
+    pub unsafe fn new_loaded_with_path(path: &str) -> Result<Self, libloading::Error> {
         let lib = libloading::Library::new(path)?;
 
         static ENTRY_POINT: &[u8] = b"vkGetInstanceProcAddr\0";
 
         let symbol = lib.get(ENTRY_POINT).unwrap();
 
-        Ok(Self {
+        Ok(Self::Loaded {
             vkGetInstanceProcAddr: *symbol,
             _lib: lib,
         })
+    }
+    #[cfg(feature = "linked")]
+    pub fn new_linked() -> Self {
+        Self::Linked
     }
 }
 
