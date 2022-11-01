@@ -36,7 +36,7 @@ fn main() {
     } else {
         _tmp = Some(sections.replace(
             "@surface",
-            "\
+            "VK_KHR_swapchain,
 VK_KHR_surface,
 VK_KHR_xlib_surface,
 VK_KHR_xcb_surface,

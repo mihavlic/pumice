@@ -29,6 +29,22 @@ impl HasInstanceTable for InstanceWrapper {
     }
 }
 
+#[cfg(feature = "wrappers")]
+impl crate::InstanceWrapper {
+    pub unsafe fn create_surface(
+        &self,
+        window: &(impl HasRawWindowHandle + HasRawDisplayHandle),
+        allocator: Option<&vk10::AllocationCallbacks>,
+    ) -> VulkanResult<khr_surface::SurfaceKHR> {
+        create_surface(
+            self,
+            self.handle(),
+            window,
+            allocator.map(|a| a as *const _).unwrap_or(std::ptr::null()),
+        )
+    }
+}
+
 pub unsafe fn create_surface(
     table: &impl HasInstanceTable,
     instance: vk10::Instance,
@@ -198,7 +214,7 @@ pub unsafe fn create_surface(
 /// The returned extensions will include all extension dependencies.
 pub fn enumerate_required_extensions(
     window_handle: &impl HasRawWindowHandle,
-) -> VulkanResult<&'static [&'static CStr]> {
+) -> Option<&'static [&'static CStr]> {
     const WAYLAND: &[&CStr] = &[
         KHR_SURFACE_EXTENSION_NAME,
         KHR_WAYLAND_SURFACE_EXTENSION_NAME,
@@ -219,8 +235,8 @@ pub fn enumerate_required_extensions(
         RawWindowHandle::AndroidNdk(_) => ANDROID,
         RawWindowHandle::Win32(_) => WIN,
         RawWindowHandle::AppKit(_) | RawWindowHandle::UiKit(_) => METAL,
-        _ => return VulkanResult::new_err(vk10::Result::ERROR_EXTENSION_NOT_PRESENT),
+        _ => return None,
     };
 
-    VulkanResult::new_ok(extensions)
+    Some(extensions)
 }

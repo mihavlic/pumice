@@ -3,20 +3,10 @@ pub mod impl_macros;
 pub mod pnext;
 pub mod result;
 
-use std::ffi::CStr;
-
-#[doc(hidden)]
-#[inline]
-/// An implementation detail of the `cstr!` macro.
-pub const fn __cstr_impl(str: &str) -> &CStr {
-    // internally validated
-    unsafe { CStr::from_bytes_with_nul_unchecked(str.as_bytes()) }
-}
-
 #[macro_export]
 macro_rules! cstr {
     ($s:expr) => {
-        $crate::util::__cstr_impl(concat!($s, "\0"))
+        unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(concat!($s, "\0").as_bytes()) }
     };
 }
 
