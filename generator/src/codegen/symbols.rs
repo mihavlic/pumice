@@ -61,11 +61,12 @@ pub fn write_symbol(
                     );
                     return;
                 }
-                SymbolBody::Command {
+                body @ SymbolBody::Command {
                     return_type,
                     params,
                 } => {
                     fmt_global_command(writer, name, target.0, params, return_type, ctx);
+                    fmt_global_command_wrapper(writer, name, body, params, ctx);
                     return;
                 }
                 _ => {}
@@ -431,32 +432,41 @@ pub fn write_symbol(
                 )
             }
         }
-        symbol @ SymbolBody::Command {
+        SymbolBody::Command {
             return_type,
             params,
         } => {
             fmt_global_command(writer, name, name, params, return_type, ctx);
-
-            let kind = get_command_kind(params, ctx);
-            let wrapper_type = match kind {
-                CommandKind::Entry => "EntryWrapper",
-                CommandKind::Instance => "InstanceWrapper",
-                CommandKind::Device => "DeviceWrapper",
-            };
-            let wrapper_body = Fun(|w| {
-                fmt_command_wrapper(w, name, symbol, kind, ctx);
-                Ok(())
-            });
-
-            code!(
-                writer,
-                ##[cfg(feature = "wrappers")]
-                impl #import_str!(wrapper_type, ctx) {
-                    #wrapper_body
-                }
-            )
+            fmt_global_command_wrapper(writer, name, body, params, ctx);
         }
     }
+}
+
+fn fmt_global_command_wrapper(
+    writer: &mut SectionWriter<'_>,
+    name: UniqueStr,
+    body: &SymbolBody,
+    params: &Vec<Declaration>,
+    ctx: &Context,
+) {
+    let kind = get_command_kind(params, ctx);
+    let wrapper_type = match kind {
+        CommandKind::Entry => "EntryWrapper",
+        CommandKind::Instance => "InstanceWrapper",
+        CommandKind::Device => "DeviceWrapper",
+    };
+    let wrapper_body = Fun(|w| {
+        fmt_command_wrapper(w, name, body, kind, ctx);
+        Ok(())
+    });
+
+    code!(
+        writer,
+        ##[cfg(feature = "wrappers")]
+        impl #import_str!(wrapper_type, ctx) {
+            #wrapper_body
+        }
+    );
 }
 
 fn fmt_global_command(
