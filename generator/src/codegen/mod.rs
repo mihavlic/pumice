@@ -17,7 +17,7 @@ use crate::codegen_support::{
 use crate::context::{Context, SectionFunctions};
 use crate::context::{Section, SectionKind};
 use crate::fs_utils::{copy_dir_recursive, delete_dir_children};
-use crate::{cat, cstring, doc_boilerplate, import, string};
+use crate::{cat, cstring, doc_boilerplate, import, import_str, string};
 use deep_copy::write_deep_copy;
 use format_macro::code;
 use generator_lib::{
@@ -211,6 +211,8 @@ pub fn write_bindings(
     write_extension_metadata(&extensions, out, ctx);
 
     write_vk_module(&features, &extensions, out, ctx);
+
+    write_access_flags_util(out, ctx);
 
     // sort the symbols by their owning section (its index)
     let sorted_symbols = {
@@ -731,5 +733,55 @@ fn write_wrappers(features: &[UniqueStr], extensions: &[&Extension], out: &Path,
                 }
             }
         );
+    }
+}
+
+fn write_access_flags_util(out: &Path, ctx: &Context) {
+    let mut lib = SectionWriter::new(
+        ctx.create_section("access"),
+        out.join("src/util/access.rs"),
+        false,
+        &ctx,
+    );
+
+    let flags = ["VkAccessFlags", "VkAccessFlags2", "VkAccessFlags2KHR"];
+
+    for name in flags {
+        let Some(SymbolBody::Enum { members, .. }) = ctx.get_symbol(name.intern(ctx)) else {
+            continue
+        };
+
+        let access_flags = import_str!(name, ctx);
+        let writing_iter = members
+            .iter()
+            .filter(|(name, _)| name.resolve().contains("WRITE"));
+        let writing = Fun(|w| {
+            let mut first = true;
+            for (name, _) in writing_iter {
+                if !first {
+                    w.write_char('|')?;
+                }
+                first = false;
+                code!(
+                    w,
+                    Self::#name.0
+                );
+            }
+            Ok(())
+        });
+
+        // this will result in code like
+        //   const WRITING: Self = Self(Self::SHADER_WRITE.0 | Self::COLOR_ATTACHMENT_WRITE.0 ...)
+        // we do this through the raw integers because BitOr cannot currently be implemented for const contexts
+        // https://github.com/rust-lang/rust/issues/67792
+        code!(
+            lib,
+            impl #access_flags {
+                const WRITING: Self = Self(#writing);
+                pub const fn contains_write_flag(&self) -> bool {
+                    self.contains(Self::WRITING)
+                }
+            }
+        )
     }
 }
