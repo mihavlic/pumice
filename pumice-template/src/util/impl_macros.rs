@@ -3,7 +3,7 @@ macro_rules! enum_impl {
     ($name:ident: $ty:ident, $($variant:ident),*) => {
         impl $name {
             #[inline]
-            pub fn as_raw(self) -> $ty {
+            pub const fn as_raw(self) -> $ty {
                 self.0
             }
         }
@@ -27,28 +27,28 @@ macro_rules! bitflags_impl {
     ($name:ident: $ty:ident, $all:expr, $($variant:ident),*) => {
         impl $name {
             #[inline]
-            pub const fn empty() -> $name {
-                $name(0)
+            pub const fn empty() -> Self {
+                Self(0)
             }
             #[inline]
-            pub const fn all() -> $name {
-                $name($all)
+            pub const fn all() -> Self {
+                Self($all)
             }
             #[inline]
-            pub fn is_empty(self) -> bool {
-                self == $name::empty()
+            pub const fn is_empty(self) -> bool {
+                self.0 == 0
             }
             #[inline]
-            pub fn is_all(self) -> bool {
-                self & $name::all() == $name::all()
+            pub const fn is_all(self) -> bool {
+                self.0 & Self::all().0 == Self::all().0
             }
             #[inline]
-            pub fn intersects(self, other: $name) -> bool {
-                self & other != $name::empty()
+            pub const fn intersects(self, other: Self) -> bool {
+                self.0 & other.0 != Self::empty().0
             }
             #[inline]
-            pub fn contains(self, other: $name) -> bool {
-                self & other == other
+            pub const fn contains(self, other: Self) -> bool {
+                self.0 & other.0 == other.0
             }
             #[inline]
             pub fn as_raw(self) -> $ty {
@@ -56,62 +56,62 @@ macro_rules! bitflags_impl {
             }
         }
         impl ::std::ops::BitOr for $name {
-            type Output = $name;
+            type Output = Self;
             #[inline]
-            fn bitor(self, rhs: $name) -> $name {
-                $name(self.0 | rhs.0)
+            fn bitor(self, rhs: Self) -> Self {
+                Self(self.0 | rhs.0)
             }
         }
         impl ::std::ops::BitOrAssign for $name {
             #[inline]
-            fn bitor_assign(&mut self, rhs: $name) {
+            fn bitor_assign(&mut self, rhs: Self) {
                 *self = *self | rhs
             }
         }
         impl ::std::ops::BitAnd for $name {
-            type Output = $name;
+            type Output = Self;
             #[inline]
-            fn bitand(self, rhs: $name) -> $name {
-                $name(self.0 & rhs.0)
+            fn bitand(self, rhs: Self) -> Self {
+                Self(self.0 & rhs.0)
             }
         }
         impl ::std::ops::BitAndAssign for $name {
             #[inline]
-            fn bitand_assign(&mut self, rhs: $name) {
+            fn bitand_assign(&mut self, rhs: Self) {
                 *self = *self & rhs
             }
         }
         impl ::std::ops::BitXor for $name {
-            type Output = $name;
+            type Output = Self;
             #[inline]
-            fn bitxor(self, rhs: $name) -> $name {
-                $name(self.0 ^ rhs.0)
+            fn bitxor(self, rhs: Self) -> Self {
+                Self(self.0 ^ rhs.0)
             }
         }
         impl ::std::ops::BitXorAssign for $name {
             #[inline]
-            fn bitxor_assign(&mut self, rhs: $name) {
+            fn bitxor_assign(&mut self, rhs: Self) {
                 *self = *self ^ rhs
             }
         }
         impl ::std::ops::Sub for $name {
-            type Output = $name;
+            type Output = Self;
             #[inline]
-            fn sub(self, rhs: $name) -> $name {
+            fn sub(self, rhs: Self) -> Self {
                 self & !rhs
             }
         }
         impl ::std::ops::SubAssign for $name {
             #[inline]
-            fn sub_assign(&mut self, rhs: $name) {
+            fn sub_assign(&mut self, rhs: Self) {
                 *self = *self - rhs
             }
         }
         impl ::std::ops::Not for $name {
-            type Output = $name;
+            type Output = Self;
             #[inline]
-            fn not(self) -> $name {
-                self ^ $name::all()
+            fn not(self) -> Self {
+                self ^ Self::all()
             }
         }
         impl ::std::fmt::Debug for $name {
