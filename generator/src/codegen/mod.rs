@@ -751,35 +751,48 @@ fn write_access_flags_util(out: &Path, ctx: &Context) {
             continue
         };
 
-        let access_flags = import_str!(name, ctx);
-        let writing_iter = members
-            .iter()
-            .filter(|(name, _)| name.resolve().contains("WRITE"));
-        let writing = Fun(|w| {
-            let mut first = true;
-            for (name, _) in writing_iter {
-                if !first {
-                    w.write_char('|')?;
-                }
-                first = false;
-                code!(
-                    w,
-                    Self::#name.0
-                );
-            }
-            Ok(())
-        });
+        let flags_item = |keyword: &'static str| {
+            Fun(move |w| {
+                let iter = members
+                    .iter()
+                    .filter(|(name, _)| name.resolve().contains(keyword));
+                let mut first = true;
 
-        // this will result in code like
-        //   const WRITING: Self = Self(Self::SHADER_WRITE.0 | Self::COLOR_ATTACHMENT_WRITE.0 ...)
-        // we do this through the raw integers because BitOr cannot currently be implemented for const contexts
-        // https://github.com/rust-lang/rust/issues/67792
+                // this will result in code like
+                //   const WRITING: Self = Self(Self::SHADER_WRITE.0 | Self::COLOR_ATTACHMENT_WRITE.0 ...)
+                // we do this through the raw integers because BitOr cannot currently be implemented for const contexts
+                // https://github.com/rust-lang/rust/issues/67792
+
+                for (name, _) in iter {
+                    if !first {
+                        w.write_char('|')?;
+                    }
+                    first = false;
+                    code!(
+                        w,
+                        Self::#name.0
+                    );
+                }
+                Ok(())
+            })
+        };
+
+        let read = flags_item("READ");
+        let write = flags_item("WRITE");
+        let access_flags = import_str!(name, ctx);
+
         code!(
             lib,
             impl #access_flags {
-                const WRITING: Self = Self(#writing);
-                pub const fn contains_write_flag(&self) -> bool {
-                    self.contains(Self::WRITING)
+                pub const READ_FLAGS: Self = Self(#read);
+                pub const WRITE_FLAGS: Self = Self(#write);
+                /// Whether the AccessFlags contains flags containing "READ"
+                pub const fn contains_read(&self) -> bool {
+                    self.contains(Self::READ_FLAGS)
+                }
+                /// Whether the AccessFlags contains flags containing "WRITE"
+                pub const fn contains_write(&self) -> bool {
+                    self.contains(Self::WRITE_FLAGS)
                 }
             }
         )
