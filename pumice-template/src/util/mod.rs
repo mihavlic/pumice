@@ -3,6 +3,7 @@ pub mod config;
 pub mod impl_macros;
 pub mod pnext;
 pub mod result;
+pub mod stage;
 
 #[macro_export]
 macro_rules! cstr {

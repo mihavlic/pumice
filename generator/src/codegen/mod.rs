@@ -213,6 +213,7 @@ pub fn write_bindings(
     write_vk_module(&features, &extensions, out, ctx);
 
     write_access_flags_util(out, ctx);
+    pipeline_stage_flags_util(out, ctx);
 
     // sort the symbols by their owning section (its index)
     let sorted_symbols = {
@@ -793,6 +794,181 @@ fn write_access_flags_util(out: &Path, ctx: &Context) {
                 /// Whether the AccessFlags contains flags containing "WRITE"
                 pub const fn contains_write(&self) -> bool {
                     self.contains(Self::WRITE_FLAGS)
+                }
+            }
+        )
+    }
+}
+
+fn pipeline_stage_flags_util(out: &Path, ctx: &Context) {
+    let mut lib = SectionWriter::new(
+        ctx.create_section("access"),
+        out.join("src/util/stage.rs"),
+        false,
+        &ctx,
+    );
+
+    // TODO do this for VkPipelineStageFlags as well
+    let flags = ["VkPipelineStageFlags2", "VkPipelineStageFlags2KHR"];
+    let mut sanity_done = false;
+    for name in flags {
+        let Some(SymbolBody::Enum { members, .. }) = ctx.get_symbol(name.intern(ctx)) else {
+            continue
+        };
+
+        if sanity_done == true {
+            panic!("There should be only one non-alias enum!");
+        }
+        sanity_done = true;
+
+        // ON_UPDATE: add variants from documentation
+        //   https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkPipelineStageFlagBits2.html
+
+        let special: &[(&str, &[&str])] = &[
+            (
+                "VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT",
+                &[
+                    "VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT",
+                    "VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT",
+                ],
+            ),
+            (
+                "VK_PIPELINE_STAGE_2_PRE_RASTERIZATION_SHADERS_BIT",
+                &[
+                    "VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT",
+                    "VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT",
+                    "VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT",
+                    "VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT",
+                    "VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT",
+                    "VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT",
+                ],
+            ),
+            (
+                "VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT",
+                &[
+                    "VK_PIPELINE_STAGE_2_COPY_BIT",
+                    "VK_PIPELINE_STAGE_2_BLIT_BIT",
+                    "VK_PIPELINE_STAGE_2_RESOLVE_BIT",
+                    "VK_PIPELINE_STAGE_2_CLEAR_BIT",
+                    "VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_COPY_BIT_KHR",
+                ],
+            ),
+            (
+                "VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT",
+                &[
+                    "VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT",
+                    "VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT",
+                    "VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT",
+                    "VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT",
+                    "VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT",
+                    "VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT",
+                    "VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT",
+                    "VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT",
+                    "VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT",
+                    "VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT",
+                    "VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT",
+                    "VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT",
+                    "VK_PIPELINE_STAGE_2_CONDITIONAL_RENDERING_BIT_EXT",
+                    "VK_PIPELINE_STAGE_2_TRANSFORM_FEEDBACK_BIT_EXT",
+                    "VK_PIPELINE_STAGE_2_SHADING_RATE_IMAGE_BIT_NV",
+                    "VK_PIPELINE_STAGE_2_FRAGMENT_DENSITY_PROCESS_BIT_EXT",
+                    "VK_PIPELINE_STAGE_2_INVOCATION_MASK_BIT_HUAWEI",
+                ],
+            ),
+        ];
+
+        let special_bits = Fun(|w| {
+            let top = ctx
+                .try_intern("VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT")
+                .or_else(|| ctx.try_intern("VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT_KHR"))
+                .unwrap();
+            let bottom = ctx
+                .try_intern("VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT")
+                .or_else(|| ctx.try_intern("VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT_KHR"))
+                .unwrap();
+
+            write!(w, "Self::{top}.0 | Self::{bottom}.0")?;
+            for &(special, _) in special {
+                let name = ctx.apply_rename(special);
+                code!(
+                    w,
+                    | Self::#name.0
+                );
+            }
+            Ok(())
+        });
+
+        let special_equivalents = Fun(|w| {
+            for &(special, equivalents) in special {
+                let values = Fun(|w| {
+                    let mut first = true;
+                    for &str in equivalents {
+                        let name = ctx.try_intern(str).unwrap();
+                        // we emit the value only if it actually is in the enum, this can happen due to the member being added by an extension that is not enabled
+                        if members
+                            .iter()
+                            .find(|&&(member, _)| member == name)
+                            .is_some()
+                        {
+                            if !first {
+                                w.write_char('|')?;
+                            }
+                            first = false;
+                            code!(
+                                w,
+                                Self::#name.0
+                            );
+                        }
+                    }
+                    Ok(())
+                });
+
+                let rename = ctx.apply_rename(special);
+                let name = cat!("UTIL_", rename, "_EQUIVALENT");
+                code!(
+                    w,
+                    pub const #name: Self = Self(#values);
+                );
+            }
+
+            Ok(())
+        });
+
+        let translate_fn_impl = Fun(|w| {
+            for &(special, _) in special {
+                let rename = ctx.apply_rename(special);
+                let name = cat!("UTIL_", rename, "_EQUIVALENT");
+
+                code!(
+                    w,
+                    if self.contains(Self::#rename) {
+                        out |= Self::#name.0;
+                    }
+                )
+            }
+            Ok(())
+        });
+
+        let stage_flags = import_str!(name, ctx);
+
+        code!(
+            lib,
+            impl #stage_flags {
+                pub const UTIL_SPECIAL_FLAGS: Self = Self(#special_bits);
+                pub const UTIL_ALL_COMMANDS_EQUIVALENT: Self = Self(Self::all().0 & !Self::UTIL_SPECIAL_FLAGS.0);
+                #special_equivalents
+
+                pub const fn translate_special_bits(self) -> Self {
+                    let mut out = self.0 & Self::UTIL_ALL_COMMANDS_EQUIVALENT.0;
+
+                    if self.contains(Self::ALL_COMMANDS) {
+                        // return all but the special flags
+                        return Self::UTIL_ALL_COMMANDS_EQUIVALENT;
+                    }
+
+                    #translate_fn_impl
+
+                    Self(out)
                 }
             }
         )
