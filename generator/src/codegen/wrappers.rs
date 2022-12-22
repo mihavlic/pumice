@@ -232,6 +232,8 @@ pub fn fmt_command_wrapper(
     }
 
     if let SymbolBody::Command {
+        success_codes,
+        error_codes: _,
         params,
         return_type,
     } = body
@@ -475,8 +477,10 @@ pub fn fmt_command_wrapper(
                 )
             })
             .count();
+
         let result = return_type == &ctx.types.VkResult;
         let parens = return_type_count == 0 || return_type_count > 1;
+        let only_success = success_codes.as_slice() == &[ctx.strings.VK_SUCCESS];
 
         let function_arguments = Iter(0..params.len(), |w, i| {
             write_param_analog(w, i, params, &kinds, &extra_call_info, What::Params, ctx);
@@ -518,7 +522,19 @@ pub fn fmt_command_wrapper(
             });
 
             if result {
-                code!(w, -> #import!(&ctx.types.VulkanResult)<#inner>);
+                // VulkanResult is not vkResult but the normal error enum
+
+                // the only success condition is VK_SUCCESS, in this case we do not return the result in the Ok variant
+                if only_success {
+                    code!(w, -> #import!(&ctx.types.VulkanResult)<#inner>);
+                } else {
+                    let result_enum = import!(&ctx.types.VkResult);
+                    if return_type_count == 0 {
+                        code!(w, -> #import!(&ctx.types.VulkanResult)<#result_enum>);
+                    } else {
+                        code!(w, -> #import!(&ctx.types.VulkanResult)<(#inner, #result_enum)>);
+                    }
+                }
             } else {
                 code!(w, -> #inner);
             }
@@ -621,7 +637,23 @@ pub fn fmt_command_wrapper(
             });
 
             if result {
-                code!(w, #import!(&ctx.types.VulkanResult)::new(result, #inner));
+                let value = Fun(|w| {
+                    if only_success {
+                        code!(w, #inner);
+                    } else {
+                        if return_type_count == 0 {
+                            code!(w, result);
+                        } else {
+                            code!(w, (#inner, result));
+                        }
+                    }
+                    Ok(())
+                });
+
+                code!(
+                    w,
+                    crate::new_result(#value, result)
+                );
             } else {
                 code!(w, #inner)
             }

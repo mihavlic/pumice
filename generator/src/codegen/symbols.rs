@@ -62,6 +62,8 @@ pub fn write_symbol(
                     return;
                 }
                 body @ SymbolBody::Command {
+                    success_codes: _,
+                    error_codes: _,
                     return_type,
                     params,
                 } => {
@@ -433,6 +435,8 @@ pub fn write_symbol(
             }
         }
         SymbolBody::Command {
+            success_codes: _,
+            error_codes: _,
             return_type,
             params,
         } => {

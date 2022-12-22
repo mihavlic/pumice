@@ -11,6 +11,7 @@ use configuration::GenConfig;
 use foreach_uniquestr::ForeachUniquestr;
 use interner::{Intern, Interner, UniqueStr};
 use roxmltree::Node;
+use smallvec::SmallVec;
 use type_declaration::{parse_type_decl, Type};
 
 pub extern crate smallvec;
@@ -89,6 +90,8 @@ pub enum SymbolBody {
         ty: Option<UniqueStr>,
     },
     Command {
+        success_codes: SmallVec<[UniqueStr; 2]>,
+        error_codes: SmallVec<[UniqueStr; 2]>,
         params: Vec<Declaration>,
         return_type: Type,
     },
@@ -1151,9 +1154,16 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConf
                         params.push(decl);
                     }
 
+                    let success_codes =
+                        iter_comma_separated_option(c.attribute("successcodes"), reg).collect();
+                    let error_codes =
+                        iter_comma_separated_option(c.attribute("errorcodes"), reg).collect();
+
                     reg.add_symbol(
                         name,
                         SymbolBody::Command {
+                            success_codes,
+                            error_codes,
                             return_type,
                             params,
                         },
@@ -1554,6 +1564,14 @@ fn convert_section_children(
     converted
 }
 
+fn iter_comma_separated_option<'a>(
+    str: Option<&'a str>,
+    int: &'a Interner,
+) -> impl Iterator<Item = UniqueStr> + 'a {
+    str.into_iter()
+        .flat_map(|str| str.split_terminator(',').map(|s| s.intern(int)))
+}
+
 fn iter_comma_separated<'a>(
     str: &'a str,
     int: &'a Interner,
@@ -1562,11 +1580,7 @@ fn iter_comma_separated<'a>(
 }
 
 fn parse_comma_separated(str: Option<&str>, int: &Interner) -> Vec<UniqueStr> {
-    if let Some(str) = str {
-        iter_comma_separated(str, int).collect()
-    } else {
-        Vec::new()
-    }
+    iter_comma_separated_option(str, int).collect()
 }
 
 fn parse_detect_radix(str: &str) -> i32 {

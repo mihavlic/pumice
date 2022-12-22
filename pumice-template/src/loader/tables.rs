@@ -1,7 +1,7 @@
 use crate::{
     cstr,
     loader::{DeviceLoad, EntryLoad, InstanceLoad},
-    util::config::ApiLoadConfig,
+    util::ApiLoadConfig,
 };
 
 /// Oh, yes. Little Bobby Tables we call him.

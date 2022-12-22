@@ -1,13 +1,12 @@
 use crate::{
     extensions::khr_surface,
     loader::tables::InstanceTable,
-    util::result::VulkanResult,
     vk::{
         EXT_METAL_SURFACE_EXTENSION_NAME, KHR_ANDROID_SURFACE_EXTENSION_NAME,
         KHR_WAYLAND_SURFACE_EXTENSION_NAME, KHR_WIN32_SURFACE_EXTENSION_NAME,
         KHR_XCB_SURFACE_EXTENSION_NAME, KHR_XLIB_SURFACE_EXTENSION_NAME,
     },
-    vk10, vkcall, InstanceWrapper,
+    vk10, vkcall, InstanceWrapper, VulkanResult,
 };
 use khr_surface::KHR_SURFACE_EXTENSION_NAME;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle, RawWindowHandle};
@@ -205,7 +204,7 @@ pub unsafe fn create_surface(
                 )
             )
         }
-        _ => VulkanResult::new_err(vk10::Result::ERROR_EXTENSION_NOT_PRESENT),
+        _ => VulkanResult::Err(vk10::Result::ERROR_EXTENSION_NOT_PRESENT),
     }
 }
 

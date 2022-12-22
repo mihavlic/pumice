@@ -77,7 +77,8 @@ common_strings! {
     __RESERVED_INVALID_PLACEHOLDER,
     // an edge case for cstring constants because we're using `std::ffi::CStr` for them and not `*const c_char`
     __cstring_constant_type,
-    VK_VERSION_1_0
+    VK_VERSION_1_0,
+    VK_SUCCESS
     @
     null_terminated: "null-terminated"
 }

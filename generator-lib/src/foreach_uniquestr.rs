@@ -1,3 +1,5 @@
+use smallvec::SmallVec;
+
 use crate::{
     interner::UniqueStr, type_declaration::Type, ConstantValue, Declaration, DeclarationMetadata,
     Extension, Feature, FeatureExtensionItem, InterfaceItem, RedeclarationMethod, Symbol,
@@ -9,6 +11,14 @@ pub trait ForeachUniquestr {
 }
 
 impl<T: ForeachUniquestr> ForeachUniquestr for Vec<T> {
+    fn foreach<F: FnMut(&mut UniqueStr)>(&mut self, fun: &mut F) {
+        for item in self {
+            item.foreach(fun)
+        }
+    }
+}
+
+impl<T: ForeachUniquestr, A: smallvec::Array<Item = T>> ForeachUniquestr for SmallVec<A> {
     fn foreach<F: FnMut(&mut UniqueStr)>(&mut self, fun: &mut F) {
         for item in self {
             item.foreach(fun)
@@ -99,9 +109,13 @@ impl ForeachUniquestr for SymbolBody {
                 ty.foreach(fun);
             }
             SymbolBody::Command {
+                success_codes,
+                error_codes,
                 return_type,
                 params,
             } => {
+                success_codes.foreach(fun);
+                error_codes.foreach(fun);
                 return_type.foreach(fun);
                 params.foreach(fun);
             }

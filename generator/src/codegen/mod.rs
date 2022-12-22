@@ -79,21 +79,13 @@ pub fn write_bindings(
             "bitflags_impl",
             "non_dispatchable_handle",
             "dispatchable_handle",
+            "VulkanResult"
         ],
         "util": [
             "cstr",
             "vkcall",
-        ],
-        "util/impl_macros": [
             "ObjectHandle",
-        ],
-        "util/result": [
-            "VulkanResult"
-        ],
-        "util/pnext": [
-            "pnext_visit"
-        ],
-        "util/config": [
+            "pnext_visit",
             "ApiLoadConfig",
             "ApiLoadConfigErr",
         ],
@@ -331,6 +323,8 @@ fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Context) {
         let fields = Fun(|w| {
             for &(_, name, body) in commands {
                 if let SymbolBody::Command {
+                    success_codes: _,
+                    error_codes: _,
                     return_type,
                     params,
                 } = body
@@ -362,6 +356,8 @@ fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Context) {
         let commands_funs = Fun(|w| {
             for &(_, name, body) in commands {
                 if let SymbolBody::Command {
+                    success_codes: _,
+                    error_codes: _,
                     return_type,
                     params,
                 } = body

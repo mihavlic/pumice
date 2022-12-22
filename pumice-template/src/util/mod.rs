@@ -1,9 +1,10 @@
-pub mod access;
-pub mod config;
-pub mod impl_macros;
-pub mod pnext;
-pub mod result;
-pub mod stage;
+mod access;
+mod config;
+mod impl_macros;
+mod pnext;
+mod stage;
+
+pub use {access::*, config::*, impl_macros::*, pnext::*, stage::*};
 
 #[macro_export]
 macro_rules! cstr {
@@ -18,10 +19,10 @@ macro_rules! vkcall {
         let mut value = Default::default();
         let $ok = &mut value as *mut _;
         let raw = $call;
-        $crate::util::result::VulkanResult::new(raw, value)
+        $crate::new_result(value, raw)
     }};
     ($call:expr) => {{
         let raw = $call;
-        $crate::util::result::VulkanResult::new(raw, ())
+        $crate::new_result((), raw)
     }};
 }

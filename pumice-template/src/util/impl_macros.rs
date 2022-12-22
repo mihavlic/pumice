@@ -162,7 +162,7 @@ macro_rules! non_dispatchable_handle {
         #[derive(Eq, PartialEq, Ord, PartialOrd, Clone, Copy, Hash, Default)]
         pub struct $name(pub u64);
 
-        impl $crate::util::impl_macros::ObjectHandle for $name {
+        impl $crate::util::ObjectHandle for $name {
             const TYPE: $crate::vk10::ObjectType = $crate::vk10::ObjectType::$ty;
 
             #[inline]
@@ -206,7 +206,7 @@ macro_rules! dispatchable_handle {
         #[derive(Eq, PartialEq, Ord, PartialOrd, Clone, Copy, Hash)]
         pub struct $name(pub *mut ());
 
-        impl $crate::util::impl_macros::ObjectHandle for $name {
+        impl $crate::util::ObjectHandle for $name {
             const TYPE: $crate::vk10::ObjectType = $crate::vk10::ObjectType::$ty;
 
             #[inline]
