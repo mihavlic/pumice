@@ -24,7 +24,7 @@ macro_rules! enum_impl {
 
 #[macro_export]
 macro_rules! bitflags_impl {
-    ($name:ident: $ty:ident, $all:expr, $($variant:ident),*) => {
+    ($name:ident: $ty:ty, $all:expr, $($variant:ident),*) => {
         impl $name {
             #[inline]
             pub const fn empty() -> Self {
@@ -142,6 +142,36 @@ macro_rules! bitflags_impl {
             }
         }
     };
+}
+
+// stolen from the bitflags crate for use with the our own bitflags macro
+/// This macro allows easily implementing the same bitflags as are generated in this crate.
+#[macro_export]
+macro_rules! bitflags_impl_external {
+    (
+        $(#[$outer:meta])*
+        $vis:vis struct $BitFlags:ident: $T:ty {
+            $(
+                $(#[$inner:ident $($args:tt)*])*
+                const $Flag:ident = $value:expr;
+            )*
+        }
+    ) => {
+        $(#[$outer])*
+        #[derive(Copy, PartialEq, Eq, Clone, PartialOrd, Ord, Hash)]
+        $vis struct $BitFlags(pub $T);
+
+        impl $BitFlags {
+            $(
+                $vis const $Flag: Self = Self($value);
+            )*
+        }
+
+        $crate::bitflags_impl! {
+            $BitFlags: $T, $($value)|*, $($Flag),*
+        }
+    };
+    () => {};
 }
 
 pub trait ObjectHandle {
