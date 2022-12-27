@@ -2,7 +2,8 @@
 members = [
     "generator",
     "generator-lib",
-    "format-macro"
+    "codewrite-macro",
+    "codewrite"
 ]
 exclude = [
     "codegen-template"
