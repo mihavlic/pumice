@@ -77,7 +77,7 @@ pub fn write_symbol(
             };
 
             code!(
-                w, (),
+                w,
                 $doc_boilerplate!(name)
                 pub type $name = $import!(of);
             );
@@ -528,13 +528,13 @@ pub fn fmt_command_preamble<'a>(
         }
     });
 
-    code!(w, iter, fn $name($self_str $args));
+    code!(w, fn $name($self_str $args));
 
     if return_type == &*ctx.types.void {
         return;
     }
 
-    code!(w, iter, -> $import!(return_type));
+    code!(w, -> $import!(return_type));
 }
 pub fn fmt_default_value<'a>(w: &mut SectionWriter, decl: &'a Declaration, ctx: &Context) {
     fmt_default_value_with_overlay(w, decl, &decl.ty, ctx)

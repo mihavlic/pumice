@@ -8,7 +8,9 @@ use std::{
     thread::panicking,
 };
 
-use codewrite::{CFmt, WriteLast};
+use codewrite::{
+    formatters::prettyplease::format_pretty_or_fallback, CFmt, Format2Format, WriteLast,
+};
 use generator_lib::{
     interner::UniqueStr,
     type_declaration::{fmt_type_tokens_impl, BasetypeOrRef, Type, TypeRef},
@@ -36,16 +38,6 @@ impl std::fmt::Write for SectionWriter {
     }
 }
 
-// impl ConcreteCFmtWriter for SectionWriter {
-//     type Writer = SectionWriter;
-//     type Context = Rc<Context>;
-//     fn wctx<'a>(&'a mut self) -> (&'a mut Self::Writer, &'a mut Self::Context) {
-//         (&mut self, &mut self.ctx)
-//     }
-// }
-
-// pub trait SectionFmt: CFmt<SectionWriter> {}
-
 impl SectionWriter {
     pub fn new(
         section: SectionIdent,
@@ -61,41 +53,24 @@ impl SectionWriter {
             append,
         }
     }
-    pub fn save(&self) -> std::io::Result<()> {
-        if self.buf.is_empty() {
-            return Ok(());
-        }
-
-        let syn_file = syn::parse_file(&self.buf)
-            .map_err(|e| {
-                std::fs::write(&self.path, &self.buf).unwrap();
-                panic!(
-                    "Failed to parse syn file intended for '{}'\nErr: {}",
-                    self.path.to_string_lossy(),
-                    e
-                )
-            })
-            .unwrap();
-
-        let mut file = if self.append && self.path.exists() {
+    pub fn save(&self) -> Result<(), String> {
+        let file = if self.append && self.path.exists() {
             OpenOptions::new()
                 .append(true)
                 .write(true)
                 .open(&self.path)
-                .map_err(|e| {
-                    eprintln!("Error opening '{}'", self.path.to_string_lossy());
-                    e
-                })?
+                .map_err(|e| format!("Error opening '{}': {e}", self.path.to_string_lossy()))?
         } else {
-            std::fs::File::create(&self.path).map_err(|e| {
-                eprintln!("Error creating '{}'", self.path.to_string_lossy());
-                e
-            })?
+            std::fs::File::create(&self.path)
+                .map_err(|e| format!("Error creating '{}': {e}", self.path.to_string_lossy()))?
         };
 
-        use std::io::Write;
-        let out = prettyplease::unparse(&syn_file);
-        file.write_all(out.as_bytes())
+        format_pretty_or_fallback(&self.buf, &mut Format2Format(file)).map_err(|e| {
+            format!(
+                "Failed to parse syn file intended for '{}'\nErr: {e}",
+                self.path.to_string_lossy()
+            )
+        })
     }
     pub fn pop_last_character(&mut self) {
         self.buf.pop();
@@ -116,35 +91,14 @@ impl SectionWriter {
 
 impl Drop for SectionWriter {
     fn drop(&mut self) {
-        if !panicking() {
-            self.save().unwrap();
+        if let Err(err) = self.save() {
+            if !panicking() {
+                eprintln!("{err}");
+                panic!();
+            }
         }
     }
 }
-
-// #[macro_export]
-// macro_rules! code {
-//     ($($a:tt)*) => {
-//         codewrite_macro::code!(
-//             __qualify(crate::codegen_support::format_utils::SectionWriter, std::rc::Rc<crate::context::Context>)
-//             $($a)*
-//         )
-//     };
-// }
-
-#[derive(Clone)]
-pub struct Import<T>(pub T);
-
-impl<T: Clone + Copy> Copy for Import<T> {}
-
-#[macro_export]
-macro_rules! import {
-    ($e:expr) => {
-        $crate::codegen_support::format_utils::Import($e)
-    };
-}
-
-pub use import;
 
 pub struct SymbolOrValue(pub UniqueStr);
 
@@ -159,14 +113,19 @@ impl CFmt<SectionWriter> for SymbolOrValue {
     }
 }
 
+#[derive(Clone)]
+pub struct Import<T>(pub T);
+
+impl<T: Clone + Copy> Copy for Import<T> {}
+
 #[macro_export]
-macro_rules! symbol_or_value {
+macro_rules! import {
     ($e:expr) => {
-        $crate::codegen_support::format_utils::SymbolOrValue($e)
+        $crate::codegen_support::format_utils::Import($e)
     };
 }
 
-pub use symbol_or_value;
+pub use import;
 
 #[macro_export]
 macro_rules! import_str {
@@ -249,7 +208,7 @@ macro_rules! doc_boilerplate {
         codewrite::Fun::new(|w: &mut SectionWriter| {
             let original = $name.resolve_original();
             if !$name.is_original() {
-                writeln!(w, r#"#[doc(alias = "{}")]"#, original).unwrap();
+                write!(w, r#"#[doc(alias = "{}")]"#, original).unwrap();
             }
             writeln!(w,"/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/{}.html)", original).unwrap();
         })

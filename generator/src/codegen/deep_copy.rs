@@ -2,8 +2,10 @@ use std::{fmt::Display, path::Path, rc::Rc};
 
 use crate::{
     cat,
-    codegen_support::{type_analysis::TypeAnalysis, type_query::DeriveData},
-    import, symbol_or_value,
+    codegen_support::{
+        format_utils::SymbolOrValue, type_analysis::TypeAnalysis, type_query::DeriveData,
+    },
+    import,
 };
 use crate::{codegen_support::format_utils::SectionWriter, context::Context};
 use codewrite::{CFmt, Cond, Fun, Iter, Separated};
@@ -223,7 +225,7 @@ fn fmt_deepcopy_measure(
             });
             code!(
                 w,
-                for $letter in 0..$symbol_or_value!(const_len) as usize {
+                for $letter in 0..$(SymbolOrValue(const_len)) as usize {
                     $measure
                 }
             )
@@ -337,7 +339,7 @@ fn fmt_deepcopy_copy(
             });
             code!(
                 w,
-                for i in 0..$symbol_or_value!(const_len) as usize {
+                for i in 0..$(SymbolOrValue(const_len)) as usize {
                     let ptr = &$name[i];
                     let copy = &mut $copy[i];
                     $recurse

@@ -3,10 +3,11 @@ use std::{fmt::Display, path::Path, rc::Rc};
 use crate::{
     cat,
     codegen_support::{
+        format_utils::SymbolOrValue,
         type_analysis::{is_function_pointer, TypeAnalysis},
         type_query::DeriveData,
     },
-    import, symbol_or_value,
+    import,
 };
 use crate::{codegen_support::format_utils::SectionWriter, context::Context};
 use codewrite::{Cond, Fun, Separated};
@@ -216,7 +217,7 @@ fn fmt_dumb_hash(
             });
             code!(
                 w,
-                for i in 0..$symbol_or_value!(const_len) as usize {
+                for i in 0..$(SymbolOrValue(const_len)) as usize {
                     let ptr = &$name[i];
                     $recurse
                 }

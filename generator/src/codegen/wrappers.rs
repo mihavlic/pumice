@@ -382,14 +382,14 @@ pub fn fmt_command_wrapper(
 
                                         if state == What::Params {
                                             code!(
-                                                w, (),
+                                                w,
                                                 mut $callback_name: impl FnMut(&mut Vec<$import!(inner)>),
                                             )
                                         }
 
                                         if state == What::ReturnInit {
                                             code!(
-                                                w, (),
+                                                w,
                                                 $callback_name(&mut $name);
                                             )
                                         }
@@ -624,7 +624,7 @@ pub fn fmt_command_wrapper(
             if result {
                 let value = Fun::new(|w: &mut SectionWriter| {
                     if only_success {
-                        code!(w, (), $inner);
+                        code!(w, $inner);
                     } else {
                         if return_type_count == 0 {
                             code!(w, result);

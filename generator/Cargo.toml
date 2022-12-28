@@ -15,5 +15,3 @@ path = "./bin/dump.rs"
 generator-lib = { path = "../generator-lib" }
 codewrite-macro = { path = "../codewrite-macro" }
 codewrite = { path = "../codewrite" }
-prettyplease = { version = "0.1" }
-syn = { version = "1.0", default-features = false, features = ["full", "parsing"]}

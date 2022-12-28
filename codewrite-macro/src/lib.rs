@@ -75,32 +75,37 @@ pub fn code(item: TokenStream) -> TokenStream {
 
     let out_tokens = visit_ast_nodes(slice, &mut interpolations);
 
-    let str_string = {
+    let str_string: String = {
         let str_temp = TokenStream::from_iter(out_tokens.into_iter())
             .to_string()
             // replace the previous interpolation marker with the final null byte that is consumed by the runtime machinery
             .replace("\"~~__interp_marker\"", "\0");
         let str_chars = WhitespaceEater(str_temp.chars(), true);
 
-        let mut chars = str_chars.collect::<Vec<_>>();
-        let mut out = String::new();
+        str_chars.collect()
 
-        // really wasteful algorithm, but I'm actually able to think about it
-        // some linear scan state machine should be possible
-        for i in 0..chars.len() {
-            let c0 = chars.get(i.overflowing_sub(1).0).cloned().unwrap_or(' ');
-            let c1 = chars[i];
-            let c2 = chars.get(i + 1).cloned().unwrap_or(' ');
+        // let mut chars = str_chars.collect::<Vec<_>>();
+        // let mut out = String::new();
 
-            if c1 == ' ' && (!c0.is_ascii_alphanumeric() || !c2.is_ascii_alphanumeric()) {
-                // we have skipped this character, overwrite this char with something not-whitespace to update the situation for the following char
-                chars[i] = 'a';
-            } else {
-                out.push(c1);
-            }
-        }
+        // // really wasteful algorithm, but I'm actually able to think about it
+        // // some linear scan state machine should be possible
+        // for i in 0..chars.len() {
+        //     let c0 = chars.get(i.overflowing_sub(1).0).cloned().unwrap_or(' ');
+        //     let c1 = chars[i];
+        //     let c2 = chars.get(i + 1).cloned().unwrap_or(' ');
 
-        out
+        //     if c1 == ' '
+        //         && (!(c0.is_ascii_alphanumeric() || c0 == '"' || c0 == '\'' || c0 == '_')
+        //             || !(c2.is_ascii_alphanumeric() || c2 == '"' || c2 == '\'' || c2 == '_'))
+        //     {
+        //         // we have skipped this character, overwrite this char with something not-whitespace to update the situation for the following char
+        //         chars[i] = 'a';
+        //     } else {
+        //         out.push(c1);
+        //     }
+        // }
+
+        // out
     };
 
     let str = TokenTree::Literal(Literal::string(&str_string));

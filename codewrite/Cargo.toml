@@ -3,9 +3,8 @@ name = "codewrite"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
+proc-macro2 = { version = "1.0.46", optional = true, default-features = false }
 prettyplease = { version = "0.1", optional = true }
 syn = { version = "1.0", default-features = false, features = ["full", "parsing"], optional = true}
 codewrite-macro = { path = "../codewrite-macro", optional = true}
@@ -15,5 +14,5 @@ termsize = {version = "0.1.6", optional = true}
 default = ["codewrite_macro", "prettyplease_formatter", "width_formatter"]
 proc_macro = []
 codewrite_macro = ["codewrite-macro"]
-prettyplease_formatter = ["prettyplease", "syn"]
+prettyplease_formatter = ["prettyplease", "syn", "proc-macro2"]
 width_formatter = ["termsize"]

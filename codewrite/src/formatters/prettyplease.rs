@@ -24,25 +24,38 @@ impl<W: std::fmt::Write> PrettyFormatter<W> {
     }
 }
 
+pub fn format_pretty_or_fallback<W: Write>(src: &str, mut writer: W) -> syn::Result<()> {
+    let syn_file = match syn::parse_file(&src) {
+        Ok(f) => f,
+        Err(mut e) => {
+            // dump the raw string using at least the native formatting
+            let _ = NaiveFormatter::new(writer).write_str(&src).map_err(|err| {
+                e.extend(syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    format!("std::fmt::Write error: '{err}'"),
+                ));
+            });
+            return Err(e);
+        }
+    };
+
+    let string = prettyplease::unparse(&syn_file);
+    writer.write_str(&string).map_err(|err| {
+        syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!("std::fmt::Write error: '{err}'"),
+        )
+    })
+}
+
 impl<W: std::fmt::Write> Formatter for PrettyFormatter<W> {
     type Err = syn::Error;
-    fn finish(self) -> Result<(), Self::Err> {
-        let mut prison = ManuallyDrop::new(self);
+    fn finish(self) -> syn::Result<()> {
+        let prison = ManuallyDrop::new(self);
+        let mut writer = unsafe { std::ptr::read(&prison.w) };
+        let buf = unsafe { std::ptr::read(&prison.buf) };
 
-        let syn_file = match syn::parse_file(&prison.buf) {
-            Ok(f) => f,
-            Err(e) => {
-                let w = unsafe { std::ptr::read(&prison.w) };
-                let buf = unsafe { std::ptr::read(&prison.buf) };
-                // dump the raw string using at least the native formatting
-                NaiveFormatter::new(w).write_str(&buf).unwrap();
-                return Err(e);
-            }
-        };
-
-        let string = prettyplease::unparse(&syn_file);
-        prison.w.write_str(&string).unwrap();
-        Ok(())
+        format_pretty_or_fallback(&buf, &mut writer)
     }
 }
 
