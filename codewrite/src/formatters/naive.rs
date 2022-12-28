@@ -1,7 +1,5 @@
 use std::error::Error;
 
-use crate::WriteLast;
-
 use super::Formatter;
 
 #[repr(u8)]

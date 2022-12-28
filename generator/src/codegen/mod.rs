@@ -5,9 +5,7 @@ pub mod wrappers;
 
 use crate::codegen::dumb_hash::write_dumb_hash;
 use crate::codegen::symbols::fmt_command_preamble;
-use crate::codegen_support::format_utils::{
-    Cond, ExtendedFormat, Fun, Iter, SectionWriter, Separated,
-};
+use crate::codegen_support::format_utils::SectionWriter;
 use crate::codegen_support::rename::apply_renames;
 use crate::codegen_support::type_analysis::get_underlying_symbol;
 use crate::codegen_support::type_query::DeriveData;
@@ -17,28 +15,26 @@ use crate::codegen_support::{
 use crate::context::{Context, SectionFunctions};
 use crate::context::{Section, SectionKind};
 use crate::fs_utils::{copy_dir_recursive, delete_dir_children};
-use crate::{cat, cstring, doc_boilerplate, import, import_str, string};
+use crate::{cat, cstring, doc_boilerplate, fun, import, import_str, string};
+
+use codewrite::{Cond, Iter, Separated};
+use codewrite_macro::code;
 use deep_copy::write_deep_copy;
-use format_macro::code;
 use generator_lib::{
     interner::{Intern, UniqueStr},
     type_declaration::Type,
     Extension, ExtensionKind, Symbol, SymbolBody,
 };
+use std::fmt::Write;
+use std::rc::Rc;
 use std::{
     collections::HashMap,
-    error::Error,
-    fmt::Write,
     path::{Path, PathBuf},
 };
 
 use self::symbols::write_symbol;
 
-pub fn write_bindings(
-    ctx: &mut Context,
-    template: &dyn AsRef<Path>,
-    out: &dyn AsRef<Path>,
-) -> Result<(), Box<dyn Error>> {
+pub fn write_bindings(mut ctx: Context, template: &dyn AsRef<Path>, out: &dyn AsRef<Path>) {
     let out = out.as_ref();
 
     {
@@ -159,6 +155,9 @@ pub fn write_bindings(
         }
     }
 
+    // we move ctx into an rc so that we don't have to keep spamming lifetimes everywhere, particularly SectionWriter
+    let ctx = Rc::new(ctx);
+
     let mut added_variants = get_enum_added_variants(&ctx);
 
     {
@@ -198,14 +197,14 @@ pub fn write_bindings(
         (features, extensions)
     };
 
-    write_wrappers(&features, &extensions, out, ctx);
+    write_wrappers(&features, &extensions, out, &ctx);
 
-    write_extension_metadata(&extensions, out, ctx);
+    write_extension_metadata(&extensions, out, &ctx);
 
-    write_vk_module(&features, &extensions, out, ctx);
+    write_vk_module(&features, &extensions, out, &ctx);
 
-    write_access_flags_util(out, ctx);
-    pipeline_stage_flags_util(out, ctx);
+    write_access_flags_util(out, &ctx);
+    pipeline_stage_flags_util(out, &ctx);
 
     // sort the symbols by their owning section (its index)
     let sorted_symbols = {
@@ -214,18 +213,16 @@ pub fn write_bindings(
         clone
     };
 
-    write_tables(&sorted_symbols, out, ctx);
+    write_tables(&sorted_symbols, out, &ctx);
 
-    write_pnext_visit(&sorted_symbols, out, ctx);
+    write_pnext_visit(&sorted_symbols, out, &ctx);
 
     let mut derives = DeriveData::new(&ctx);
 
-    write_deep_copy(&mut derives, out, ctx);
-    write_dumb_hash(&mut derives, out, ctx);
+    write_deep_copy(&mut derives, out, &ctx);
+    write_dumb_hash(&mut derives, out, &ctx);
 
-    write_sections(&sorted_symbols, &added_variants, &mut derives, out, ctx);
-
-    Ok(())
+    write_sections(&sorted_symbols, &added_variants, &mut derives, out, &ctx);
 }
 
 fn write_sections(
@@ -233,7 +230,7 @@ fn write_sections(
     added_variants: &HashMap<UniqueStr, Vec<AddedVariants>>,
     derives: &mut DeriveData,
     out: &Path,
-    ctx: &Context,
+    ctx: &Rc<Context>,
 ) {
     let mut buf = PathBuf::new();
     let mut prev_section = u32::MAX;
@@ -251,7 +248,7 @@ fn write_sections(
                 buf.push(section.name().resolve());
                 buf.set_extension("rs");
 
-                section_writer = Some(SectionWriter::new(section.ident.clone(), &buf, false, &ctx));
+                section_writer = Some(SectionWriter::new(section.ident.clone(), &buf, false, ctx));
             }
 
             prev_section = section_index;
@@ -261,11 +258,11 @@ fn write_sections(
 
         let Symbol(name, body) = &ctx.reg.symbols[symbol_index];
 
-        write_symbol(*name, body, writer, derives, &added_variants, &ctx);
+        write_symbol(writer, *name, body, derives, &added_variants, &ctx);
     }
 }
 
-fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Context) {
+fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Rc<Context>) {
     let mut tables = SectionWriter::new(
         ctx.create_section("tables"),
         out.join("src/loader/tables.rs"),
@@ -312,15 +309,15 @@ fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Context) {
 
         code!(
             tables,
-            ##[cfg(feature = "global")]
-            pub static mut #table_const: #table_type = #table_type::new_empty();
+            #[cfg(feature = "global")]
+            pub static mut $table_const: $table_type = $table_type::new_empty();
         );
     }
     for &(commands, name, _) in &variations {
         let table_name = cat!(name, "Table");
         let loader_trait = cat!(name, "Load");
 
-        let fields = Fun(|w| {
+        let fields = fun!(|w| {
             for &(_, name, body) in commands {
                 if let SymbolBody::Command {
                     success_codes: _,
@@ -329,7 +326,7 @@ fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Context) {
                     params,
                 } = body
                 {
-                    let preamble = Fun(|w| {
+                    let preamble = fun!(|w| {
                         fmt_command_preamble(
                             w,
                             "",
@@ -344,16 +341,15 @@ fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Context) {
 
                     code!(
                         w,
-                        pub #name: Option<unsafe extern "system" #preamble>,
+                        pub $name: Option<unsafe extern "system" $preamble>,
                     )
                 } else {
                     unreachable!()
                 }
             }
-            Ok(())
         });
 
-        let commands_funs = Fun(|w| {
+        let commands_funs = fun!(|w| {
             for &(_, name, body) in commands {
                 if let SymbolBody::Command {
                     success_codes: _,
@@ -362,7 +358,7 @@ fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Context) {
                     params,
                 } = body
                 {
-                    let preamble = Fun(|w| {
+                    let preamble = fun!(|w| {
                         fmt_command_preamble(
                             w,
                             name.resolve(),
@@ -378,11 +374,11 @@ fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Context) {
 
                     code!(
                         w,
-                        ##[track_caller]
-                        #doc_boilerplate!(name)
-                        pub unsafe #preamble {
-                            (self.#name.unwrap())(
-                                #params
+                        #[track_caller]
+                        $doc_boilerplate!(name)
+                        pub unsafe $preamble {
+                            (self.$name.unwrap())(
+                                $params
                             )
                         }
                     );
@@ -390,45 +386,41 @@ fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Context) {
                     unreachable!()
                 }
             }
-            Ok(())
         });
 
-        let load_entry_functions = Fun(|w| {
-            let fields = Iter(commands, |w, &(_, name, _)| {
+        let load_entry_functions = fun!(|w| {
+            let fields = fun!(|w| for (_, name, _) in commands {
                 code!(
                     w,
-                    (#name, #string!(name.resolve_original()))
+                    ($name, $string!(name.resolve_original()))
                 );
             });
 
             code!(
                 w,
-                pub fn load(&mut self, loader: &impl #loader_trait) {
+                pub fn load(&mut self, loader: &impl $loader_trait) {
                     unsafe {
                         load_fns!{
-                            self, loader, #fields
+                            self, loader, $fields
                         }
                     }
                 }
             );
-
-            Ok(())
         });
 
-        let load_other_functions = Fun(|w| {
-            let mut state = None;
-            let fields = Fun(|w| {
+        let load_other_functions = fun!(|w| {
+            let fields = fun!(move |w| {
+                let mut state = None;
                 for &(section_idx, name, _) in commands {
                     if Some(section_idx) != state {
                         if state.is_some() {
-                            w.write_str("}}")?;
+                            w.write_str("}}").unwrap();
                         }
                         let section = &ctx.sections[section_idx as usize];
                         match section.kind {
                             SectionKind::Feature(i) => {
                                 let feature = &ctx.reg.features[i as usize];
-                                // vulkan always has 0 variant
-                                // https://registry.khronos.org/vulkan/specs/1.3/html/chap31.html#extendingvulkan-coreversions-versionnumbers
+                                // https://registry.khronos.org/vulkan/specs/1.3/html/chap31.html$extendingvulkan-coreversions-versionnumbers
                                 write!(
                                     w,
                                     r#"
@@ -436,7 +428,7 @@ fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Context) {
                                             load_fns!{{self, loader,
                                             "#,
                                     feature.major, feature.minor
-                                )?;
+                                ).unwrap();
                             }
                             SectionKind::Extension(_) => {
                                 write!(
@@ -445,7 +437,8 @@ fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Context) {
                                             load_fns!{{self, loader,
                                             "#,
                                     section.name().resolve_original()
-                                )?;
+                                )
+                                .unwrap();
                             }
                             SectionKind::Path(_) => unreachable!(
                                 "Custom-pathed sections cannot contain loadable pointers!"
@@ -455,53 +448,50 @@ fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Context) {
                     }
                     code!(
                         w,
-                        (#name, #string!(name.resolve_original()))
+                        ($name, $string!(name.resolve_original()))
                     );
                 }
-                w.write_str("}}")?;
-                Ok(())
+                w.write_str("}}").unwrap();
             });
 
             code!(
                 w,
-                pub fn load(&mut self, loader: &impl #loader_trait, conf: &ApiLoadConfig) {
+                pub fn load(&mut self, loader: &impl $loader_trait, conf: &ApiLoadConfig) {
                     unsafe {
-                        #fields
+                        $fields
                     }
                 }
             );
-
-            Ok(())
         });
 
         let do_entry = name == "Entry";
-        let load_entry_functions = Cond(do_entry, load_entry_functions);
-        let load_other_functions = Cond(!do_entry, load_other_functions);
+        let load_entry_functions = Cond::new(do_entry, load_entry_functions);
+        let load_other_functions = Cond::new(!do_entry, load_other_functions);
 
         // it is valid to use zeroed Option to create a None
-        // see https://doc.rust-lang.org/std/option/index.html#representation
+        // see https://doc.rust-lang.org/std/option/index.html$representation
         code!(
             tables,
-            pub struct #table_name {
-                #fields
+            pub struct $table_name {
+                $fields
             }
-            impl #table_name {
+            impl $table_name {
                 pub const fn new_empty() -> Self {
                     unsafe {
-                        // https://github.com/maxbla/const-zero#how-does-it-work
+                        // https://github.com/maxbla/const-zero$how-does-it-work
                         // for some reason calling const functions in place of generics is invalid
-                        const SIZE: usize = std::mem::size_of::<#table_name>();
-                        ConstZeroedHack::<#table_name, SIZE>::zero()
+                        const SIZE: usize = std::mem::size_of::<$table_name>();
+                        ConstZeroedHack::<$table_name, SIZE>::zero()
                     }
                 }
-                #load_entry_functions
-                #load_other_functions
+                $load_entry_functions
+                $load_other_functions
             }
-            ##[cfg(feature = "raw")]
-            impl #table_name {
-                #commands_funs
+            #[cfg(feature = "raw")]
+            impl $table_name {
+                $commands_funs
             }
-            impl Default for #table_name {
+            impl Default for $table_name {
                 fn default() -> Self {
                     Self::new_empty()
                 }
@@ -510,7 +500,7 @@ fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Context) {
     }
 }
 
-fn write_pnext_visit(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Context) {
+fn write_pnext_visit(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Rc<Context>) {
     let mut stype_to_struct = Vec::new();
 
     for &(symbol_index, _) in sorted_symbols {
@@ -537,60 +527,68 @@ fn write_pnext_visit(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Context)
         ctx.create_section("pnext"),
         out.join("src/util/pnext.rs"),
         false,
-        &ctx,
+        ctx,
     );
 
-    let variants = Iter(stype_to_struct, |w, (stype, structure)| {
-        code!(w,
-            $crate::vk10::StructureType::#stype => {
-                let $object = $pnext.cast::<#import!(structure)>();
-                $op;
-                $pnext = (*$object).p_next;
-            }
-        );
-    });
+    let variants = Iter::new(
+        stype_to_struct,
+        |w: &mut SectionWriter, (stype, structure)| {
+            code!(w,
+                ~$crate::vk10::StructureType::$stype => {
+                    let ~$object = ~$pnext.cast::<$import!(structure)>();
+                    ~$op;
+                    ~$pnext = (*~$object).p_next;
+                }
+            );
+        },
+    );
 
     code!(
         pnext,
-        ##[macro_export]
+        #[macro_export]
         macro_rules! pnext_visit {
-            ($pnext:expr, $stype:ident, $object:ident, $op:expr) => {
-                let $stype = *$pnext.cast::<$crate::vk10::StructureType>();
-                match $stype  {
-                    #variants
-                    _ => panic!("Unknown StructureType value ({:?})", $stype)
+            (~$pnext:expr, ~$stype:ident, ~$object:ident, ~$op:expr) => {
+                let ~$stype = *~$pnext.cast::<~$crate::vk10::StructureType>();
+                match ~$stype  {
+                    $variants
+                    _ => panic!("Unknown StructureType value ({:?})", ~$stype)
                 }
             };
         }
     )
 }
 
-fn write_vk_module(features: &[UniqueStr], extensions: &[&Extension], out: &Path, ctx: &Context) {
+fn write_vk_module(
+    features: &[UniqueStr],
+    extensions: &[&Extension],
+    out: &Path,
+    ctx: &Rc<Context>,
+) {
     let mut vk = SectionWriter::new(ctx.create_section("vk"), out.join("src/vk.rs"), false, &ctx);
     for feature in features {
         code!(
             vk,
-            ##[doc(no_inline)]
-            pub use crate::#feature::*;
+            #[doc(no_inline)]
+            pub use crate::$feature::*;
         );
     }
     for extension in extensions {
         code!(
             vk,
-            ##[doc(no_inline)]
-            pub use crate::extensions::#(extension.name)::*;
+            #[doc(no_inline)]
+            pub use crate::extensions::$(extension.name)::*;
         );
     }
 }
 
-fn write_extension_metadata(extensions: &[&Extension], out: &Path, ctx: &Context) {
+fn write_extension_metadata(extensions: &[&Extension], out: &Path, ctx: &Rc<Context>) {
     let mut meta = SectionWriter::new(
         ctx.create_section("metadata"),
         out.join("src/extensions/metadata.rs"),
         true,
         &ctx,
     );
-    let exts = Fun(|w| {
+    let exts = fun!(|w| {
         for e in extensions {
             let instance = match e.kind {
                 ExtensionKind::Disabled => {
@@ -612,36 +610,39 @@ fn write_extension_metadata(extensions: &[&Extension], out: &Path, ctx: &Context
                 (1, 0)
             };
             let core = format!("VK_API_VERSION_{}_{}", major, minor).intern(&ctx);
-            let requires = Separated::args(&e.requires, |w, n| {
+            let requires = Separated::args(&e.requires, |w: &mut SectionWriter, n| {
                 code!(w,
-                    #cstring!(n.resolve_original())
+                    $cstring!(n.resolve_original())
                 );
-                Ok(())
             });
 
             code!(
                 w,
                 ExtensionMetadata {
-                    name: #cstring!(e.name.resolve_original()),
-                    instance: #instance,
-                    core_version: #import!(core),
+                    name: $cstring!(e.name.resolve_original()),
+                    instance: $instance,
+                    core_version: $import!(core),
                     requires_extensions: &[
-                        #requires
+                        $requires
                     ]
                 },
             );
         }
-        Ok(())
     });
     code!(
         meta,
         pub const EXTENSION_METADATA: &[ExtensionMetadata] = &[
-            #exts
+            $exts
         ];
     );
 }
 
-fn write_wrappers(features: &[UniqueStr], extensions: &[&Extension], out: &Path, ctx: &Context) {
+fn write_wrappers(
+    features: &[UniqueStr],
+    extensions: &[&Extension],
+    out: &Path,
+    ctx: &Rc<Context>,
+) {
     let mut lib = SectionWriter::new(
         ctx.create_section("lib"),
         out.join("src/lib.rs"),
@@ -657,11 +658,11 @@ fn write_wrappers(features: &[UniqueStr], extensions: &[&Extension], out: &Path,
     code!(
         lib,
         pub mod vk;
-        #(Iter(features, |w, t| code!(w, pub mod #t;)))
+        $(Iter::new(features, |w: &mut SectionWriter, t| code!(w, pub mod $t;)))
     );
     code!(
         exts,
-        #(Iter(extensions, |w, t| code!(w, pub mod #(t.name);)))
+        $(Iter::new(extensions, |w: &mut SectionWriter, t| code!(w, pub mod $(t.name);)))
     );
     for stage in 0..3 {
         let (wrapper, table) = match stage {
@@ -677,55 +678,52 @@ fn write_wrappers(features: &[UniqueStr], extensions: &[&Extension], out: &Path,
             _ => unreachable!(),
         };
 
-        let handle_field = Fun(|w| {
+        let handle_field = fun!(|w| {
             if let Some(handle) = &handle_type {
                 code!(
                     w,
-                    pub(crate) handle: #import!(handle),
+                    pub(crate) handle: $import!(handle),
                 );
             }
-            Ok(())
         });
-        let handle_param = Fun(|w| {
+        let handle_param = fun!(|w| {
             if let Some(handle) = &handle_type {
                 code!(
                     w,
-                    handle: #import!(handle),
+                    handle: $import!(handle),
                 );
             }
-            Ok(())
         });
-        let handle_getter = Fun(|w| {
+        let handle_getter = fun!(|w| {
             if let Some(handle) = &handle_type {
                 code!(
                     w,
-                    ##[inline]
-                    pub fn handle(&self) -> #import!(handle) {
+                    #[inline]
+                    pub fn handle(&self) -> $import!(handle) {
                         self.handle
                     }
                 );
             }
-            Ok(())
         });
 
         code!(
             lib,
-            ##[derive(Clone)]
-            pub struct #wrapper {
-                #handle_field
-                pub(crate) table: *const #import!(table),
+            #[derive(Clone)]
+            pub struct $wrapper {
+                $handle_field
+                pub(crate) table: *const $import!(table),
             }
 
-            impl #wrapper {
-                pub unsafe fn new(#handle_param table: *const #import!(table)) -> Self {
+            impl $wrapper {
+                pub unsafe fn new($handle_param table: *const $import!(table)) -> Self {
                     Self {
-                        #(Cond(handle_type.is_some(), "handle,"))
+                        $(Cond::new(handle_type.is_some(), "handle,"))
                         table
                     }
                 }
-                #handle_getter
-                ##[inline]
-                pub fn table(&self) -> *const #import!(table) {
+                $handle_getter
+                #[inline]
+                pub fn table(&self) -> *const $import!(table) {
                     self.table
                 }
             }
@@ -733,7 +731,7 @@ fn write_wrappers(features: &[UniqueStr], extensions: &[&Extension], out: &Path,
     }
 }
 
-fn write_access_flags_util(out: &Path, ctx: &Context) {
+fn write_access_flags_util(out: &Path, ctx: &Rc<Context>) {
     let mut lib = SectionWriter::new(
         ctx.create_section("access"),
         out.join("src/util/access.rs"),
@@ -749,7 +747,7 @@ fn write_access_flags_util(out: &Path, ctx: &Context) {
         };
 
         let flags_item = |keyword: &'static str| {
-            Fun(move |w| {
+            fun!(move |w| {
                 let iter = members
                     .iter()
                     .filter(|(name, _)| name.resolve().contains(keyword));
@@ -762,15 +760,14 @@ fn write_access_flags_util(out: &Path, ctx: &Context) {
 
                 for (name, _) in iter {
                     if !first {
-                        w.write_char('|')?;
+                        w.write_char('|').unwrap();
                     }
                     first = false;
                     code!(
                         w,
-                        Self::#name.0
+                        Self::$name.0
                     );
                 }
-                Ok(())
             })
         };
 
@@ -780,9 +777,9 @@ fn write_access_flags_util(out: &Path, ctx: &Context) {
 
         code!(
             lib,
-            impl #access_flags {
-                pub const READ_FLAGS: Self = Self(#read);
-                pub const WRITE_FLAGS: Self = Self(#write);
+            impl $access_flags {
+                pub const READ_FLAGS: Self = Self($read);
+                pub const WRITE_FLAGS: Self = Self($write);
                 /// Whether the AccessFlags contains flags containing "READ"
                 pub const fn contains_read(&self) -> bool {
                     self.contains(Self::READ_FLAGS)
@@ -796,7 +793,7 @@ fn write_access_flags_util(out: &Path, ctx: &Context) {
     }
 }
 
-fn pipeline_stage_flags_util(out: &Path, ctx: &Context) {
+fn pipeline_stage_flags_util(out: &Path, ctx: &Rc<Context>) {
     let mut lib = SectionWriter::new(
         ctx.create_section("access"),
         out.join("src/util/stage.rs"),
@@ -873,7 +870,7 @@ fn pipeline_stage_flags_util(out: &Path, ctx: &Context) {
             ),
         ];
 
-        let special_bits = Fun(|w| {
+        let special_bits = fun!(|w| {
             let top = ctx
                 .try_intern("VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT")
                 .or_else(|| ctx.try_intern("VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT_KHR"))
@@ -883,20 +880,19 @@ fn pipeline_stage_flags_util(out: &Path, ctx: &Context) {
                 .or_else(|| ctx.try_intern("VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT_KHR"))
                 .unwrap();
 
-            write!(w, "Self::{top}.0 | Self::{bottom}.0")?;
+            write!(w, "Self::{top}.0 | Self::{bottom}.0").unwrap();
             for &(special, _) in special {
                 let name = ctx.apply_rename(special);
                 code!(
                     w,
-                    | Self::#name.0
+                    | Self::$name.0
                 );
             }
-            Ok(())
         });
 
-        let special_equivalents = Fun(|w| {
+        let special_equivalents = fun!(|w| {
             for &(special, equivalents) in special {
-                let values = Fun(|w| {
+                let values = fun!(|w| {
                     let mut first = true;
                     for &str in equivalents {
                         let name = ctx.try_intern(str).unwrap();
@@ -907,52 +903,48 @@ fn pipeline_stage_flags_util(out: &Path, ctx: &Context) {
                             .is_some()
                         {
                             if !first {
-                                w.write_char('|')?;
+                                w.write_char('|').unwrap();
                             }
                             first = false;
                             code!(
                                 w,
-                                Self::#name.0
+                                Self::$name.0
                             );
                         }
                     }
-                    Ok(())
                 });
 
                 let rename = ctx.apply_rename(special);
                 let name = cat!("UTIL_", rename, "_EQUIVALENT");
                 code!(
                     w,
-                    pub const #name: Self = Self(#values);
+                    pub const $name: Self = Self($values);
                 );
             }
-
-            Ok(())
         });
 
-        let translate_fn_impl = Fun(|w| {
+        let translate_fn_impl = fun!(|w| {
             for &(special, _) in special {
                 let rename = ctx.apply_rename(special);
                 let name = cat!("UTIL_", rename, "_EQUIVALENT");
 
                 code!(
                     w,
-                    if self.contains(Self::#rename) {
-                        out |= Self::#name.0;
+                    if self.contains(Self::$rename) {
+                        out |= Self::$name.0;
                     }
                 )
             }
-            Ok(())
         });
 
         let stage_flags = import_str!(name, ctx);
 
         code!(
             lib,
-            impl #stage_flags {
-                pub const UTIL_SPECIAL_FLAGS: Self = Self(#special_bits);
+            impl $stage_flags {
+                pub const UTIL_SPECIAL_FLAGS: Self = Self($special_bits);
                 pub const UTIL_ALL_COMMANDS_EQUIVALENT: Self = Self(Self::all().0 & !Self::UTIL_SPECIAL_FLAGS.0);
-                #special_equivalents
+                $special_equivalents
 
                 pub const fn translate_special_bits(self) -> Self {
                     let mut out = self.0 & Self::UTIL_ALL_COMMANDS_EQUIVALENT.0;
@@ -962,7 +954,7 @@ fn pipeline_stage_flags_util(out: &Path, ctx: &Context) {
                         return Self::UTIL_ALL_COMMANDS_EQUIVALENT;
                     }
 
-                    #translate_fn_impl
+                    $translate_fn_impl
 
                     Self(out)
                 }

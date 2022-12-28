@@ -1,19 +1,14 @@
 use crate::{CFmt, WriteLast};
 
-#[doc(hidden)]
-pub trait InterpWriter: WriteLast + Sized {
-    fn write_with_interpolations<C>(
-        &mut self,
-        ctx: &mut C,
-        str: &str,
-        interp: &[&dyn CFmt<Self, C>],
-    ) {
+pub trait CodewriteImpl: WriteLast {
+    #[doc(hidden)]
+    fn write_with_interpolations(&mut self, str: &str, interp: &[&dyn CFmt<Self>]) {
         let mut interp = interp.into_iter();
         let mut chars = str.chars();
         while let Some(c) = chars.next() {
             if c == '\0' {
                 self.separate_whitespace();
-                interp.next().unwrap().cfmt(self, ctx);
+                interp.next().unwrap().cfmt(self);
                 self.separate_whitespace();
             } else {
                 self.write_char(c).unwrap();
@@ -22,4 +17,4 @@ pub trait InterpWriter: WriteLast + Sized {
     }
 }
 
-impl<T: WriteLast> InterpWriter for T {}
+impl<T: WriteLast> CodewriteImpl for T {}

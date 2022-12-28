@@ -73,7 +73,7 @@ VK_QNX_screen_surface,",
         protect: HashSet::new(),
     };
 
-    let mut ctx = Context::new(conf, reg);
+    let ctx = Context::new(conf, reg);
 
-    write_bindings(&mut ctx, glue, out).unwrap();
+    write_bindings(ctx, glue, out);
 }

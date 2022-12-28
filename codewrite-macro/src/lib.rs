@@ -53,11 +53,18 @@ pub fn code(item: TokenStream) -> TokenStream {
         return TokenStream::new();
     }
 
+    let types = match slice {
+        [TokenTree::Ident(i), TokenTree::Group(g), ..]
+            if i.to_string() == "__qualify" && g.delimiter() == Delimiter::Parenthesis =>
+        {
+            slice = &slice[2..];
+            Some(g)
+        }
+        _ => None,
+    };
+
     let (buf, rem) = try_parse_expr(slice, true)
         .expect("Failed to parse 'buf' expression at the start of macro");
-    slice = rem;
-    let (ctx, rem) = try_parse_expr(slice, true)
-        .expect("Failed to parse 'ctx' expression at the start of macro");
     slice = rem;
 
     if slice.is_empty() {
@@ -101,33 +108,48 @@ pub fn code(item: TokenStream) -> TokenStream {
         Delimiter::None,
         TokenStream::from_iter(buf.iter().cloned()),
     ));
-    let ctx = TokenTree::Group(Group::new(
-        Delimiter::None,
-        TokenStream::from_iter(ctx.iter().cloned()),
-    ));
 
+    let mut interp = Vec::new();
+    for i in interpolations {
+        let span = i.span();
+        if let Some(types) = types {
+            // <_ as codewrite::CFmtCoerce<SectionWriter, Rc<Context>>>::coerce()
+            // .coerce::<SectionWriter, Rc<Context>>>()
+            interp.extend([
+                i,
+                TokenTree::Punct(Punct::new('.', Spacing::Alone)),
+                TokenTree::Ident(Ident::new("coerce", span)),
+                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                TokenTree::Punct(Punct::new('<', Spacing::Alone)),
+            ]);
+            interp.extend(types.stream().into_iter());
+            interp.extend([
+                TokenTree::Punct(Punct::new('>', Spacing::Alone)),
+                TokenTree::Group(Group::new(Delimiter::Parenthesis, TokenStream::new())),
+                TokenTree::Punct(Punct::new(',', Spacing::Alone)),
+            ]);
+        } else {
+            interp.extend([
+                i,
+                TokenTree::Punct(Punct::new('.', Spacing::Alone)),
+                TokenTree::Ident(Ident::new("coerce", span)),
+                TokenTree::Group(Group::new(Delimiter::Parenthesis, TokenStream::new())),
+                TokenTree::Punct(Punct::new(',', Spacing::Alone)),
+            ]);
+        }
+    }
     let interp = TokenTree::Group(Group::new(
         Delimiter::Bracket,
-        interpolations
-            .into_iter()
-            .map(|s| {
-                [
-                    TokenTree::Punct(Punct::new('&', Spacing::Alone)),
-                    s,
-                    TokenTree::Punct(Punct::new(',', Spacing::Alone)),
-                ]
-            })
-            .flatten()
-            .collect(),
+        TokenStream::from_iter(interp),
     ));
 
     format!(
         "
         {{
-            use codewrite::write::InterpWriter;
-            use std::borrow::BorrowMut;
+            use codewrite::write::CodewriteImpl;
+            use codewrite::CFmtCoerce;
             {buf}.write_with_interpolations(
-                {ctx}.borrow_mut(),
                 {str},
                 &{interp}
             );
@@ -149,9 +171,9 @@ fn visit_ast_nodes(mut slice: &[TokenTree], interpolations: &mut Vec<TokenTree>)
     let mut out_tokens: Vec<TokenTree> = Vec::new();
     loop {
         match slice {
-            // escaped raw '$'
+            // escaped raw '$', '~' is used because it is not used anywhere in rust anymore and the combination of "~$" seems very unlikely
             [TokenTree::Punct(p1), TokenTree::Punct(p2), ..]
-                if p1.as_char() == '\\' && p2.as_char() == '$' =>
+                if p1.as_char() == '~' && p2.as_char() == '$' =>
             {
                 out_tokens.push(slice[1].clone());
                 slice = &slice[2..];

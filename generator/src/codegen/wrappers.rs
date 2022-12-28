@@ -1,4 +1,5 @@
-use format_macro::code;
+use codewrite::{CFmt, Cond, Fun, FunOnce, Iter};
+use codewrite_macro::code;
 use generator_lib::{
     interner::{Intern, UniqueStr},
     type_declaration::{Token, TokenIter, TyToken, Type, TypeRef},
@@ -10,11 +11,7 @@ use std::{cell::RefCell, fmt::Write};
 use crate::{
     cat,
     codegen::symbols::{fmt_default_value, fmt_default_value_with_overlay},
-    codegen_support::{
-        format_utils::{Cond, ExtendedFormat, Fun, Iter, SectionWriter},
-        type_analysis::TypeAnalysis,
-        CommandKind,
-    },
+    codegen_support::{format_utils::SectionWriter, type_analysis::TypeAnalysis, CommandKind},
     context::Context,
     doc_boilerplate, import,
 };
@@ -265,54 +262,53 @@ pub fn fmt_command_wrapper(
                             ty = &ctx.types.bool;
                         }
                         let ty = ty.ptr_to_ref();
-                        code!(w, #name: #import!(ty.as_ref()),)
+                        code!(w, $name: $import!(ty.as_ref()),);
                     }
                     What::Return => {}
                     What::ReturnInit => {}
                     What::LengthInit => {}
-                    What::Call => code!(w, #name as _,),
+                    What::Call => code!(w, $name as _,),
                     What::ReturnValues => {}
                 },
                 ParameterRole::Array => match state {
                     What::Params => {
                         let ty = param.ty.strip_indirection();
-                        code!(w, #name: &[#import!(ty)],)
+                        code!(w, $name: &[$import!(ty)],)
                     }
                     What::Return => {}
                     What::ReturnInit => {}
                     What::LengthInit => {}
-                    What::Call => code!(w, #name.as_ptr(),),
+                    What::Call => code!(w, $name.as_ptr(),),
                     What::ReturnValues => {}
                 },
                 ParameterRole::Optional => match state {
                     What::Params => {
                         let ty = param.ty.ptr_to_ref();
-                        code!(w, #name: Option<#import!(ty.as_ref())>,)
+                        code!(w, $name: Option<$import!(ty.as_ref())>,)
                     }
                     What::Return => {}
                     What::ReturnInit => {}
                     What::LengthInit => {}
                     What::Call => {
-                        let default = Fun(|w| {
+                        let default = Fun::new(|w: &mut SectionWriter| {
                             fmt_default_value(w, &param, ctx);
-                            Ok(())
                         });
                         code!(
                             w,
-                            match #name {
+                            match $name {
                                 Some(v) => v,
-                                None => #default,
+                                None => $default,
                             },
                         )
                     }
                     What::ReturnValues => {}
                 },
                 ParameterRole::Passthrough => match state {
-                    What::Params => code!(w, #name: #import!(&param.ty),),
+                    What::Params => code!(w, $name: $import!(&param.ty),),
                     What::Return => {}
                     What::ReturnInit => {}
                     What::LengthInit => {}
-                    What::Call => code!(w, #name,),
+                    What::Call => code!(w, $name,),
                     What::ReturnValues => {}
                 },
                 ParameterRole::Handle => match state {
@@ -324,20 +320,19 @@ pub fn fmt_command_wrapper(
                     What::ReturnValues => {}
                 },
                 ParameterRole::CStr => match state {
-                    What::Params => code!(w, #name: Option<&std::ffi::CStr>,),
+                    What::Params => code!(w, $name: Option<&std::ffi::CStr>,),
                     What::Return => {}
                     What::ReturnInit => {}
                     What::LengthInit => {}
                     What::Call => {
-                        let default = Fun(|w| {
+                        let default = Fun::new(|w: &mut SectionWriter| {
                             fmt_default_value(w, &param, ctx);
-                            Ok(())
                         });
                         code!(
                             w,
-                            match #name {
+                            match $name {
                                 Some(v) => v.as_ptr(),
-                                None => #default,
+                                None => $default,
                             },
                         )
                     }
@@ -345,25 +340,23 @@ pub fn fmt_command_wrapper(
                 },
                 &ParameterRole::ValueWrittenTo { inner } => match state {
                     What::Params => {}
-                    What::Return => code!(w, #import!(inner),),
+                    What::Return => code!(w, $import!(inner),),
                     What::ReturnInit => {
-                        let default = Fun(|w| {
+                        let default = Fun::new(|w: &mut SectionWriter| {
                             fmt_default_value_with_overlay(w, &param, inner, ctx);
-                            Ok(())
                         });
                         code!(
                             w,
-                            let mut #name = #default;
+                            let mut $name = $default;
                         );
                     }
                     What::LengthInit => {}
-                    What::Call => code!(w, &mut #name,),
-                    What::ReturnValues => code!(w, #name,),
+                    What::Call => code!(w, &mut $name,),
+                    What::ReturnValues => code!(w, $name,),
                 },
                 &ParameterRole::ArrayWrittenTo { inner, length } => {
-                    let default = Fun(|w| {
+                    let default = Fun::new(|w: &mut SectionWriter| {
                         fmt_default_value_with_overlay(w, &param, inner, ctx);
-                        Ok(())
                     });
                     let len_path = len_paths(
                         length.resolve(),
@@ -374,10 +367,10 @@ pub fn fmt_command_wrapper(
                     );
 
                     match state {
-                        What::Return => code!(w, Vec<#import!(inner)>,),
+                        What::Return => code!(w, Vec<$import!(inner)>,),
                         What::Params | What::ReturnInit => {
                             if state == What::ReturnInit {
-                                code!(w, let mut #name = vec![#default; #len_path as usize];)
+                                code!(w, let mut $name = vec![$default; $len_path as usize];)
                             }
 
                             if let Some(basetype) = inner.try_only_basetype() {
@@ -389,15 +382,15 @@ pub fn fmt_command_wrapper(
 
                                         if state == What::Params {
                                             code!(
-                                                w,
-                                                mut #callback_name: impl FnMut(&mut Vec<#import!(inner)>),
+                                                w, (),
+                                                mut $callback_name: impl FnMut(&mut Vec<$import!(inner)>),
                                             )
                                         }
 
                                         if state == What::ReturnInit {
                                             code!(
-                                                w,
-                                                #callback_name(&mut #name);
+                                                w, (),
+                                                $callback_name(&mut $name);
                                             )
                                         }
                                     }
@@ -405,8 +398,8 @@ pub fn fmt_command_wrapper(
                             }
                         }
                         What::LengthInit => {}
-                        What::Call => code!(w, #name.as_mut_ptr(),),
-                        What::ReturnValues => code!(w, #name,),
+                        What::Call => code!(w, $name.as_mut_ptr(),),
+                        What::ReturnValues => code!(w, $name,),
                     }
                 }
                 ParameterRole::LengthByArray { array_indices } => match state {
@@ -414,7 +407,7 @@ pub fn fmt_command_wrapper(
                     What::Return => {}
                     What::ReturnInit => {}
                     What::LengthInit => {
-                        let length_exprs = Fun(|w| {
+                        let length_exprs = Fun::new(|w: &mut SectionWriter| {
                             array_indices
                                 .into_iter()
                                 .map(|&array_index| &params[array_index])
@@ -426,19 +419,18 @@ pub fn fmt_command_wrapper(
                                 .for_each(|(i, array)| {
                                     let ident = strip_pointer_stuff(array.name.resolve());
                                     match i {
-                                        0 => code!(w, #ident.len() ),
-                                        _ => code!(w, .min(#ident.len()) ),
+                                        0 => code!(w, $ident.len() ),
+                                        _ => code!(w, .min($ident.len()) ),
                                     }
                                 });
-                            Ok(())
                         });
 
                         code!(
                             w,
-                            let #name = #length_exprs;
+                            let $name = $length_exprs;
                         )
                     }
-                    What::Call => code!(w, #name as _,),
+                    What::Call => code!(w, $name as _,),
                     What::ReturnValues => {}
                 },
                 ParameterRole::LengthByExtraCall {
@@ -456,11 +448,11 @@ pub fn fmt_command_wrapper(
                     }
 
                     match state {
-                        What::Params => code!(w, #name: Option<#import!(*inner)>,),
+                        What::Params => code!(w, $name: Option<$import!(*inner)>,),
                         What::Return => {}
                         What::ReturnInit => {}
                         What::LengthInit => {}
-                        What::Call => code!(w, &mut #name,),
+                        What::Call => code!(w, &mut $name,),
                         What::ReturnValues => {}
                     }
                 }
@@ -482,21 +474,21 @@ pub fn fmt_command_wrapper(
         let parens = return_type_count == 0 || return_type_count > 1;
         let only_success = success_codes.as_slice() == &[ctx.strings.VK_SUCCESS];
 
-        let function_arguments = Iter(0..params.len(), |w, i| {
-            write_param_analog(w, i, params, &kinds, &extra_call_info, What::Params, ctx);
+        let function_arguments = Iter::new(0..params.len(), |w, i| {
+            write_param_analog(w, i, params, &kinds, &extra_call_info, What::Params, ctx)
         });
-        let function_call = Iter(0..params.len(), |w, i| {
+        let function_call = Iter::new(0..params.len(), |w, i| {
             write_param_analog(w, i, params, &kinds, &extra_call_info, What::Call, ctx);
         });
 
-        let function_return = Fun(|w| {
+        let function_return = Fun::new(|w: &mut SectionWriter| {
             if !result && return_type_count == 0 {
-                return Ok(());
+                return;
             }
 
-            let inner = Fun(|w| {
+            let inner = Fun::new(|w: &mut SectionWriter| {
                 if parens {
-                    w.write_char('(')?;
+                    w.write_char('(').unwrap();
                 }
                 {
                     (0..params.len()).for_each(|i| {
@@ -516,9 +508,8 @@ pub fn fmt_command_wrapper(
                     }
                 }
                 if parens {
-                    w.write_char(')')?;
+                    w.write_char(')').unwrap();
                 }
-                Ok(())
             });
 
             if result {
@@ -526,36 +517,34 @@ pub fn fmt_command_wrapper(
 
                 // the only success condition is VK_SUCCESS, in this case we do not return the result in the Ok variant
                 if only_success {
-                    code!(w, -> #import!(&ctx.types.VulkanResult)<#inner>);
+                    code!(w, -> $import!(&ctx.types.VulkanResult)<$inner>);
                 } else {
                     let result_enum = import!(&ctx.types.VkResult);
                     if return_type_count == 0 {
-                        code!(w, -> #import!(&ctx.types.VulkanResult)<#result_enum>);
+                        code!(w, -> $import!(&ctx.types.VulkanResult)<$result_enum>);
                     } else {
-                        code!(w, -> #import!(&ctx.types.VulkanResult)<(#inner, #result_enum)>);
+                        code!(w, -> $import!(&ctx.types.VulkanResult)<($inner, $result_enum)>);
                     }
                 }
             } else {
-                code!(w, -> #inner);
+                code!(w, -> $inner);
             }
-            Ok(())
         });
-        let extra_call = Fun(|w| {
+        let extra_call = Fun::new(|w: &mut SectionWriter| {
             extra_call_info.borrow().as_ref().map(|info| {
-                let default = Fun(|w| {
+                let default = Fun::new(|w: &mut SectionWriter| {
                     fmt_default_value_with_overlay(w, info.param, info.inner, ctx);
-                    Ok(())
                 });
 
                 let length_index = info.length_index;
                 let array_indices = info.array_indices;
                 let name = info.name;
 
-                let call_args = Iter(0..params.len(), |w, i| {
+                let call_args = Iter::new(0..params.len(), |w: &mut SectionWriter, i| {
                     if i == length_index {
-                        code!(w, &mut v,)
+                        code!(w, &mut v,);
                     } else if array_indices.contains(&i) {
-                        code!(w, std::ptr::null_mut(),)
+                        code!(w, std::ptr::null_mut(),);
                     } else {
                         write_param_analog(w, i, params, &kinds, &extra_call_info, What::Call, ctx);
                     }
@@ -563,19 +552,18 @@ pub fn fmt_command_wrapper(
 
                 code!(
                     w,
-                    let mut #name = match #name {
+                    let mut $name = match $name {
                         Some(v) => v,
                         None => {
-                            let mut v = #default;
-                            #function_name(#call_args);
+                            let mut v = $default;
+                            $function_name($call_args);
                             v
                         }
                     };
                 );
             });
-            Ok(())
         });
-        let length_init = Fun(|w| {
+        let length_init = Fun::new(|w: &mut SectionWriter| {
             (0..params.len()).for_each(|i| {
                 write_param_analog(
                     w,
@@ -587,9 +575,8 @@ pub fn fmt_command_wrapper(
                     ctx,
                 );
             });
-            Ok(())
         });
-        let return_init = Fun(|w| {
+        let return_init = Fun::new(|w: &mut SectionWriter| {
             (0..params.len()).for_each(|i| {
                 write_param_analog(
                     w,
@@ -601,16 +588,15 @@ pub fn fmt_command_wrapper(
                     ctx,
                 );
             });
-            Ok(())
         });
-        let return_expr = Fun(|w| {
+        let return_expr = Fun::new(|w: &mut SectionWriter| {
             if !result && return_type_count == 0 {
-                return Ok(());
+                return;
             }
 
-            let inner = Fun(|w| {
+            let inner = Fun::new(|w: &mut SectionWriter| {
                 if parens {
-                    w.write_char('(')?;
+                    w.write_char('(').unwrap();
                 }
                 {
                     (0..params.len()).for_each(|i| {
@@ -631,47 +617,43 @@ pub fn fmt_command_wrapper(
                 }
 
                 if parens {
-                    w.write_char(')')?;
+                    w.write_char(')').unwrap();
                 }
-                Ok(())
             });
 
             if result {
-                let value = Fun(|w| {
+                let value = Fun::new(|w: &mut SectionWriter| {
                     if only_success {
-                        code!(w, #inner);
+                        code!(w, (), $inner);
                     } else {
                         if return_type_count == 0 {
                             code!(w, result);
                         } else {
-                            code!(w, (#inner, result));
+                            code!(w, ($inner, result));
                         }
                     }
-                    Ok(())
                 });
 
                 code!(
                     w,
-                    crate::new_result(#value, result)
+                    crate::new_result($value, result)
                 );
             } else {
-                code!(w, #inner)
+                code!(w, $inner)
             }
-
-            Ok(())
         });
 
         code!(
             w,
-            ##[track_caller]
-            #doc_boilerplate!(function_name)
-            pub unsafe fn #function_name(&self, #function_arguments) #function_return {
-                let #function_name = (*self.table).#function_name.unwrap();
-                #extra_call
-                #length_init
-                #return_init
-                #(Cond(result, "let result =")) #function_name(#function_call);
-                #return_expr
+            #[track_caller]
+            $doc_boilerplate!(function_name)
+            pub unsafe fn $function_name(&self, $function_arguments) $function_return {
+                let $function_name = (*self.table).$function_name.unwrap();
+                $extra_call
+                $length_init
+                $return_init
+                $(Cond::new(result, "let result =")) $function_name($function_call);
+                $return_expr
             }
         );
     } else {
@@ -709,13 +691,13 @@ pub fn len_paths<'a>(
     on_ident: impl Fn(&str) -> &str + 'a,
     deref_acess: &'a str,
     ctx: &'a Context,
-) -> impl ExtendedFormat + 'a {
+) -> impl CFmt<SectionWriter> + 'a {
     let mut state = 0;
-    Fun(move |w| {
+    FunOnce::new(move |w: &mut SectionWriter| {
         for token in TokenIter::new(str) {
             let str = match token {
                 Token::Number(num) => {
-                    code!(w, #num);
+                    code!(w, $num);
                     continue;
                 }
                 Token::Ident(str) => match state {
@@ -723,15 +705,15 @@ pub fn len_paths<'a>(
                         state = 1;
                         let uniq = str.intern(ctx);
                         match get_source(uniq) {
-                            VarSource::InScope => code!(w, #(on_ident(uniq.resolve()))),
-                            VarSource::InSelf => code!(w, self.#(on_ident(uniq.resolve()))),
-                            VarSource::Import => code!(w, #import!(uniq)),
+                            VarSource::InScope => code!(w, $(on_ident(uniq.resolve()))),
+                            VarSource::InSelf => code!(w, self.$(on_ident(uniq.resolve()))),
+                            VarSource::Import => code!(w, $import!(uniq)),
                         }
                         continue;
                     }
                     1 => {
                         let renamed = ctx.reg.apply_rename(str);
-                        code!(w, .#(on_ident(renamed)));
+                        code!(w, .$(on_ident(renamed)));
                         continue;
                     }
                     _ => unreachable!(),
@@ -761,8 +743,7 @@ pub fn len_paths<'a>(
                 Token::End => unreachable!(),
             };
             state = 0;
-            code!(w, #str);
+            code!(w, $str);
         }
-        Ok(())
     })
 }

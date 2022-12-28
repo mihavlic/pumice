@@ -4,7 +4,7 @@ use crate::{
     cat,
     codegen::wrappers::fmt_command_wrapper,
     codegen_support::{
-        format_utils::{Cond, ExtendedFormat, Fun, Iter, SectionWriter, Separated},
+        format_utils::SectionWriter,
         get_command_kind,
         type_analysis::{
             get_underlying_symbol, get_underlying_type, is_function_pointer, TypeAnalysis,
@@ -12,10 +12,12 @@ use crate::{
         type_query::DeriveData,
         AddedVariants, CommandKind,
     },
+    cond,
     context::Context,
-    cstring, doc_boilerplate, import, import_str, string,
+    cstring, doc_boilerplate, fun, fun_once, import, import_str, string,
 };
-use format_macro::code;
+use codewrite::{Cond, Iter, Separated};
+use codewrite_macro::code;
 use generator_lib::{
     interner::{Intern, UniqueStr},
     type_declaration::{TyToken, TypeRef},
@@ -24,9 +26,9 @@ use generator_lib::{
 use std::fmt::Write;
 
 pub fn write_symbol(
+    w: &mut SectionWriter,
     name: UniqueStr,
     body: &SymbolBody,
-    writer: &mut SectionWriter<'_>,
     derives: &mut DeriveData,
     added_variants: &HashMap<UniqueStr, Vec<AddedVariants>>,
     ctx: &Context,
@@ -56,8 +58,8 @@ pub fn write_symbol(
                 SymbolBody::Constant { .. } => {
                     let ty = get_underlying_type(target.0, &ctx);
                     code!(
-                        writer,
-                        pub const #name: #import!(ty) = #import!(target.0);
+                        w,
+                        pub const $name: $import!(ty) = $import!(target.0);
                     );
                     return;
                 }
@@ -67,28 +69,28 @@ pub fn write_symbol(
                     return_type,
                     params,
                 } => {
-                    fmt_global_command(writer, name, target.0, params, return_type, ctx);
-                    fmt_global_command_wrapper(writer, name, body, params, ctx);
+                    fmt_global_command(w, name, target.0, params, return_type, ctx);
+                    fmt_global_command_wrapper(w, name, body, params, ctx);
                     return;
                 }
                 _ => {}
             };
 
             code!(
-                writer,
-                #doc_boilerplate!(name)
-                pub type #name = #import!(of);
+                w, (),
+                $doc_boilerplate!(name)
+                pub type $name = $import!(of);
             );
         }
         SymbolBody::Redeclaration(method) => match method {
             RedeclarationMethod::Type(ty) => {
                 code!(
-                    writer,
-                    pub type #name = #import!(ty);
+                    w,
+                    pub type $name = $import!(ty);
                 );
             }
             RedeclarationMethod::Custom(fun) => {
-                fun(writer).unwrap();
+                fun(w).unwrap();
             }
         },
         // there is nothing to do with defines in rust, just skip them
@@ -135,8 +137,8 @@ pub fn write_symbol(
             );
 
             code!(
-                writer,
-                pub const #name: u32 = #code;
+                w,
+                pub const $name: u32 = $code;
             );
         }
         SymbolBody::Included { .. } => {
@@ -153,15 +155,15 @@ pub fn write_symbol(
             let handle = select!(dispatchable, non_dispatchable_handle, dispatchable_handle);
 
             code!(
-                writer,
-                #(handle)! (
-                    #name, #object_type, #string!(raw),
-                    #cat!("\"[Vulkan Manual Page](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/", raw, ".html)\"")
+                w,
+                $(handle)! (
+                    $name, $object_type, $string!(raw),
+                    $cat!("\"[Vulkan Manual Page](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/", raw, ".html)\"")
                 );
             );
         }
         SymbolBody::Funcpointer { ret, args } => {
-            let preamble = Fun(|w| {
+            let preamble = fun!(|w| {
                 fmt_command_preamble(
                     w,
                     "",
@@ -173,9 +175,10 @@ pub fn write_symbol(
                     ctx,
                 )
             });
-            code!(writer,
-                #doc_boilerplate!(name)
-                pub type #name = unsafe extern "system" #preamble;
+            code!(
+                w,
+                $doc_boilerplate!(name)
+                pub type $name = unsafe extern "system" $preamble;
             );
         }
         &SymbolBody::Struct { union, ref members } => {
@@ -183,80 +186,74 @@ pub fn write_symbol(
                 true => "union",
                 false => "struct",
             };
-            let fields = Separated::args(members.iter(), |w, decl| {
+            let fields = Separated::args(members.iter(), |w: &mut SectionWriter, decl| {
                 if decl.ty.is_function_pointer(ctx) {
-                    code!(w, pub #(decl.name): Option<#import!(&decl.ty)>);
+                    code!(w, pub $(decl.name): Option<$import!(&decl.ty)>);
                 } else {
-                    code!(w, pub #(decl.name): #import!(&decl.ty));
+                    code!(w, pub $(decl.name): $import!(&decl.ty));
                 }
-                Ok(())
             });
 
-            let default_members = Separated::args(members.iter(), |w, decl| {
-                let default = Fun(|w| {
+            let default_members = Separated::args(members.iter(), |w: &mut SectionWriter, decl| {
+                let default = fun!(|w| {
                     fmt_default_value(w, &decl, ctx);
-                    Ok(())
                 });
-                code!(w, #(decl.name): #default);
-                Ok(())
+                code!(w, $(decl.name): $default);
             });
-            let struct_default = Fun(|w| {
+            let struct_default = fun!(|w| {
                 if !union {
                     code!(
                         w,
                         Self {
-                            #default_members
+                            $default_members
                         }
                     );
                 }
-                Ok(())
             });
 
-            let union_default = Fun(|w| {
+            let union_default = fun!(|w| {
                 if union {
                     code!(w, unsafe { std::mem::zeroed() });
                 }
-                Ok(())
             });
 
-            let copy = Cond(derives.is_copy(name, ctx), ", Copy");
-            let eq = Cond(derives.is_eq(name, ctx), ", PartialEq, Eq, Hash");
+            let copy = Cond::new(derives.is_copy(name, ctx), ", Copy");
+            let eq = Cond::new(derives.is_eq(name, ctx), ", PartialEq, Eq, Hash");
             let zeroable = derives.is_defaultable(name, ctx);
 
             code!(
-                writer,
-                ##[derive(Clone #copy #eq)]
-                ##[repr(C)]
-                #doc_boilerplate!(name)
-                pub #keyword #name {
-                    #fields
+                w,
+                #[derive(Clone $copy $eq)]
+                #[repr(C)]
+                $doc_boilerplate!(name)
+                pub $keyword $name {
+                    $fields
                 }
-                #(Cond(zeroable, Fun(|w| {code!(w,
-                    impl Default for #name {
+                $cond!(zeroable => |w| code!(w,
+                    impl Default for $name {
                         fn default() -> Self {
-                            #struct_default
-                            #union_default
+                            $struct_default
+                            $union_default
                         }
                     }
-                ); Ok(())} )))
+                ))
             );
         }
         SymbolBody::Constant { val, .. } => {
             let ty = get_underlying_type(name, &ctx);
 
-            let val = Fun(|w| {
+            let val = fun!(|w| {
                 use ConstantValue::*;
                 match val {
-                    Bitpos(p) => code!(w, 1 << #p),
-                    Literal(i) => code!(w, #i),
-                    Expression(e) => code!(w, #e),
-                    Symbol(s) => code!(w, #import!(*s)),
-                    String(s) => code!(w, #cstring!(s)),
+                    Bitpos(p) => code!(w, 1 << $p),
+                    Literal(i) => code!(w, $i),
+                    Expression(e) => code!(w, $e),
+                    Symbol(s) => code!(w, $import!(*s)),
+                    String(s) => code!(w, $cstring!(s)),
                 }
-                Ok(())
             });
 
-            code!(writer, pub const #name: #import!(ty) = #val;)
+            code!(w, pub const $name: $import!(ty) = $val;)
         }
         SymbolBody::Enum {
             ty,
@@ -271,11 +268,11 @@ pub fn write_symbol(
             let supl = added_variants.get(&name);
 
             code!(
-                writer,
-                #doc_boilerplate!(name)
-                ##[derive(Clone, Copy, PartialEq #eq, Default)]
-                ##[repr(transparent)]
-                pub struct #name(pub #ty);
+                w,
+                $doc_boilerplate!(name)
+                #[derive(Clone, Copy, PartialEq $eq, Default)]
+                #[repr(transparent)]
+                pub struct $name(pub $ty);
             );
 
             let member_iter = members.iter().map(|a| (name, a.0, &a.1));
@@ -374,27 +371,27 @@ pub fn write_symbol(
             members.retain(|m| m.0 != deleted);
 
             let state = Cell::new(name);
-            let variants = Iter(&members, |w, &(ext, name, val)| {
+            let variants = Iter::new(&members, |w: &mut SectionWriter, &(ext, name, val)| {
                 if state.get() != ext {
-                    write!(w, "/// {ext}\n").unwrap();
+                    writeln!(w, "/// {ext}").unwrap();
                     state.set(ext);
                 }
 
                 use ConstantValue::*;
                 match val {
-                    Bitpos(pos) => code!(w, pub const #name: Self = Self(1 << #pos);),
-                    Literal(val) => code!(w, pub const #name: Self = Self(#val);),
-                    Expression(str) => code!(w, pub const #name: Self = Self(#str);),
-                    Symbol(alias) => code!(w, pub const #name: Self = Self::#alias;),
+                    Bitpos(pos) => code!(w, pub const $name: Self = Self(1 << $pos);),
+                    Literal(val) => code!(w, pub const $name: Self = Self($val);),
+                    Expression(str) => code!(w, pub const $name: Self = Self($str);),
+                    Symbol(alias) => code!(w, pub const $name: Self = Self::$alias;),
                     String(_) => unreachable!(),
                 }
             });
 
             if !members.is_empty() {
                 code!(
-                    writer,
-                    impl #name {
-                        #variants
+                    w,
+                    impl $name {
+                        $variants
                     }
                 );
             }
@@ -417,19 +414,19 @@ pub fn write_symbol(
                         ConstantValue::String(_) => {}
                     }
                 }
-                let all = Fun(|w| write!(w, "0x{:x}", all));
+                let all = fun!(|w| write!(w, "0x{:x}", all).unwrap(); );
 
                 code!(
-                    writer,
-                    #(bitflags_impl)! {
-                        #name: #ty, #all, #variants
+                    w,
+                    $(bitflags_impl)! {
+                        $name: $ty, $all, $variants
                     }
                 )
             } else {
                 code!(
-                    writer,
-                    #(enum_impl)! {
-                        #name: #ty, #variants
+                    w,
+                    $(enum_impl)! {
+                        $name: $ty, $variants
                     }
                 )
             }
@@ -440,14 +437,14 @@ pub fn write_symbol(
             return_type,
             params,
         } => {
-            fmt_global_command(writer, name, name, params, return_type, ctx);
-            fmt_global_command_wrapper(writer, name, body, params, ctx);
+            fmt_global_command(w, name, name, params, return_type, ctx);
+            fmt_global_command_wrapper(w, name, body, params, ctx);
         }
     }
 }
 
 fn fmt_global_command_wrapper(
-    writer: &mut SectionWriter<'_>,
+    w: &mut SectionWriter,
     name: UniqueStr,
     body: &SymbolBody,
     params: &Vec<Declaration>,
@@ -459,29 +456,28 @@ fn fmt_global_command_wrapper(
         CommandKind::Instance => "InstanceWrapper",
         CommandKind::Device => "DeviceWrapper",
     };
-    let wrapper_body = Fun(|w| {
+    let wrapper_body = fun_once!(move |w| {
         fmt_command_wrapper(w, name, body, kind, ctx);
-        Ok(())
     });
 
     code!(
-        writer,
-        ##[cfg(feature = "wrappers")]
-        impl #import_str!(wrapper_type, ctx) {
-            #wrapper_body
+        w,
+        #[cfg(feature = "wrappers")]
+        impl $import_str!(wrapper_type, ctx) {
+            $wrapper_body
         }
     );
 }
 
 fn fmt_global_command(
-    writer: &mut SectionWriter<'_>,
+    w: &mut SectionWriter,
     name: UniqueStr,
     fptr_name: UniqueStr,
     params: &Vec<Declaration>,
     return_type: &TypeRef,
     ctx: &Context,
 ) {
-    let preamble = Fun(|w| {
+    let preamble = fun!(|w| {
         fmt_command_preamble(
             w,
             name.resolve(),
@@ -501,20 +497,20 @@ fn fmt_global_command(
     let params = Separated::display(params.iter().map(|p| p.name), ",");
 
     code!(
-        writer,
-        ##[track_caller]
-        ##[cfg(all(feature = "global", feature = "raw"))]
-        #doc_boilerplate!(name)
-        pub unsafe #preamble {
-            (#import_str!(table, ctx).#fptr_name.unwrap())(
-                #params
+        w,
+        #[track_caller]
+        #[cfg(all(feature = "global", feature = "raw"))]
+        $doc_boilerplate!(name)
+        pub unsafe $preamble {
+            ($import_str!(table, ctx).$fptr_name.unwrap())(
+                $params
             )
         }
     );
 }
 
 pub fn fmt_command_preamble<'a>(
-    writer: &mut SectionWriter,
+    w: &mut SectionWriter,
     name: &str,
     param_names: impl Iterator<Item = UniqueStr> + Clone,
     param_types: impl Iterator<Item = &'a TypeRef> + Clone,
@@ -522,33 +518,31 @@ pub fn fmt_command_preamble<'a>(
     self_str: &str,
     return_type: &TypeRef,
     ctx: &Context,
-) -> std::fmt::Result {
+) {
     let iter = param_names.into_iter().zip(param_types.into_iter());
-    let args = Separated::args(iter, |w, (name, ty)| {
+    let args = Separated::args(iter, |w: &mut SectionWriter, (name, ty)| {
         if output_names {
-            code!(w, #name: #import!(ty));
+            code!(w, $name: $import!(ty));
         } else {
-            code!(w, #import!(ty));
+            code!(w, $import!(ty));
         }
-        Ok(())
     });
 
-    code!(writer, fn #name(#self_str #args));
+    code!(w, iter, fn $name($self_str $args));
 
     if return_type == &*ctx.types.void {
-        return Ok(());
+        return;
     }
 
-    code!(writer, -> #import!(return_type));
-    Ok(())
+    code!(w, iter, -> $import!(return_type));
 }
-pub fn fmt_default_value<'a>(writer: &mut SectionWriter, decl: &'a Declaration, ctx: &Context) {
-    fmt_default_value_with_overlay(writer, decl, &decl.ty, ctx)
+pub fn fmt_default_value<'a>(w: &mut SectionWriter, decl: &'a Declaration, ctx: &Context) {
+    fmt_default_value_with_overlay(w, decl, &decl.ty, ctx)
 }
 /// Same functionality as `get_default_value` but uses a different type than the declaration's after not matching sType.
-pub fn fmt_default_value_with_overlay<'a>(
-    writer: &mut SectionWriter,
-    decl: &'a Declaration,
+pub fn fmt_default_value_with_overlay(
+    w: &mut SectionWriter,
+    decl: &Declaration,
     overlay: &TypeRef,
     ctx: &Context,
 ) {
@@ -557,8 +551,8 @@ pub fn fmt_default_value_with_overlay<'a>(
         && !decl.metadata.values.is_empty()
     {
         code!(
-            writer,
-            #import!(&ctx.types.VkStructureType)::#(decl.metadata.values.get(0).unwrap().resolve())
+            w,
+            $import!(&ctx.types.VkStructureType)::$(decl.metadata.values.get(0).unwrap().resolve())
         )
     } else {
         let str = match overlay.resolve_alias(ctx).as_slice() {
@@ -574,6 +568,6 @@ pub fn fmt_default_value_with_overlay<'a>(
             }
             _ => panic!("Invalid type '{overlay}' for default initialization"),
         };
-        writer.write_str(str).unwrap();
+        w.write_str(str).unwrap();
     }
 }

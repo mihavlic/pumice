@@ -1,22 +1,13 @@
-use std::{
-    fmt::{Display, Write},
-    path::Path,
-};
+use std::{fmt::Display, path::Path, rc::Rc};
 
 use crate::{
     cat,
-    codegen_support::{
-        format_utils::{Cond, ExtendedFormat, Fun, Separated},
-        type_analysis::TypeAnalysis,
-        type_query::DeriveData,
-    },
+    codegen_support::{type_analysis::TypeAnalysis, type_query::DeriveData},
     import, symbol_or_value,
 };
-use crate::{
-    codegen_support::format_utils::{Iter, SectionWriter},
-    context::Context,
-};
-use format_macro::code;
+use crate::{codegen_support::format_utils::SectionWriter, context::Context};
+use codewrite::{CFmt, Cond, Fun, Iter, Separated};
+use codewrite_macro::code;
 use generator_lib::{
     interner::UniqueStr,
     smallvec::SmallVec,
@@ -26,7 +17,7 @@ use generator_lib::{
 
 use super::wrappers::{len_paths, VarSource};
 
-pub fn write_deep_copy(derives: &mut DeriveData, out: &Path, ctx: &Context) {
+pub fn write_deep_copy(derives: &mut DeriveData, out: &Path, ctx: &Rc<Context>) {
     let mut w = SectionWriter::new(
         ctx.create_section("deep_copy"),
         out.join("src/deep_copy.rs"),
@@ -70,29 +61,30 @@ pub fn write_deep_copy(derives: &mut DeriveData, out: &Path, ctx: &Context) {
                         .filter(|m| !derives.type_is_value(&m.ty, ctx))
                         .collect::<SmallVec<[_; 8]>>();
 
-                    let measure = Iter(&non_value, |w, d| {
+                    let measure = Iter::new(&non_value, |w: &mut SectionWriter, &d| {
                         let ptr = cat!("self.", d.name);
                         if d.name == ctx.strings.pNext
                             && (d.ty == ctx.types.void_const_ptr || d.ty == ctx.types.void_ptr)
                         {
                             code!(
                                 w,
-                                measure.measure_pnext(#ptr);
+                                measure.measure_pnext($ptr);
                             );
                         } else {
                             fmt_deepcopy_measure(w, &ptr, &d.ty, &d.metadata.length, 0, ctx);
                         }
                     });
-                    let copy = Iter(&non_value, |w, d| {
+                    let copy = Iter::new(&non_value, |w: &mut SectionWriter, &d| {
                         let ptr = cat!("self.", d.name);
                         let copy = cat!("(*copy).", d.name);
                         if d.name == ctx.strings.pNext
                             && (d.ty == ctx.types.void_const_ptr || d.ty == ctx.types.void_ptr)
                         {
-                            let cast = Cond(d.ty.as_slice()[1] == TyToken::Const, "as *const _");
+                            let cast =
+                                Cond::new(d.ty.as_slice()[1] == TyToken::Const, "as *const _");
                             code!(
                                 w,
-                                #copy = writer.write_pnext(#ptr) #cast;
+                                $copy = writer.write_pnext($ptr) $cast;
                             );
                         } else {
                             fmt_deepcopy_copy(w, &ptr, &copy, &d.ty, &d.metadata.length, 0, ctx);
@@ -100,14 +92,14 @@ pub fn write_deep_copy(derives: &mut DeriveData, out: &Path, ctx: &Context) {
                     });
                     code!(
                         w,
-                        unsafe impl DeepCopy for #import!(name) {
+                        unsafe impl DeepCopy for $import!(name) {
                             fn measure(&self, measure: &mut CopyMeasure) {
                                 unsafe {
-                                    #measure
+                                    $measure
                                 }
                             }
                             unsafe fn copy(&self, copy: *mut Self, writer: &mut CopyWriter) {
-                                #copy
+                                $copy
                             }
                         }
                     );
@@ -116,9 +108,8 @@ pub fn write_deep_copy(derives: &mut DeriveData, out: &Path, ctx: &Context) {
             _ => unreachable!(),
         }
     }
-    let names = Separated::args(value_types, |w, n| {
-        code!(w, #import!(n));
-        Ok(())
+    let names = Separated::args(value_types, |w: &mut SectionWriter, n| {
+        code!(w, $import!(n));
     });
     code!(
         w,
@@ -126,7 +117,7 @@ pub fn write_deep_copy(derives: &mut DeriveData, out: &Path, ctx: &Context) {
             u8, i8, u16, i16, u32, i32, u64, i64, u128, i128,
             f32, f64,
             usize, isize,
-            #names
+            $names
         }
     )
 }
@@ -149,7 +140,7 @@ fn fmt_deepcopy_measure(
                 } else {
                     code!(
                         w,
-                        measure.measure_ptr(&#name);
+                        measure.measure_ptr(&$name);
                     )
                 }
             }
@@ -160,19 +151,19 @@ fn fmt_deepcopy_measure(
                 if len == ctx.strings.null_terminated {
                     code!(
                         w,
-                        measure.measure_cstr(#name);
+                        measure.measure_cstr($name);
                     )
                 } else if basetype == ctx.strings.void {
                     let path = len_paths_deepcopy(&len, ctx);
                     code!(
                         w,
-                        measure.measure_arr_ptr(#name.cast::<u8>(), (#path) as usize);
+                        measure.measure_arr_ptr($name.cast::<u8>(), ($path) as usize);
                     )
                 } else {
                     let path = len_paths_deepcopy(&len, ctx);
                     code!(
                         w,
-                        measure.measure_arr_ptr(#name, (#path) as usize);
+                        measure.measure_arr_ptr($name, ($path) as usize);
                     )
                 }
             } else {
@@ -181,14 +172,14 @@ fn fmt_deepcopy_measure(
                 } else {
                     code!(
                         w,
-                        measure.measure_ptr(#name);
+                        measure.measure_ptr($name);
                     )
                 }
             }
         }
         &[TyToken::Ptr, ..] => {
             let ty = ty.descend();
-            let measure = Fun(|w| {
+            let measure = Fun::new(|w: &mut SectionWriter| {
                 fmt_deepcopy_measure(
                     w,
                     &"ptr",
@@ -197,31 +188,30 @@ fn fmt_deepcopy_measure(
                     depth + 1,
                     ctx,
                 );
-                Ok(())
             });
             if let Some(&len) = len.get(0) {
                 let len = len_paths_deepcopy(&len, ctx);
                 code!(w,
-                    let len = (#len) as usize;
-                    measure.alloc_arr::<#import!(ty)>(len);
+                    let len = ($len) as usize;
+                    measure.alloc_arr::<$import!(ty)>(len);
                     for i in 0..len {
-                        let ptr = *#name.add(i);
-                        #measure
+                        let ptr = *$name.add(i);
+                        $measure
                     }
                 );
             } else {
                 code!(
                     w,
-                    let ptr = *(#name);
-                    measure.alloc::<#import!(ty)>();
-                    #measure
+                    let ptr = *($name);
+                    measure.alloc::<$import!(ty)>();
+                    $measure
                 )
             }
         }
         &[TyToken::Array(Some(const_len)), ..] => {
             let letter = ['i', 'j', 'k', 'l', 'm'][depth];
             let ty = ty.descend();
-            let measure = Fun(|w| {
+            let measure = Fun::new(|w: &mut SectionWriter| {
                 fmt_deepcopy_measure(
                     w,
                     &cat!(name, '[', letter, ']'),
@@ -230,12 +220,11 @@ fn fmt_deepcopy_measure(
                     depth + 1,
                     ctx,
                 );
-                Ok(())
             });
             code!(
                 w,
-                for #letter in 0..#symbol_or_value!(const_len) as usize {
-                    #measure
+                for $letter in 0..$symbol_or_value!(const_len) as usize {
+                    $measure
                 }
             )
         }
@@ -262,7 +251,7 @@ fn fmt_deepcopy_copy(
                 } else {
                     code!(
                         w,
-                        #name.copy(&mut #copy, writer);
+                        $name.copy(&mut $copy, writer);
                     )
                 }
             }
@@ -273,19 +262,19 @@ fn fmt_deepcopy_copy(
                 if len == ctx.strings.null_terminated {
                     code!(
                         w,
-                        #copy = writer.write_cstr(#name);
+                        $copy = writer.write_cstr($name);
                     )
                 } else if basetype == ctx.strings.void {
                     let path = len_paths_deepcopy(&len, ctx);
                     code!(
                         w,
-                        #copy = writer.write_arr_ptr(#name.cast::<u8>(), (#path) as usize).cast::<c_void>();
+                        $copy = writer.write_arr_ptr($name.cast::<u8>(), ($path) as usize).cast::<c_void>();
                     )
                 } else {
                     let path = len_paths_deepcopy(&len, ctx);
                     code!(
                         w,
-                        #copy = writer.write_arr_ptr(#name, (#path) as usize);
+                        $copy = writer.write_arr_ptr($name, ($path) as usize);
                     )
                 }
             } else {
@@ -294,15 +283,15 @@ fn fmt_deepcopy_copy(
                 } else {
                     code!(
                         w,
-                        #copy = writer.write_ptr(#name);
+                        $copy = writer.write_ptr($name);
                     )
                 }
             }
         }
         slice @ &[TyToken::Ptr, ..] => {
-            let cast = Cond(slice[1] == TyToken::Const, ".cast_mut()");
+            let cast = Cond::new(slice[1] == TyToken::Const, ".cast_mut()");
             let ty = ty.descend();
-            let recurse = Fun(|w| {
+            let recurse = Fun::new(|w: &mut SectionWriter| {
                 fmt_deepcopy_copy(
                     w,
                     &"ptr",
@@ -312,31 +301,30 @@ fn fmt_deepcopy_copy(
                     depth + 1,
                     ctx,
                 );
-                Ok(())
             });
             if let Some(&len) = len.get(0) {
                 let len = len_paths_deepcopy(&len, ctx);
                 code!(w,
-                    let len = (#len) as usize;
-                    #copy = writer.alloc_arr::<#import!(ty)>(len);
+                    let len = ($len) as usize;
+                    $copy = writer.alloc_arr::<$import!(ty)>(len);
                     for i in 0..len {
-                        let ptr = *#name.add(i);
-                        let copy = #copy.add(i) #cast;
-                        #recurse
+                        let ptr = *$name.add(i);
+                        let copy = $copy.add(i) $cast;
+                        $recurse
                     }
                 );
             } else {
                 code!(
                     w,
-                    let ptr = *(#name);
-                    #copy = writer.alloc::<#import!(ty)>();
-                    #recurse
+                    let ptr = *($name);
+                    $copy = writer.alloc::<$import!(ty)>();
+                    $recurse
                 )
             }
         }
         &[TyToken::Array(Some(const_len)), ..] => {
             let ty = ty.descend();
-            let recurse = Fun(|w| {
+            let recurse = Fun::new(|w: &mut SectionWriter| {
                 fmt_deepcopy_copy(
                     w,
                     &"*ptr",
@@ -346,14 +334,13 @@ fn fmt_deepcopy_copy(
                     depth + 1,
                     ctx,
                 );
-                Ok(())
             });
             code!(
                 w,
-                for i in 0..#symbol_or_value!(const_len) as usize {
-                    let ptr = &#name[i];
-                    let copy = &mut #copy[i];
-                    #recurse
+                for i in 0..$symbol_or_value!(const_len) as usize {
+                    let ptr = &$name[i];
+                    let copy = &mut $copy[i];
+                    $recurse
                 }
             )
         }
@@ -361,7 +348,10 @@ fn fmt_deepcopy_copy(
     }
 }
 
-pub fn len_paths_deepcopy<'a>(len: &'a UniqueStr, ctx: &'a Context) -> impl ExtendedFormat + 'a {
+pub fn len_paths_deepcopy<'a>(
+    len: &'a UniqueStr,
+    ctx: &'a Context,
+) -> impl CFmt<SectionWriter> + 'a {
     len_paths(
         len.resolve(),
         |s| {

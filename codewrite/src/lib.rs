@@ -18,9 +18,9 @@ pub trait WriteLast: Write {
     }
 }
 
-pub struct WriterLastWriter<W: Write>(W, Option<char>);
+pub struct WriteLastWrapper<W: Write>(W, Option<char>);
 
-impl<W: Write> WriteLast for WriterLastWriter<W> {
+impl<W: Write> WriteLast for WriteLastWrapper<W> {
     fn last_char(&self) -> Option<char> {
         self.1
     }
@@ -32,7 +32,7 @@ impl WriteLast for String {
     }
 }
 
-impl<W: Write> Write for WriterLastWriter<W> {
+impl<W: Write> Write for WriteLastWrapper<W> {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
         if !s.is_empty() {
             self.1 = Some(s.chars().rev().next().unwrap());
@@ -47,36 +47,81 @@ impl<W: Write> Write for WriterLastWriter<W> {
     }
 }
 
-pub trait CFmt<W: WriteLast, C> {
-    fn cfmt(&self, w: &mut W, ctx: &mut C);
+// strings in particular have a hard time becoming &dyn
+#[doc(hidden)]
+pub trait CFmtCoerce {
+    fn coerce<T: WriteLast>(&self) -> &dyn CFmt<T>
+    where
+        Self: CFmt<T>;
 }
 
-impl<W: WriteLast, C, F: Fn(&mut W, &mut C)> CFmt<W, C> for F {
-    fn cfmt(&self, w: &mut W, ctx: &mut C) {
-        (self)(w, ctx)
+impl<A> CFmtCoerce for A {
+    fn coerce<T: WriteLast>(&self) -> &dyn CFmt<T>
+    where
+        Self: CFmt<T>,
+    {
+        self
     }
 }
 
-impl<W: WriteLast, C, F: FnOnce(&mut W, &mut C)> CFmt<W, C> for SingleCell<F> {
-    fn cfmt(&self, w: &mut W, ctx: &mut C) {
-        (self.get())(w, ctx)
+pub trait CFmt<T: WriteLast + ?Sized> {
+    fn cfmt(&self, w: &mut T);
+}
+
+impl<T: WriteLast> CFmt<T> for str {
+    fn cfmt(&self, w: &mut T) {
+        write!(w, "{self}").unwrap();
+    }
+}
+
+impl<T: WriteLast, D: Display> CFmt<T> for D {
+    fn cfmt(&self, w: &mut T) {
+        write!(w, "{self}").unwrap();
+    }
+}
+
+pub struct Fun<T: WriteLast, F: Fn(&mut T)>(F, PhantomData<*const T>);
+
+impl<T: WriteLast, F: Fn(&mut T)> Fun<T, F> {
+    pub fn new(fun: F) -> Self {
+        Self(fun, PhantomData)
+    }
+}
+
+impl<T: WriteLast, F: Fn(&mut T)> CFmt<T> for Fun<T, F> {
+    fn cfmt(&self, w: &mut T) {
+        (self.0)(w)
+    }
+}
+
+pub struct FunOnce<T: WriteLast, F: FnOnce(&mut T)>(SingleCell<F>, PhantomData<*const T>);
+
+impl<T: WriteLast, F: FnOnce(&mut T)> FunOnce<T, F> {
+    pub fn new(fun: F) -> Self {
+        Self(SingleCell::new(fun), PhantomData)
+    }
+}
+
+impl<T: WriteLast, F: FnOnce(&mut T)> CFmt<T> for FunOnce<T, F> {
+    fn cfmt(&self, w: &mut T) {
+        (self.0.get())(w)
     }
 }
 
 #[derive(Clone)]
-pub struct Cond<W: WriteLast, C, T: CFmt<W, C>>(pub bool, pub T, PhantomData<*const (W, C)>);
+pub struct Cond<T: WriteLast, F: CFmt<T>>(pub bool, pub F, PhantomData<*const T>);
 
-impl<W: WriteLast, C, T: CFmt<W, C>> Cond<W, C, T> {
-    pub fn new(cond: bool, val: T) -> Self {
+impl<T: WriteLast, F: CFmt<T>> Cond<T, F> {
+    pub fn new(cond: bool, val: F) -> Self {
         Self(cond, val, PhantomData)
     }
 }
 
-impl<W: WriteLast, C, T: CFmt<W, C>> CFmt<W, C> for Cond<W, C, T> {
-    fn cfmt(&self, w: &mut W, ctx: &mut C) {
+impl<T: WriteLast, F: CFmt<T>> CFmt<T> for Cond<T, F> {
+    fn cfmt(&self, w: &mut T) {
         let Cond(cond, val, _) = self;
         if *cond {
-            val.cfmt(w, ctx)
+            val.cfmt(w)
         }
     }
 }
@@ -98,25 +143,30 @@ impl<T> SingleCell<T> {
     }
 }
 
-pub struct Iter<W: WriteLast, C, T, I: IntoIterator<Item = T>, F: FnMut(&mut W, &mut C, T)>(
+pub struct Iter<T: WriteLast, I: IntoIterator, F: FnMut(&mut T, I::Item)>(
     SingleCell<(I, F)>,
-    PhantomData<*const (W, C)>,
+    PhantomData<*const T>,
 );
 
-impl<W: WriteLast, C, T, I: IntoIterator<Item = T>, F: FnMut(&mut W, &mut C, T)> CFmt<W, C>
-    for Iter<W, C, T, I, F>
-{
-    fn cfmt(&self, w: &mut W, ctx: &mut C) {
+impl<T: WriteLast, I: IntoIterator, F: FnMut(&mut T, I::Item)> Iter<T, I, F> {
+    pub fn new(iter: I, fun: F) -> Self {
+        Self(SingleCell::new((iter, fun)), PhantomData)
+    }
+}
+
+impl<T: WriteLast, I: IntoIterator, F: FnMut(&mut T, I::Item)> CFmt<T> for Iter<T, I, F> {
+    fn cfmt(&self, w: &mut T) {
         let (iter, mut fun) = self.0.get();
         for it in iter {
-            fun(w, ctx, it);
+            fun(w, it);
         }
     }
 }
 
-pub struct Concat<'a>(pub [&'a dyn Display]);
+#[repr(transparent)]
+pub struct Concat<'a, const S: usize>(pub [&'a dyn Display; S]);
 
-impl<'a> Display for Concat<'a> {
+impl<'a, const S: usize> Display for Concat<'a, S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for &it in &self.0 {
             write!(f, "{it}")?;
@@ -125,24 +175,18 @@ impl<'a> Display for Concat<'a> {
     }
 }
 
-pub struct Separated<
-    'a,
-    W: WriteLast,
-    C,
-    T: IntoIterator,
-    F: Fn(&mut W, &mut C, <T as IntoIterator>::Item),
-> {
-    iter_fun: SingleCell<(T, F)>,
+pub struct Separated<'a, T: WriteLast, I: IntoIterator, F: Fn(&mut T, <I as IntoIterator>::Item)> {
+    iter_fun: SingleCell<(I, F)>,
     sep: &'a str,
     // whether to add a separator after the last element
     sep_last: bool,
-    spooky: std::marker::PhantomData<(W, C)>,
+    spooky: std::marker::PhantomData<T>,
 }
 
-impl<'a, T: IntoIterator, W: WriteLast, C, F: Fn(&mut W, &mut C, <T as IntoIterator>::Item)> Clone
-    for Separated<'a, W, C, T, F>
+impl<'a, I: IntoIterator, T: WriteLast, F: Fn(&mut T, <I as IntoIterator>::Item)> Clone
+    for Separated<'a, T, I, F>
 where
-    T: Copy,
+    I: Copy,
     F: Copy,
 {
     fn clone(&self) -> Self {
@@ -155,10 +199,10 @@ where
     }
 }
 
-impl<'a, T: IntoIterator, W: WriteLast, C, F: Fn(&mut W, &mut C, <T as IntoIterator>::Item)>
-    Separated<'a, W, C, T, F>
+impl<'a, I: IntoIterator, T: WriteLast, F: Fn(&mut T, <I as IntoIterator>::Item)>
+    Separated<'a, T, I, F>
 {
-    pub fn new(iter: T, fun: F, separator: &'a str, separator_last: bool) -> Self {
+    pub fn new(iter: I, fun: F, separator: &'a str, separator_last: bool) -> Self {
         Self {
             iter_fun: SingleCell::new((iter, fun)),
             sep: separator,
@@ -166,156 +210,42 @@ impl<'a, T: IntoIterator, W: WriteLast, C, F: Fn(&mut W, &mut C, <T as IntoItera
             spooky: std::marker::PhantomData,
         }
     }
-    pub fn args(iter: T, fun: F) -> Self {
+    pub fn args(iter: I, fun: F) -> Self {
         Self::new(iter, fun, ",", false)
     }
-    pub fn statements(iter: T, fun: F) -> Self {
+    pub fn statements(iter: I, fun: F) -> Self {
         Self::new(iter, fun, ";", true)
     }
 }
 
-impl<'a, W: WriteLast, T: IntoIterator>
-    Separated<'a, W, (), T, fn(&mut W, &mut (), <T as IntoIterator>::Item)>
+impl<'a, T: WriteLast, I: IntoIterator> Separated<'a, T, I, fn(&mut T, <I as IntoIterator>::Item)>
 where
-    <T as IntoIterator>::Item: CFmt<W, ()>,
+    <I as IntoIterator>::Item: CFmt<T>,
 {
-    pub fn display(iter: T, separator: &'a str) -> Self {
+    pub fn display(iter: I, separator: &'a str) -> Self {
         Self::new(
             iter,
-            |w: &mut W, ctx: &mut (), a: <T as IntoIterator>::Item| a.cfmt(w, ctx),
+            |w: &mut T, a: <I as IntoIterator>::Item| a.cfmt(w),
             separator,
             false,
         )
     }
 }
 
-impl<'a, W: WriteLast, C, T: IntoIterator, F: Fn(&mut W, &mut C, <T as IntoIterator>::Item)>
-    CFmt<W, C> for Separated<'a, W, C, T, F>
+impl<'a, T: WriteLast, I: IntoIterator, F: Fn(&mut T, <I as IntoIterator>::Item)> CFmt<T>
+    for Separated<'a, T, I, F>
 {
-    fn cfmt(&self, w: &mut W, ctx: &mut C) {
+    fn cfmt(&self, w: &mut T) {
         let (iter, fun) = self.iter_fun.get();
         let mut iter = iter.into_iter().peekable();
         while let Some(next) = iter.next() {
-            fun(w, ctx, next);
-
+            fun(w, next);
             if iter.peek().is_some() || self.sep_last {
                 w.write_str(self.sep).unwrap();
             }
         }
     }
 }
-
-macro_rules! impl_display {
-    ($($(#[$($meta:tt)+])? $T:ty $(where $for:tt)?),+) => {
-        $(
-            $(#[$($meta)+])?
-            impl<W: WriteLast, C> CFmt<W, C> for $T $($for)? {
-                fn cfmt(&self, w: &mut W, _: &mut C) {
-                    write!(w, "{}", self).unwrap();
-                }
-            }
-        )+
-    };
-}
-
-impl_display!(
-    std::convert::Infallible,
-    std::env::VarError,
-    std::io::ErrorKind,
-    std::net::IpAddr,
-    std::net::SocketAddr,
-    std::sync::mpsc::RecvTimeoutError,
-    std::sync::mpsc::TryRecvError,
-    bool,
-    char,
-    f32,
-    f64,
-    i8,
-    i16,
-    i32,
-    i64,
-    i128,
-    isize,
-    str,
-    u8,
-    u16,
-    u32,
-    u64,
-    u128,
-    usize,
-    // core::ffi::FromBytesUntilNulError,
-    // std::alloc::AllocError,
-    std::alloc::LayoutError,
-    std::array::TryFromSliceError,
-    std::backtrace::Backtrace,
-    std::cell::BorrowError,
-    std::cell::BorrowMutError,
-    std::char::CharTryFromError,
-    std::char::DecodeUtf16Error,
-    std::char::ParseCharError,
-    std::char::ToLowercase,
-    std::char::ToUppercase,
-    std::char::TryFromCharError,
-    std::collections::TryReserveError,
-    std::env::JoinPathsError,
-    std::ffi::FromBytesWithNulError,
-    std::ffi::FromVecWithNulError,
-    std::ffi::IntoStringError,
-    std::ffi::NulError,
-    std::io::WriterPanicked,
-    std::net::AddrParseError,
-    std::net::Ipv4Addr,
-    std::net::Ipv6Addr,
-    std::net::SocketAddrV4,
-    std::net::SocketAddrV6,
-    std::num::NonZeroI8,
-    std::num::NonZeroI16,
-    std::num::NonZeroI32,
-    std::num::NonZeroI64,
-    std::num::NonZeroI128,
-    std::num::NonZeroIsize,
-    std::num::NonZeroU8,
-    std::num::NonZeroU16,
-    std::num::NonZeroU32,
-    std::num::NonZeroU64,
-    std::num::NonZeroU128,
-    std::num::NonZeroUsize,
-    std::num::ParseFloatError,
-    std::num::ParseIntError,
-    std::num::TryFromIntError,
-    #[cfg(target_os = "windows")]
-    InvalidHandleError,
-    #[cfg(target_os = "windows")]
-    NullHandleError,
-    std::path::StripPrefixError,
-    std::process::ExitStatus,
-    // std::process::ExitStatusError,
-    std::str::ParseBoolError,
-    std::str::Utf8Error,
-    std::string::FromUtf8Error,
-    std::string::FromUtf16Error,
-    String,
-    std::sync::mpsc::RecvError,
-    std::thread::AccessError,
-    std::time::SystemTimeError,
-    std::time::TryFromFloatSecsError,
-    #[cfg(feature = "proc_macro")]
-    LexError,
-    #[cfg(feature = "proc_macro")]
-    ExpandError,
-    #[cfg(feature = "proc_macro")]
-    TokenStream,
-    #[cfg(feature = "proc_macro")]
-    TokenTree,
-    #[cfg(feature = "proc_macro")]
-    Group,
-    #[cfg(feature = "proc_macro")]
-    Punct,
-    #[cfg(feature = "proc_macro")]
-    Ident,
-    #[cfg(feature = "proc_macro")]
-    Literal
-);
 
 pub struct Format2Format<W: std::io::Write>(pub W);
 

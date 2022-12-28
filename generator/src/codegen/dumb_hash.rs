@@ -1,19 +1,16 @@
-use std::{
-    fmt::{Display, Write},
-    path::Path,
-};
+use std::{fmt::Display, path::Path, rc::Rc};
 
 use crate::{
     cat,
     codegen_support::{
-        format_utils::{Cond, ExtendedFormat, Fun, Separated},
         type_analysis::{is_function_pointer, TypeAnalysis},
         type_query::DeriveData,
     },
     import, symbol_or_value,
 };
 use crate::{codegen_support::format_utils::SectionWriter, context::Context};
-use format_macro::code;
+use codewrite::{Cond, Fun, Separated};
+use codewrite_macro::code;
 use generator_lib::{
     interner::UniqueStr,
     type_declaration::{TyToken, TypeRef},
@@ -22,7 +19,7 @@ use generator_lib::{
 
 use super::deep_copy::len_paths_deepcopy;
 
-pub fn write_dumb_hash(derives: &mut DeriveData, out: &Path, ctx: &Context) {
+pub fn write_dumb_hash(derives: &mut DeriveData, out: &Path, ctx: &Rc<Context>) {
     let mut w = SectionWriter::new(
         ctx.create_section("dumb_hash"),
         out.join("src/dumb_hash.rs"),
@@ -60,20 +57,19 @@ pub fn write_dumb_hash(derives: &mut DeriveData, out: &Path, ctx: &Context) {
 
         match body {
             &SymbolBody::Struct { union, ref members } => {
-                let for_union = Cond(
+                let for_union = Cond::new(
                     union,
-                    Fun(|w: &mut SectionWriter| {
+                    Fun::new(|w: &mut SectionWriter| {
                         code!(
                             w,
                             std::slice::from_raw_parts(self as *const Self as *const u8, std::mem::size_of::<Self>()).hash(state);
                         );
-                        Ok(())
                     }),
                 );
 
-                let for_struct = Cond(
+                let for_struct = Cond::new(
                     !union,
-                    Fun(|w: &mut SectionWriter| {
+                    Fun::new(|w: &mut SectionWriter| {
                         for d in members {
                             let ptr = cat!("self.", d.name);
                             if d.name == ctx.strings.pNext
@@ -81,23 +77,22 @@ pub fn write_dumb_hash(derives: &mut DeriveData, out: &Path, ctx: &Context) {
                             {
                                 code!(
                                     w,
-                                    hash_pnext(#ptr, state);
+                                    hash_pnext($ptr, state);
                                 );
                             } else {
                                 fmt_dumb_hash(w, &ptr, &d.ty, 0, &d.metadata.length, ctx);
                             }
                         }
-                        Ok(())
                     }),
                 );
 
                 code!(
                     w,
-                    impl DumbHash for #import!(name) {
+                    impl DumbHash for $import!(name) {
                         fn hash<H: Hasher>(&self, state: &mut H) {
                             unsafe {
-                                #for_union
-                                #for_struct
+                                $for_union
+                                $for_struct
                             }
                         }
                     }
@@ -106,16 +101,15 @@ pub fn write_dumb_hash(derives: &mut DeriveData, out: &Path, ctx: &Context) {
             _ => unreachable!("{:?}", body),
         }
     }
-    let passthrough = Separated::args(passthrough, |w, n| {
-        code!(w, #import!(n));
-        Ok(())
+    let passthrough = Separated::args(passthrough, |w: &mut SectionWriter, n| {
+        code!(w, $import!(n));
     });
     code!(
         w,
         dumb_hash_passthrough_impl! {
             u8, i8, u16, i16, u32, i32, u64, i64, u128, i128,
             usize, isize, std::ffi::CStr,
-            #passthrough
+            $passthrough
         }
     )
 }
@@ -126,19 +120,19 @@ fn fmt_dumb_hash(
     ty: &TypeRef,
     i: usize,
     len: &[UniqueStr],
-    ctx: &Context,
+    ctx: &Rc<Context>,
 ) {
     match ty.as_slice() {
         &[TyToken::BaseType(basetype)] | &[TyToken::Array(_), TyToken::BaseType(basetype)] => {
             if is_function_pointer(basetype, ctx) {
                 code!(
                     w,
-                    std::ptr::hash(std::mem::transmute::<_, *const ()>(#name), state);
+                    std::ptr::hash(std::mem::transmute::<_, *const ()>($name), state);
                 )
             } else {
                 code!(
                     w,
-                    #name.hash(state);
+                    $name.hash(state);
                 )
             }
         }
@@ -148,19 +142,19 @@ fn fmt_dumb_hash(
                 if len == ctx.strings.null_terminated {
                     code!(
                         w,
-                        hash_cstr(#name, state);
+                        hash_cstr($name, state);
                     )
                 } else if basetype == ctx.strings.void {
                     let path = len_paths_deepcopy(&len, ctx);
                     code!(
                         w,
-                        hash_raw_arr(#name.cast::<u8>(), (#path) as usize, state);
+                        hash_raw_arr($name.cast::<u8>(), ($path) as usize, state);
                     )
                 } else {
                     let path = len_paths_deepcopy(&len, ctx);
                     code!(
                         w,
-                        hash_raw_arr(#name, (#path) as usize, state);
+                        hash_raw_arr($name, ($path) as usize, state);
                     )
                 }
             } else {
@@ -168,18 +162,18 @@ fn fmt_dumb_hash(
                     // we have no information, the best we can do is hash the adress
                     code!(
                         w,
-                        #name.hash(state);
+                        $name.hash(state);
                     )
                 } else {
                     code!(
                         w,
-                        hash_ptr(#name, state);
+                        hash_ptr($name, state);
                     )
                 }
             }
         }
         &[TyToken::Ptr, ..] => {
-            let recurse = Fun(|w| {
+            let recurse = Fun::new(|w| {
                 fmt_dumb_hash(
                     w,
                     &"ptr",
@@ -188,30 +182,29 @@ fn fmt_dumb_hash(
                     len.split_first().map(|(_, e)| e).unwrap_or(&[]),
                     ctx,
                 );
-                Ok(())
             });
             if let Some(&len) = len.get(0) {
                 let len = len_paths_deepcopy(&len, ctx);
                 code!(w,
-                    let len = (#len) as usize;
+                    let len = ($len) as usize;
                     len.hash(state);
                     for i in 0..len {
-                        let ptr = *#name.add(i);
-                        #recurse
+                        let ptr = *$name.add(i);
+                        $recurse
                     }
                 );
             } else {
                 code!(
                     w,
-                    let ptr = *(#name);
-                    #i.hash(state);
-                    #recurse
+                    let ptr = *($name);
+                    $i.hash(state);
+                    $recurse
                 )
             }
         }
         &[TyToken::Array(Some(const_len)), ..] => {
             let ty = ty.descend();
-            let recurse = Fun(|w| {
+            let recurse = Fun::new(|w| {
                 fmt_dumb_hash(
                     w,
                     &"ptr",
@@ -220,13 +213,12 @@ fn fmt_dumb_hash(
                     len.split_first().map(|(_, e)| e).unwrap_or(&[]),
                     ctx,
                 );
-                Ok(())
             });
             code!(
                 w,
-                for i in 0..#symbol_or_value!(const_len) as usize {
-                    let ptr = &#name[i];
-                    #recurse
+                for i in 0..$symbol_or_value!(const_len) as usize {
+                    let ptr = &$name[i];
+                    $recurse
                 }
             )
         }
