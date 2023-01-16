@@ -782,11 +782,11 @@ fn write_access_flags_util(out: &Path, ctx: &Rc<Context>) {
                 pub const WRITE_FLAGS: Self = Self($write);
                 /// Whether the AccessFlags contains flags containing "READ"
                 pub const fn contains_read(&self) -> bool {
-                    self.contains(Self::READ_FLAGS)
+                    self.intersects(Self::READ_FLAGS)
                 }
                 /// Whether the AccessFlags contains flags containing "WRITE"
                 pub const fn contains_write(&self) -> bool {
-                    self.contains(Self::WRITE_FLAGS)
+                    self.intersects(Self::WRITE_FLAGS)
                 }
             }
         )
