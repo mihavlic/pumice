@@ -646,6 +646,7 @@ pub fn fmt_command_wrapper(
         code!(
             w,
             #[track_caller]
+            $(Cond::new(result, "#[must_use]"))
             $doc_boilerplate!(function_name)
             pub unsafe fn $function_name(&self, $function_arguments) $function_return {
                 let $function_name = (*self.table).$function_name.unwrap();
