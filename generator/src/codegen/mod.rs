@@ -727,6 +727,10 @@ fn write_wrappers(
                     self.table
                 }
             }
+
+            $(cat!("/// When creating a ", wrapper, ", you are promising to keep the pointed to table alive for the lifetime of the wrapper\n"))
+            unsafe impl Send for $wrapper {}
+            unsafe impl Sync for $wrapper {}
         );
     }
 }
