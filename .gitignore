@@ -1,6 +1,4 @@
-pumice/
 target/
-generated/
 Cargo.lock
 vk.xml
 video.xml
