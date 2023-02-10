@@ -1,7 +1,7 @@
 pub mod tables;
 
 use crate::vk;
-use std::{ffi::CStr, os::raw::c_char};
+use std::os::raw::c_char;
 
 #[cfg(feature = "linked")]
 extern "system" {
@@ -10,7 +10,7 @@ extern "system" {
 
 pub trait FunctionLoad {
     #[track_caller]
-    unsafe fn load(&self, name: *const c_char) -> vk::PfnVoidFunction;
+    unsafe fn load(&self, name: *const c_char) -> Option<vk::PfnVoidFunction>;
 }
 
 pub trait EntryLoad: FunctionLoad {
@@ -69,44 +69,26 @@ impl EntryLoad for EntryLoader {
 }
 
 impl FunctionLoad for EntryLoader {
-    unsafe fn load(&self, name: *const c_char) -> vk::PfnVoidFunction {
+    unsafe fn load(&self, name: *const c_char) -> Option<vk::PfnVoidFunction> {
         // in this case it is correct to pass in null
         // https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkGetInstanceProcAddr.html
-        let result = (self.get_vkGetInstanceProcAddr())(std::mem::transmute(0u64), name);
-        if let Some(result) = result {
-            result
-        } else {
-            let cstr = CStr::from_ptr(name).to_string_lossy();
-            panic!("vkGetInstanceProcAddr() returned null for '{cstr}'")
-        }
+        (self.get_vkGetInstanceProcAddr())(std::mem::transmute(0u64), name)
     }
 }
 
 impl InstanceLoad for InstanceLoader {}
 impl DeviceLoad for InstanceLoader {}
 impl FunctionLoad for InstanceLoader {
-    unsafe fn load(&self, name: *const c_char) -> vk::PfnVoidFunction {
-        let result = (self.vkGetInstanceProcAddr)(self.instance, name);
-        if let Some(result) = result {
-            result
-        } else {
-            let cstr = CStr::from_ptr(name).to_string_lossy();
-            panic!("vkGetInstanceProcAddr() returned null for '{cstr}'")
-        }
+    unsafe fn load(&self, name: *const c_char) -> Option<vk::PfnVoidFunction> {
+        (self.vkGetInstanceProcAddr)(self.instance, name)
     }
 }
 
 impl DeviceLoad for DeviceLoader {}
 impl FunctionLoad for DeviceLoader {
-    unsafe fn load(&self, name: *const c_char) -> vk::PfnVoidFunction {
+    unsafe fn load(&self, name: *const c_char) -> Option<vk::PfnVoidFunction> {
         // https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkGetDeviceProcAddr.html
-        let result = (self.vkGetDeviceProcAddr)(self.device, name);
-        if let Some(result) = result {
-            result
-        } else {
-            let cstr = CStr::from_ptr(name).to_string_lossy();
-            panic!("vkGetDeviceProcAddr() returned null for '{cstr}'")
-        }
+        (self.vkGetDeviceProcAddr)(self.device, name)
     }
 }
 
