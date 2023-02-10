@@ -7,6 +7,13 @@ use generator_lib::{
 
 use crate::context::{Context, Section, SectionKind};
 
+// struct SymbolRequirement {
+//     profile: Option<UniqueStr>,
+//     api: Vec<UniqueStr>,
+//     extension: Option<UniqueStr>,
+//     feature: Option<UniqueStr>,
+// }
+
 // given that the registry is modelled as a global soup of types and functions from which the subsequent categories pick a subset
 // we would like to split the definition into multiple files so that commit diffs aren't enormous, editor doesn't choke, and things are more organised
 // we will just go through the categories (that are selected by the user and subsequent dependencies, so the included items may change around? TODO verify this)
@@ -74,7 +81,7 @@ fn section_used_symbols<'a>(
     };
     children
         .into_iter()
-        .flat_map(|a| a.iter())
+        .flatten()
         .filter_map(|item| match item {
             FeatureExtensionItem::Comment(_) => None,
             FeatureExtensionItem::Require {

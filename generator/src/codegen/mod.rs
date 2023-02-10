@@ -25,6 +25,7 @@ use generator_lib::{
     type_declaration::Type,
     Extension, ExtensionKind, Symbol, SymbolBody,
 };
+use slice_group_by::GroupBy;
 use std::fmt::Write;
 use std::rc::Rc;
 use std::{
@@ -410,48 +411,55 @@ fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Rc<Context>) 
 
         let load_other_functions = fun!(|w| {
             let fields = fun!(move |w| {
-                let mut state = None;
-                for &(section_idx, name, _) in commands {
-                    if Some(section_idx) != state {
-                        if state.is_some() {
-                            w.write_str("}}").unwrap();
+                let groups = commands.binary_group_by_key(|(section_idx, ..)| *section_idx);
+                for group in groups {
+                    let section = &ctx.sections[group[0].0 as usize];
+
+                    fn write_fns(w: &mut SectionWriter, symbols: &[(u32, UniqueStr, &SymbolBody)]) {
+                        for (_, name, _) in symbols {
+                            code!(
+                                w,
+                                ($name, $string!(name.resolve_original()))
+                            );
                         }
-                        let section = &ctx.sections[section_idx as usize];
-                        match section.kind {
-                            SectionKind::Feature(i) => {
-                                let feature = &ctx.reg.features[i as usize];
-                                // https://registry.khronos.org/vulkan/specs/1.3/html/chap31.html$extendingvulkan-coreversions-versionnumbers
-                                write!(
-                                    w,
-                                    r#"
-                                        if conf.api_version_enabled(crate::vk10::make_api_version(0, {}, {}, 0)) {{
-                                            load_fns!{{self, loader,
-                                            "#,
-                                    feature.major, feature.minor
-                                ).unwrap();
-                            }
-                            SectionKind::Extension(_) => {
-                                write!(
-                                    w,
-                                    r#"if conf.extension_enabled(cstr!("{}")) {{
-                                            load_fns!{{self, loader,
-                                            "#,
-                                    section.name().resolve_original()
-                                )
-                                .unwrap();
-                            }
-                            SectionKind::Path(_) => unreachable!(
-                                "Custom-pathed sections cannot contain loadable pointers!"
-                            ),
-                        }
-                        state = Some(section_idx);
                     }
-                    code!(
-                        w,
-                        ($name, $string!(name.resolve_original()))
-                    );
+
+                    let fns = fun!(move |w| {
+                        write_fns(w, group);
+                    });
+
+                    match section.kind {
+                        SectionKind::Feature(i) => {
+                            let feature = &ctx.reg.features[i as usize];
+                            // https://registry.khronos.org/vulkan/specs/1.3/html/chap31.html$extendingvulkan-coreversions-versionnumbers
+                            code!(
+                                w,
+                                if conf.api_version_enabled(crate::vk10::make_api_version(0, $(feature.major), $(feature.minor), 0)) {
+                                    load_fns! {
+                                        self, loader,
+                                        $fns
+                                    }
+                                }
+                            );
+                        }
+                        SectionKind::Extension(_) => {
+                            let name = section.name();
+                            let name = name.resolve_original();
+                            code!(
+                                w,
+                                if conf.extension_enabled(cstr!($string!(name))) {
+                                    load_fns! {
+                                        self, loader,
+                                        $fns
+                                    }
+                                }
+                            );
+                        }
+                        SectionKind::Path(_) => {
+                            unreachable!("Custom-pathed sections cannot contain loadable pointers!")
+                        }
+                    }
                 }
-                w.write_str("}}").unwrap();
             });
 
             code!(

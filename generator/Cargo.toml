@@ -15,3 +15,4 @@ path = "./bin/dump.rs"
 generator-lib = { path = "../generator-lib" }
 codewrite-macro = { path = "../codewrite-macro" }
 codewrite = { path = "../codewrite" }
+slice-group-by = "0.3.0"
