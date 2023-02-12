@@ -111,7 +111,7 @@ impl<'a> ApiLoadConfig<'a> {
     fn foreach_extension_dependency(&mut self, name: &CStr) -> Result<(), ApiLoadConfigErr> {
         let extension = get_metadata(name).ok_or(ApiLoadConfigErr::ExtensionNotFound)?;
 
-        if extension.core_version < self.api_version {
+        if extension.core_version > self.api_version {
             return Err(ApiLoadConfigErr::ApiVersionMismatch);
         }
 
