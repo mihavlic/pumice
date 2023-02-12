@@ -100,6 +100,7 @@ impl<'a> ApiLoadConfig<'a> {
         self.extensions.insert(name);
     }
     /// Uses the embedded extention metadata to fill in all currently selected extensions' transient dependencies.
+    #[must_use]
     pub fn fill_in_extensions(&mut self) -> Result<(), ApiLoadConfigErr> {
         let extensions = self.extensions.iter().cloned().collect::<Vec<_>>();
         self.extensions.clear();

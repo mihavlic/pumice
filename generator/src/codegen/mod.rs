@@ -759,10 +759,16 @@ fn write_access_flags_util(out: &Path, ctx: &Rc<Context>) {
         };
 
         let flags_item = |keyword: &'static str| {
+            let mut names = members
+                .iter()
+                .filter(|(name, _)| name.resolve().contains(keyword))
+                .map(|(name, _)| name.resolve())
+                .collect::<Vec<_>>();
+
+            names.sort();
+            names.dedup();
+
             fun!(move |w| {
-                let iter = members
-                    .iter()
-                    .filter(|(name, _)| name.resolve().contains(keyword));
                 let mut first = true;
 
                 // this will result in code like
@@ -770,7 +776,7 @@ fn write_access_flags_util(out: &Path, ctx: &Rc<Context>) {
                 // we do this through the raw integers because BitOr cannot currently be implemented for const contexts
                 // https://github.com/rust-lang/rust/issues/67792
 
-                for (name, _) in iter {
+                for name in &names {
                     if !first {
                         w.write_char('|').unwrap();
                     }
