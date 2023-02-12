@@ -20,6 +20,7 @@ use crate::{cat, cstring, doc_boilerplate, fun, import, import_str, string};
 use codewrite::{Cond, Iter, Separated};
 use codewrite_macro::code;
 use deep_copy::write_deep_copy;
+use generator_lib::ConstantValue;
 use generator_lib::{
     interner::{Intern, UniqueStr},
     type_declaration::Type,
@@ -27,6 +28,7 @@ use generator_lib::{
 };
 use slice_group_by::GroupBy;
 use std::fmt::Write;
+use std::ops::Not;
 use std::rc::Rc;
 use std::{
     collections::HashMap,
@@ -206,6 +208,7 @@ pub fn write_bindings(mut ctx: Context, template: &dyn AsRef<Path>, out: &dyn As
 
     write_access_flags_util(out, &ctx);
     pipeline_stage_flags_util(out, &ctx);
+    write_format_util(out, &ctx);
 
     // sort the symbols by their owning section (its index)
     let sorted_symbols = {
@@ -979,4 +982,139 @@ fn pipeline_stage_flags_util(out: &Path, ctx: &Rc<Context>) {
             }
         )
     }
+}
+
+fn write_format_util(out: &Path, ctx: &Rc<Context>) {
+    let mut lib = SectionWriter::new(
+        ctx.create_section("format"),
+        out.join("src/util/format.rs"),
+        true,
+        &ctx,
+    );
+
+    let Some(SymbolBody::Enum { members, .. }) = ctx.get_symbol("VkFormat".intern(ctx)) else {
+        unreachable!();
+    };
+
+    let variants = fun!(move |w| {
+        let names = members.iter().filter_map(|(name, value)| {
+            matches!(value, ConstantValue::Symbol(_))
+                .not()
+                .then(|| name.resolve())
+        });
+
+        for name in names {
+            let bits = parse_format_string(name);
+            let mut color_aspect = false;
+            let mut depth_aspect = false;
+            let mut stencil_aspect = false;
+            let mut plane0_aspect = false;
+            let mut plane1_aspect = false;
+            let mut plane2_aspect = false;
+
+            let [c, d, s, u] = bits;
+            // the format is some compressed block and the parser failed to extract bit counts, assume color
+            if c > 0 || (bits.iter().all(|c| *c == 0) && name != "UNDEFINED") {
+                color_aspect = true;
+            }
+            if d > 0 {
+                depth_aspect = true;
+            }
+            if s > 0 {
+                stencil_aspect = true;
+            }
+            if name.contains("PLANE1") {
+                plane0_aspect = true;
+            }
+            if name.contains("PLANE2") {
+                plane0_aspect = true;
+                plane1_aspect = true;
+            }
+            if name.contains("PLANE3") {
+                plane0_aspect = true;
+                plane1_aspect = true;
+                plane2_aspect = true;
+            }
+
+            let ca = Cond::new(color_aspect, ", COLOR");
+            let da = Cond::new(depth_aspect, ", DEPTH");
+            let sa = Cond::new(stencil_aspect, ", STENCIL");
+            let p0a = Cond::new(plane0_aspect, ", PLANE0");
+            let p1a = Cond::new(plane1_aspect, ", PLANE1");
+            let p2a = Cond::new(plane2_aspect, ", PLANE2");
+
+            code!(
+                w,
+                Self::$name => aspects!($c, $d, $s, $u $ca $da $sa $p0a $p1a $p2a),
+            );
+        }
+    });
+
+    let format = import!(ctx.strings.VkFormat);
+
+    code!(
+        lib,
+        impl $format {
+            pub fn get_format_aspects(self) -> (crate::vk10::ImageAspectFlags, FormatAspectBits) {
+                match self {
+                    $variants
+                    _ => panic!("Unknown format {}", self.0)
+                }
+            }
+        }
+    )
+}
+
+fn parse_format_string(str: &str) -> [u8; 4] {
+    let mut counts = [None; 7];
+
+    let mut chars = str.chars();
+    while let Some(ch) = chars.next() {
+        let next_is_digit = chars
+            .clone()
+            .next()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(false);
+
+        if next_is_digit {
+            let rem = chars.as_str();
+            let end = rem
+                .char_indices()
+                .find(|(_, c)| !c.is_ascii_digit())
+                .map(|(i, _)| i)
+                .unwrap_or(rem.len());
+            let number = rem[..end].parse::<u8>().unwrap();
+
+            let index = match ch {
+                'R' => 0,
+                'G' => 1,
+                'B' => 2,
+                'A' => 3,
+                'D' => 4,
+                'S' => 5,
+                'X' => 6,
+                _ => 7,
+            };
+
+            chars = rem[end..].chars();
+
+            if index < 7 {
+                let count = &mut counts[index];
+                assert!(count.is_none(), "{str}");
+                *count = Some(number);
+            }
+        }
+    }
+
+    #[rustfmt::skip]
+    let counts = [
+        counts[0].unwrap_or(0) +
+        counts[1].unwrap_or(0) +
+        counts[2].unwrap_or(0) +
+        counts[3].unwrap_or(0),
+        counts[4].unwrap_or(0),
+        counts[5].unwrap_or(0),
+        counts[6].unwrap_or(0),
+    ];
+    counts
 }

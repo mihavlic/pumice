@@ -71,7 +71,9 @@ common_strings! {
     usize, u8, u16, u32, u64, i8, i16, i32, i64,
     vk_platform, disabled,
     VkDevice, VkCommandBuffer, VkQueue,
-    VkInstance, VkPhysicalDevice, pumice,
+    VkInstance, VkPhysicalDevice,
+    VkFormat,
+    pumice,
     pNext, sType,
     // just some string that we can use as a placeholder that will have no collisions with existing strings
     __RESERVED_INVALID_PLACEHOLDER,
