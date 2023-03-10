@@ -56,6 +56,19 @@ pub fn write_bindings(mut ctx: Context, template: &dyn AsRef<Path>, out: &dyn As
         copy_dir_recursive(template, out).unwrap();
     }
 
+    // we need to replace the name field of the template
+    // form "pumice-template" to "template"
+    // cargo fully crawls git crates and parses all Cargo.tomls regardless of whether their crates
+    // are well formed, so we need the template to have a different name on-disk
+    // see https://github.com/rust-lang/cargo/issues/1462
+    {
+        let cargo_toml = out.join("Cargo.toml");
+        let contents = std::fs::read_to_string(&cargo_toml)
+            .unwrap()
+            .replace("pumice-template", "pumice");
+        std::fs::write(&cargo_toml, contents).unwrap();
+    }
+
     // manually input sections and their contained symbols for the template handwritten files
     macro_rules! manual_symbols {
         ($($path:literal: $symbols:expr),+) => {
