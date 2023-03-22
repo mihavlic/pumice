@@ -94,8 +94,7 @@ impl Default for SubresourceLayout2EXT {
         }
     }
 }
-#[doc(alias = "VkImageCompressionFlagsEXT")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkImageCompressionFlagsEXT.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkImageCompressionFlagBitsEXT.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct ImageCompressionFlagsEXT(pub u32);
@@ -109,8 +108,7 @@ crate::bitflags_impl! {
     ImageCompressionFlagsEXT : u32, 0x7, DEFAULT, FIXED_RATE_DEFAULT,
     FIXED_RATE_EXPLICIT, DISABLED
 }
-#[doc(alias = "VkImageCompressionFixedRateFlagsEXT")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkImageCompressionFixedRateFlagsEXT.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkImageCompressionFixedRateFlagBitsEXT.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct ImageCompressionFixedRateFlagsEXT(pub u32);

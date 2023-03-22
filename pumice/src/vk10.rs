@@ -3462,8 +3462,7 @@ impl PipelineCacheHeaderVersion {
 crate::enum_impl! {
     PipelineCacheHeaderVersion : i32, ONE
 }
-#[doc(alias = "VkPipelineCacheCreateFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkPipelineCacheCreateFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkPipelineCacheCreateFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct PipelineCacheCreateFlags(pub u32);
@@ -6402,8 +6401,7 @@ crate::enum_impl! {
     PERFORMANCE_CONFIGURATION_INTEL, DEFERRED_OPERATION_KHR, INDIRECT_COMMANDS_LAYOUT_NV,
     BUFFER_COLLECTION_FUCHSIA, MICROMAP_EXT, OPTICAL_FLOW_SESSION_NV
 }
-#[doc(alias = "VkQueueFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkQueueFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkQueueFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct QueueFlags(pub u32);
@@ -6425,8 +6423,7 @@ crate::bitflags_impl! {
     QueueFlags : u32, 0x17f, GRAPHICS, COMPUTE, TRANSFER, SPARSE_BINDING, PROTECTED,
     VIDEO_DECODE_KHR, VIDEO_ENCODE_KHR, OPTICAL_FLOW_NV
 }
-#[doc(alias = "VkCullModeFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkCullModeFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkCullModeFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct CullModeFlags(pub u32);
@@ -6439,8 +6436,7 @@ impl CullModeFlags {
 crate::bitflags_impl! {
     CullModeFlags : u32, 0x3, NONE, FRONT, BACK, FRONT_AND_BACK
 }
-#[doc(alias = "VkRenderPassCreateFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkRenderPassCreateFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkRenderPassCreateFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct RenderPassCreateFlags(pub u32);
@@ -6451,8 +6447,7 @@ impl RenderPassCreateFlags {
 crate::bitflags_impl! {
     RenderPassCreateFlags : u32, 0x2, TRANSFORM_QCOM
 }
-#[doc(alias = "VkDeviceQueueCreateFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkDeviceQueueCreateFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkDeviceQueueCreateFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct DeviceQueueCreateFlags(pub u32);
@@ -6463,8 +6458,7 @@ impl DeviceQueueCreateFlags {
 crate::bitflags_impl! {
     DeviceQueueCreateFlags : u32, 0x1, PROTECTED
 }
-#[doc(alias = "VkMemoryPropertyFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkMemoryPropertyFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkMemoryPropertyFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct MemoryPropertyFlags(pub u32);
@@ -6487,8 +6481,7 @@ crate::bitflags_impl! {
     HOST_CACHED, LAZILY_ALLOCATED, PROTECTED, DEVICE_COHERENT_AMD, DEVICE_UNCACHED_AMD,
     RDMA_CAPABLE_NV
 }
-#[doc(alias = "VkMemoryHeapFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkMemoryHeapFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkMemoryHeapFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct MemoryHeapFlags(pub u32);
@@ -6502,8 +6495,7 @@ impl MemoryHeapFlags {
 crate::bitflags_impl! {
     MemoryHeapFlags : u32, 0x3, DEVICE_LOCAL, MULTI_INSTANCE
 }
-#[doc(alias = "VkAccessFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkAccessFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkAccessFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct AccessFlags(pub u32);
@@ -6566,8 +6558,7 @@ crate::bitflags_impl! {
     FRAGMENT_SHADING_RATE_ATTACHMENT_READ_KHR, COMMAND_PREPROCESS_READ_NV,
     COMMAND_PREPROCESS_WRITE_NV
 }
-#[doc(alias = "VkBufferUsageFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkBufferUsageFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkBufferUsageFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct BufferUsageFlags(pub u32);
@@ -6618,8 +6609,7 @@ crate::bitflags_impl! {
     ACCELERATION_STRUCTURE_STORAGE_KHR, SHADER_BINDING_TABLE_KHR, VIDEO_ENCODE_DST_KHR,
     VIDEO_ENCODE_SRC_KHR, MICROMAP_BUILD_INPUT_READ_ONLY_EXT, MICROMAP_STORAGE_EXT
 }
-#[doc(alias = "VkBufferCreateFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkBufferCreateFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkBufferCreateFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct BufferCreateFlags(pub u32);
@@ -6640,8 +6630,7 @@ crate::bitflags_impl! {
     BufferCreateFlags : u32, 0x1f, SPARSE_BINDING, SPARSE_RESIDENCY, SPARSE_ALIASED,
     PROTECTED, DEVICE_ADDRESS_CAPTURE_REPLAY
 }
-#[doc(alias = "VkShaderStageFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkShaderStageFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkShaderStageFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct ShaderStageFlags(pub u32);
@@ -6683,8 +6672,7 @@ crate::bitflags_impl! {
     ANY_HIT_KHR, CLOSEST_HIT_KHR, MISS_KHR, INTERSECTION_KHR, CALLABLE_KHR, TASK_EXT,
     MESH_EXT, SUBPASS_SHADING_HUAWEI
 }
-#[doc(alias = "VkImageUsageFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkImageUsageFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkImageUsageFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct ImageUsageFlags(pub u32);
@@ -6727,8 +6715,7 @@ crate::bitflags_impl! {
     VIDEO_ENCODE_SRC_KHR, VIDEO_ENCODE_DPB_KHR, ATTACHMENT_FEEDBACK_LOOP_EXT,
     INVOCATION_MASK_HUAWEI, SAMPLE_WEIGHT_QCOM, SAMPLE_BLOCK_MATCH_QCOM
 }
-#[doc(alias = "VkImageCreateFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkImageCreateFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkImageCreateFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct ImageCreateFlags(pub u32);
@@ -6778,8 +6765,7 @@ crate::bitflags_impl! {
     MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_EXT, C2D_VIEW_COMPATIBLE_EXT,
     FRAGMENT_DENSITY_MAP_OFFSET_QCOM
 }
-#[doc(alias = "VkImageViewCreateFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkImageViewCreateFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkImageViewCreateFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct ImageViewCreateFlags(pub u32);
@@ -6793,8 +6779,7 @@ crate::bitflags_impl! {
     ImageViewCreateFlags : u32, 0x3, FRAGMENT_DENSITY_MAP_DYNAMIC_EXT,
     FRAGMENT_DENSITY_MAP_DEFERRED_EXT
 }
-#[doc(alias = "VkSamplerCreateFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkSamplerCreateFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkSamplerCreateFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct SamplerCreateFlags(pub u32);
@@ -6811,8 +6796,7 @@ crate::bitflags_impl! {
     SamplerCreateFlags : u32, 0x17, SUBSAMPLED_EXT, SUBSAMPLED_COARSE_RECONSTRUCTION_EXT,
     NON_SEAMLESS_CUBE_MAP_EXT, IMAGE_PROCESSING_QCOM
 }
-#[doc(alias = "VkPipelineCreateFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkPipelineCreateFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkPipelineCreateFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct PipelineCreateFlags(pub u32);
@@ -6882,8 +6866,7 @@ crate::bitflags_impl! {
     DEPTH_STENCIL_ATTACHMENT_FEEDBACK_LOOP_EXT, RAY_TRACING_OPACITY_MICROMAP_EXT,
     NO_PROTECTED_ACCESS_EXT, PROTECTED_ACCESS_ONLY_EXT
 }
-#[doc(alias = "VkPipelineShaderStageCreateFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkPipelineShaderStageCreateFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkPipelineShaderStageCreateFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct PipelineShaderStageCreateFlags(pub u32);
@@ -6899,8 +6882,7 @@ crate::bitflags_impl! {
     PipelineShaderStageCreateFlags : u32, 0x3, ALLOW_VARYING_SUBGROUP_SIZE,
     REQUIRE_FULL_SUBGROUPS
 }
-#[doc(alias = "VkColorComponentFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkColorComponentFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkColorComponentFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct ColorComponentFlags(pub u32);
@@ -6913,8 +6895,7 @@ impl ColorComponentFlags {
 crate::bitflags_impl! {
     ColorComponentFlags : u32, 0xf, R, G, B, A
 }
-#[doc(alias = "VkFenceCreateFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkFenceCreateFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkFenceCreateFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct FenceCreateFlags(pub u32);
@@ -6924,8 +6905,7 @@ impl FenceCreateFlags {
 crate::bitflags_impl! {
     FenceCreateFlags : u32, 0x1, SIGNALED
 }
-#[doc(alias = "VkFormatFeatureFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkFormatFeatureFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkFormatFeatureFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct FormatFeatureFlags(pub u32);
@@ -7006,8 +6986,7 @@ crate::bitflags_impl! {
     SAMPLED_IMAGE_FILTER_CUBIC_EXT, FRAGMENT_DENSITY_MAP_EXT,
     FRAGMENT_SHADING_RATE_ATTACHMENT_KHR, VIDEO_ENCODE_INPUT_KHR, VIDEO_ENCODE_DPB_KHR
 }
-#[doc(alias = "VkQueryControlFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkQueryControlFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkQueryControlFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct QueryControlFlags(pub u32);
@@ -7017,8 +6996,7 @@ impl QueryControlFlags {
 crate::bitflags_impl! {
     QueryControlFlags : u32, 0x1, PRECISE
 }
-#[doc(alias = "VkQueryResultFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkQueryResultFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkQueryResultFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct QueryResultFlags(pub u32);
@@ -7033,8 +7011,7 @@ impl QueryResultFlags {
 crate::bitflags_impl! {
     QueryResultFlags : u32, 0x1f, R64, WAIT, WITH_AVAILABILITY, PARTIAL, WITH_STATUS_KHR
 }
-#[doc(alias = "VkCommandBufferUsageFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkCommandBufferUsageFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkCommandBufferUsageFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct CommandBufferUsageFlags(pub u32);
@@ -7047,8 +7024,7 @@ crate::bitflags_impl! {
     CommandBufferUsageFlags : u32, 0x7, ONE_TIME_SUBMIT, RENDER_PASS_CONTINUE,
     SIMULTANEOUS_USE
 }
-#[doc(alias = "VkQueryPipelineStatisticFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkQueryPipelineStatisticFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkQueryPipelineStatisticFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct QueryPipelineStatisticFlags(pub u32);
@@ -7076,8 +7052,7 @@ crate::bitflags_impl! {
     TESSELLATION_EVALUATION_SHADER_INVOCATIONS, COMPUTE_SHADER_INVOCATIONS,
     TASK_SHADER_INVOCATIONS_EXT, MESH_SHADER_INVOCATIONS_EXT
 }
-#[doc(alias = "VkImageAspectFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkImageAspectFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkImageAspectFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct ImageAspectFlags(pub u32);
@@ -7109,8 +7084,7 @@ crate::bitflags_impl! {
     PLANE_2, NONE, MEMORY_PLANE_0_EXT, MEMORY_PLANE_1_EXT, MEMORY_PLANE_2_EXT,
     MEMORY_PLANE_3_EXT
 }
-#[doc(alias = "VkSparseImageFormatFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkSparseImageFormatFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkSparseImageFormatFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct SparseImageFormatFlags(pub u32);
@@ -7123,8 +7097,7 @@ crate::bitflags_impl! {
     SparseImageFormatFlags : u32, 0x7, SINGLE_MIPTAIL, ALIGNED_MIP_SIZE,
     NONSTANDARD_BLOCK_SIZE
 }
-#[doc(alias = "VkSparseMemoryBindFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkSparseMemoryBindFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkSparseMemoryBindFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct SparseMemoryBindFlags(pub u32);
@@ -7134,8 +7107,7 @@ impl SparseMemoryBindFlags {
 crate::bitflags_impl! {
     SparseMemoryBindFlags : u32, 0x1, METADATA
 }
-#[doc(alias = "VkPipelineStageFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkPipelineStageFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkPipelineStageFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct PipelineStageFlags(pub u32);
@@ -7197,8 +7169,7 @@ crate::bitflags_impl! {
     FRAGMENT_DENSITY_PROCESS_EXT, FRAGMENT_SHADING_RATE_ATTACHMENT_KHR,
     COMMAND_PREPROCESS_NV, TASK_SHADER_EXT, MESH_SHADER_EXT
 }
-#[doc(alias = "VkCommandPoolCreateFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkCommandPoolCreateFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkCommandPoolCreateFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct CommandPoolCreateFlags(pub u32);
@@ -7211,8 +7182,7 @@ impl CommandPoolCreateFlags {
 crate::bitflags_impl! {
     CommandPoolCreateFlags : u32, 0x7, TRANSIENT, RESET_COMMAND_BUFFER, PROTECTED
 }
-#[doc(alias = "VkCommandPoolResetFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkCommandPoolResetFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkCommandPoolResetFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct CommandPoolResetFlags(pub u32);
@@ -7222,8 +7192,7 @@ impl CommandPoolResetFlags {
 crate::bitflags_impl! {
     CommandPoolResetFlags : u32, 0x1, RELEASE_RESOURCES
 }
-#[doc(alias = "VkCommandBufferResetFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkCommandBufferResetFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkCommandBufferResetFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct CommandBufferResetFlags(pub u32);
@@ -7233,8 +7202,7 @@ impl CommandBufferResetFlags {
 crate::bitflags_impl! {
     CommandBufferResetFlags : u32, 0x1, RELEASE_RESOURCES
 }
-#[doc(alias = "VkSampleCountFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkSampleCountFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkSampleCountFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct SampleCountFlags(pub u32);
@@ -7250,8 +7218,7 @@ impl SampleCountFlags {
 crate::bitflags_impl! {
     SampleCountFlags : u32, 0x7f, C1, C2, C4, C8, C16, C32, C64
 }
-#[doc(alias = "VkAttachmentDescriptionFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkAttachmentDescriptionFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkAttachmentDescriptionFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct AttachmentDescriptionFlags(pub u32);
@@ -7261,8 +7228,7 @@ impl AttachmentDescriptionFlags {
 crate::bitflags_impl! {
     AttachmentDescriptionFlags : u32, 0x1, MAY_ALIAS
 }
-#[doc(alias = "VkStencilFaceFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkStencilFaceFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkStencilFaceFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct StencilFaceFlags(pub u32);
@@ -7274,8 +7240,7 @@ impl StencilFaceFlags {
 crate::bitflags_impl! {
     StencilFaceFlags : u32, 0x3, FRONT, BACK, FRONT_AND_BACK
 }
-#[doc(alias = "VkDescriptorPoolCreateFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkDescriptorPoolCreateFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkDescriptorPoolCreateFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct DescriptorPoolCreateFlags(pub u32);
@@ -7294,8 +7259,7 @@ crate::bitflags_impl! {
     DescriptorPoolCreateFlags : u32, 0x7, FREE_DESCRIPTOR_SET, UPDATE_AFTER_BIND,
     HOST_ONLY_EXT
 }
-#[doc(alias = "VkDependencyFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkDependencyFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkDependencyFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct DependencyFlags(pub u32);
@@ -7314,8 +7278,7 @@ impl DependencyFlags {
 crate::bitflags_impl! {
     DependencyFlags : u32, 0xf, BY_REGION, DEVICE_GROUP, VIEW_LOCAL, FEEDBACK_LOOP_EXT
 }
-#[doc(alias = "VkDescriptorSetLayoutCreateFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkDescriptorSetLayoutCreateFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkDescriptorSetLayoutCreateFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct DescriptorSetLayoutCreateFlags(pub u32);
@@ -7335,8 +7298,7 @@ crate::bitflags_impl! {
     DescriptorSetLayoutCreateFlags : u32, 0x7, UPDATE_AFTER_BIND_POOL,
     PUSH_DESCRIPTOR_KHR, HOST_ONLY_POOL_EXT
 }
-#[doc(alias = "VkSubpassDescriptionFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkSubpassDescriptionFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkSubpassDescriptionFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct SubpassDescriptionFlags(pub u32);
@@ -7381,8 +7343,7 @@ impl VendorId {
 crate::enum_impl! {
     VendorId : i32, VIV, VSI, KAZAN, CODEPLAY, MESA, POCL
 }
-#[doc(alias = "VkFramebufferCreateFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkFramebufferCreateFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkFramebufferCreateFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct FramebufferCreateFlags(pub u32);
@@ -7395,8 +7356,7 @@ impl FramebufferCreateFlags {
 crate::bitflags_impl! {
     FramebufferCreateFlags : u32, 0x1, IMAGELESS
 }
-#[doc(alias = "VkEventCreateFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkEventCreateFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkEventCreateFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct EventCreateFlags(pub u32);
@@ -7409,8 +7369,7 @@ impl EventCreateFlags {
 crate::bitflags_impl! {
     EventCreateFlags : u32, 0x1, DEVICE_ONLY
 }
-#[doc(alias = "VkPipelineLayoutCreateFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkPipelineLayoutCreateFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkPipelineLayoutCreateFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct PipelineLayoutCreateFlags(pub u32);
@@ -7421,8 +7380,7 @@ impl PipelineLayoutCreateFlags {
 crate::bitflags_impl! {
     PipelineLayoutCreateFlags : u32, 0x2, INDEPENDENT_SETS_EXT
 }
-#[doc(alias = "VkPipelineColorBlendStateCreateFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkPipelineColorBlendStateCreateFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkPipelineColorBlendStateCreateFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct PipelineColorBlendStateCreateFlags(pub u32);
@@ -7436,8 +7394,7 @@ crate::bitflags_impl! {
     PipelineColorBlendStateCreateFlags : u32, 0x1,
     RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXT
 }
-#[doc(alias = "VkPipelineDepthStencilStateCreateFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkPipelineDepthStencilStateCreateFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkPipelineDepthStencilStateCreateFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct PipelineDepthStencilStateCreateFlags(pub u32);
@@ -7454,8 +7411,7 @@ crate::bitflags_impl! {
     RASTERIZATION_ORDER_ATTACHMENT_DEPTH_ACCESS_EXT,
     RASTERIZATION_ORDER_ATTACHMENT_STENCIL_ACCESS_EXT
 }
-#[doc(alias = "VkInstanceCreateFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkInstanceCreateFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkInstanceCreateFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct InstanceCreateFlags(pub u32);

@@ -18,8 +18,7 @@ impl Default for PhysicalDeviceShaderCoreProperties2AMD {
         }
     }
 }
-#[doc(alias = "VkShaderCorePropertiesFlagsAMD")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkShaderCorePropertiesFlagsAMD.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkShaderCorePropertiesFlagBitsAMD.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct ShaderCorePropertiesFlagsAMD(pub u32);

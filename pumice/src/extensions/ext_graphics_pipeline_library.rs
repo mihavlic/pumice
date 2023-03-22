@@ -54,8 +54,7 @@ impl Default for GraphicsPipelineLibraryCreateInfoEXT {
         }
     }
 }
-#[doc(alias = "VkGraphicsPipelineLibraryFlagsEXT")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkGraphicsPipelineLibraryFlagsEXT.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkGraphicsPipelineLibraryFlagBitsEXT.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct GraphicsPipelineLibraryFlagsEXT(pub u32);

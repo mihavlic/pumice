@@ -31,6 +31,7 @@ pub fn write_symbol(
     body: &SymbolBody,
     derives: &mut DeriveData,
     added_variants: &HashMap<UniqueStr, Vec<AddedVariants>>,
+    flags_to_flag_bits: &HashMap<UniqueStr, UniqueStr>,
     ctx: &Context,
 ) {
     macro_rules! select {
@@ -260,16 +261,16 @@ pub fn write_symbol(
             members,
             bitmask,
         } => {
+            let supl = added_variants.get(&name);
+
             let tmp = get_underlying_type(*ty, &ctx);
             let ty = import!(tmp);
-
             let eq = select!(derives.is_eq(name, ctx), ", Eq, Hash", "");
-
-            let supl = added_variants.get(&name);
+            let doc_name = flags_to_flag_bits.get(&name).copied().unwrap_or(name);
 
             code!(
                 w,
-                $doc_boilerplate!(name)
+                $doc_boilerplate!(doc_name)
                 #[derive(Clone, Copy, PartialEq $eq, Default)]
                 #[repr(transparent)]
                 pub struct $name(pub $ty);

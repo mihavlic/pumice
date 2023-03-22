@@ -100,8 +100,7 @@ crate::enum_impl! {
     DOLBYVISION_EXT, HDR10_HLG_EXT, ADOBERGB_LINEAR_EXT, ADOBERGB_NONLINEAR_EXT,
     PASS_THROUGH_EXT, EXTENDED_SRGB_NONLINEAR_EXT, DISPLAY_NATIVE_AMD
 }
-#[doc(alias = "VkCompositeAlphaFlagsKHR")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkCompositeAlphaFlagsKHR.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkCompositeAlphaFlagBitsKHR.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct CompositeAlphaFlagsKHR(pub u32);
@@ -114,8 +113,7 @@ impl CompositeAlphaFlagsKHR {
 crate::bitflags_impl! {
     CompositeAlphaFlagsKHR : u32, 0xf, OPAQUE, PRE_MULTIPLIED, POST_MULTIPLIED, INHERIT
 }
-#[doc(alias = "VkSurfaceTransformFlagsKHR")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkSurfaceTransformFlagsKHR.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkSurfaceTransformFlagBitsKHR.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct SurfaceTransformFlagsKHR(pub u32);

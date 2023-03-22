@@ -172,8 +172,7 @@ impl Default for OpticalFlowExecuteInfoNV {
         }
     }
 }
-#[doc(alias = "VkOpticalFlowGridSizeFlagsNV")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkOpticalFlowGridSizeFlagsNV.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkOpticalFlowGridSizeFlagBitsNV.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct OpticalFlowGridSizeFlagsNV(pub u32);
@@ -187,8 +186,7 @@ impl OpticalFlowGridSizeFlagsNV {
 crate::bitflags_impl! {
     OpticalFlowGridSizeFlagsNV : u32, 0xf, UNKNOWN, S1X1, S2X2, S4X4, S8X8
 }
-#[doc(alias = "VkOpticalFlowUsageFlagsNV")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkOpticalFlowUsageFlagsNV.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkOpticalFlowUsageFlagBitsNV.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct OpticalFlowUsageFlagsNV(pub u32);
@@ -237,8 +235,7 @@ crate::enum_impl! {
     OpticalFlowSessionBindingPointNV : i32, UNKNOWN, INPUT, REFERENCE, HINT, FLOW_VECTOR,
     BACKWARD_FLOW_VECTOR, COST, BACKWARD_COST, GLOBAL_FLOW
 }
-#[doc(alias = "VkOpticalFlowSessionCreateFlagsNV")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkOpticalFlowSessionCreateFlagsNV.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkOpticalFlowSessionCreateFlagBitsNV.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct OpticalFlowSessionCreateFlagsNV(pub u32);
@@ -253,8 +250,7 @@ crate::bitflags_impl! {
     OpticalFlowSessionCreateFlagsNV : u32, 0x1f, ENABLE_HINT, ENABLE_COST,
     ENABLE_GLOBAL_FLOW, ALLOW_REGIONS, BOTH_DIRECTIONS
 }
-#[doc(alias = "VkOpticalFlowExecuteFlagsNV")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkOpticalFlowExecuteFlagsNV.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkOpticalFlowExecuteFlagBitsNV.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct OpticalFlowExecuteFlagsNV(pub u32);

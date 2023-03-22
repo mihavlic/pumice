@@ -295,8 +295,7 @@ impl MicromapTypeEXT {
 crate::enum_impl! {
     MicromapTypeEXT : i32, OPACITY_MICROMAP
 }
-#[doc(alias = "VkBuildMicromapFlagsEXT")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkBuildMicromapFlagsEXT.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkBuildMicromapFlagBitsEXT.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct BuildMicromapFlagsEXT(pub u32);
@@ -309,8 +308,7 @@ crate::bitflags_impl! {
     BuildMicromapFlagsEXT : u32, 0x7, PREFER_FAST_TRACE, PREFER_FAST_BUILD,
     ALLOW_COMPACTION
 }
-#[doc(alias = "VkMicromapCreateFlagsEXT")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkMicromapCreateFlagsEXT.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkMicromapCreateFlagBitsEXT.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct MicromapCreateFlagsEXT(pub u32);

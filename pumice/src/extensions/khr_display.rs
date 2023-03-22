@@ -178,8 +178,7 @@ impl Default for DisplaySurfaceCreateInfoKHR {
         }
     }
 }
-#[doc(alias = "VkDisplayPlaneAlphaFlagsKHR")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkDisplayPlaneAlphaFlagsKHR.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkDisplayPlaneAlphaFlagBitsKHR.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct DisplayPlaneAlphaFlagsKHR(pub u32);

@@ -18,8 +18,7 @@ impl Default for ExternalImageFormatPropertiesNV {
         }
     }
 }
-#[doc(alias = "VkExternalMemoryHandleTypeFlagsNV")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkExternalMemoryHandleTypeFlagsNV.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkExternalMemoryHandleTypeFlagBitsNV.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct ExternalMemoryHandleTypeFlagsNV(pub u32);
@@ -33,8 +32,7 @@ crate::bitflags_impl! {
     ExternalMemoryHandleTypeFlagsNV : u32, 0xf, OPAQUE_WIN32, OPAQUE_WIN32_KMT,
     D3D11_IMAGE, D3D11_IMAGE_KMT
 }
-#[doc(alias = "VkExternalMemoryFeatureFlagsNV")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkExternalMemoryFeatureFlagsNV.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkExternalMemoryFeatureFlagBitsNV.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct ExternalMemoryFeatureFlagsNV(pub u32);

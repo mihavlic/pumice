@@ -74,8 +74,7 @@ impl Default for VideoDecodeInfoKHR {
         }
     }
 }
-#[doc(alias = "VkVideoDecodeUsageFlagsKHR")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoDecodeUsageFlagsKHR.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoDecodeUsageFlagBitsKHR.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct VideoDecodeUsageFlagsKHR(pub u32);
@@ -88,8 +87,7 @@ impl VideoDecodeUsageFlagsKHR {
 crate::bitflags_impl! {
     VideoDecodeUsageFlagsKHR : u32, 0x7, DEFAULT, TRANSCODING, OFFLINE, STREAMING
 }
-#[doc(alias = "VkVideoDecodeCapabilityFlagsKHR")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoDecodeCapabilityFlagsKHR.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoDecodeCapabilityFlagBitsKHR.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct VideoDecodeCapabilityFlagsKHR(pub u32);

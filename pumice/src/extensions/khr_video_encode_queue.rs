@@ -150,8 +150,7 @@ impl Default for VideoEncodeCapabilitiesKHR {
         }
     }
 }
-#[doc(alias = "VkVideoEncodeUsageFlagsKHR")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeUsageFlagsKHR.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeUsageFlagBitsKHR.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct VideoEncodeUsageFlagsKHR(pub u32);
@@ -166,8 +165,7 @@ crate::bitflags_impl! {
     VideoEncodeUsageFlagsKHR : u32, 0xf, DEFAULT, TRANSCODING, STREAMING, RECORDING,
     CONFERENCING
 }
-#[doc(alias = "VkVideoEncodeContentFlagsKHR")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeContentFlagsKHR.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeContentFlagBitsKHR.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct VideoEncodeContentFlagsKHR(pub u32);
@@ -196,8 +194,7 @@ crate::enum_impl! {
     VideoEncodeTuningModeKHR : i32, DEFAULT, HIGH_QUALITY, LOW_LATENCY,
     ULTRA_LOW_LATENCY, LOSSLESS
 }
-#[doc(alias = "VkVideoEncodeCapabilityFlagsKHR")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeCapabilityFlagsKHR.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeCapabilityFlagBitsKHR.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct VideoEncodeCapabilityFlagsKHR(pub u32);
@@ -207,8 +204,7 @@ impl VideoEncodeCapabilityFlagsKHR {
 crate::bitflags_impl! {
     VideoEncodeCapabilityFlagsKHR : u32, 0x1, PRECEDING_EXTERNALLY_ENCODED_BYTES
 }
-#[doc(alias = "VkVideoEncodeRateControlModeFlagsKHR")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeRateControlModeFlagsKHR.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeRateControlModeFlagBitsKHR.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct VideoEncodeRateControlModeFlagsKHR(pub u32);

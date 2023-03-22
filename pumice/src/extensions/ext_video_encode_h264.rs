@@ -312,8 +312,7 @@ impl Default for VideoEncodeH264RateControlLayerInfoEXT {
         }
     }
 }
-#[doc(alias = "VkVideoEncodeH264CapabilityFlagsEXT")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeH264CapabilityFlagsEXT.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeH264CapabilityFlagBitsEXT.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct VideoEncodeH264CapabilityFlagsEXT(pub u32);
@@ -354,8 +353,7 @@ crate::bitflags_impl! {
     DEBLOCKING_FILTER_PARTIAL, DISABLE_DIRECT_SPATIAL_MV_PRED, MULTIPLE_SLICE_PER_FRAME,
     SLICE_MB_COUNT, ROW_UNALIGNED_SLICE, DIFFERENT_SLICE_TYPE, B_FRAME_IN_L1_LIST
 }
-#[doc(alias = "VkVideoEncodeH264InputModeFlagsEXT")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeH264InputModeFlagsEXT.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeH264InputModeFlagBitsEXT.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct VideoEncodeH264InputModeFlagsEXT(pub u32);
@@ -367,8 +365,7 @@ impl VideoEncodeH264InputModeFlagsEXT {
 crate::bitflags_impl! {
     VideoEncodeH264InputModeFlagsEXT : u32, 0x7, FRAME, SLICE, NON_VCL
 }
-#[doc(alias = "VkVideoEncodeH264OutputModeFlagsEXT")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeH264OutputModeFlagsEXT.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeH264OutputModeFlagBitsEXT.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct VideoEncodeH264OutputModeFlagsEXT(pub u32);

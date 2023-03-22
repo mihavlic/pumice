@@ -238,8 +238,7 @@ impl Default for ImportMetalSharedEventInfoEXT {
         }
     }
 }
-#[doc(alias = "VkExportMetalObjectTypeFlagsEXT")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkExportMetalObjectTypeFlagsEXT.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkExportMetalObjectTypeFlagBitsEXT.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct ExportMetalObjectTypeFlagsEXT(pub u32);

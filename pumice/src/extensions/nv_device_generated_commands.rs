@@ -316,8 +316,7 @@ impl Default for GeneratedCommandsMemoryRequirementsInfoNV {
         }
     }
 }
-#[doc(alias = "VkIndirectCommandsLayoutUsageFlagsNV")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkIndirectCommandsLayoutUsageFlagsNV.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkIndirectCommandsLayoutUsageFlagBitsNV.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct IndirectCommandsLayoutUsageFlagsNV(pub u32);
@@ -330,8 +329,7 @@ crate::bitflags_impl! {
     IndirectCommandsLayoutUsageFlagsNV : u32, 0x7, EXPLICIT_PREPROCESS,
     INDEXED_SEQUENCES, UNORDERED_SEQUENCES
 }
-#[doc(alias = "VkIndirectStateFlagsNV")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkIndirectStateFlagsNV.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkIndirectStateFlagBitsNV.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct IndirectStateFlagsNV(pub u32);

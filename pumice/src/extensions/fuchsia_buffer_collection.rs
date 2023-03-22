@@ -244,8 +244,7 @@ impl Default for BufferCollectionConstraintsInfoFUCHSIA {
         }
     }
 }
-#[doc(alias = "VkImageConstraintsInfoFlagsFUCHSIA")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkImageConstraintsInfoFlagsFUCHSIA.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkImageConstraintsInfoFlagBitsFUCHSIA.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct ImageConstraintsInfoFlagsFUCHSIA(pub u32);

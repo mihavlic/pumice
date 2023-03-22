@@ -36,8 +36,7 @@ impl Default for DebugReportCallbackCreateInfoEXT {
         }
     }
 }
-#[doc(alias = "VkDebugReportFlagsEXT")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkDebugReportFlagsEXT.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkDebugReportFlagBitsEXT.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct DebugReportFlagsEXT(pub u32);

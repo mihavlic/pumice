@@ -1436,8 +1436,7 @@ impl SemaphoreType {
 crate::enum_impl! {
     SemaphoreType : i32, BINARY, TIMELINE
 }
-#[doc(alias = "VkSemaphoreWaitFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkSemaphoreWaitFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkSemaphoreWaitFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct SemaphoreWaitFlags(pub u32);
@@ -1466,8 +1465,7 @@ impl SamplerReductionMode {
 crate::enum_impl! {
     SamplerReductionMode : i32, WEIGHTED_AVERAGE, MIN, MAX
 }
-#[doc(alias = "VkDescriptorBindingFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkDescriptorBindingFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkDescriptorBindingFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct DescriptorBindingFlags(pub u32);
@@ -1537,8 +1535,7 @@ crate::enum_impl! {
     JUICE_PROPRIETARY, VERISILICON_PROPRIETARY, MESA_TURNIP, MESA_V3DV, MESA_PANVK,
     SAMSUNG_PROPRIETARY, MESA_VENUS, MESA_DOZEN
 }
-#[doc(alias = "VkResolveModeFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkResolveModeFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkResolveModeFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct ResolveModeFlags(pub u32);

@@ -340,8 +340,7 @@ impl Default for VideoEncodeH265ReferenceListsInfoEXT {
         }
     }
 }
-#[doc(alias = "VkVideoEncodeH265CapabilityFlagsEXT")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeH265CapabilityFlagsEXT.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeH265CapabilityFlagBitsEXT.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct VideoEncodeH265CapabilityFlagsEXT(pub u32);
@@ -384,8 +383,7 @@ crate::bitflags_impl! {
     MULTIPLE_TILE_PER_SLICE, SLICE_SEGMENT_CTB_COUNT, ROW_UNALIGNED_SLICE_SEGMENT,
     DEPENDENT_SLICE_SEGMENT, DIFFERENT_SLICE_TYPE, B_FRAME_IN_L1_LIST
 }
-#[doc(alias = "VkVideoEncodeH265InputModeFlagsEXT")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeH265InputModeFlagsEXT.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeH265InputModeFlagBitsEXT.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct VideoEncodeH265InputModeFlagsEXT(pub u32);
@@ -397,8 +395,7 @@ impl VideoEncodeH265InputModeFlagsEXT {
 crate::bitflags_impl! {
     VideoEncodeH265InputModeFlagsEXT : u32, 0x7, FRAME, SLICE_SEGMENT, NON_VCL
 }
-#[doc(alias = "VkVideoEncodeH265OutputModeFlagsEXT")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeH265OutputModeFlagsEXT.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeH265OutputModeFlagBitsEXT.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct VideoEncodeH265OutputModeFlagsEXT(pub u32);
@@ -423,8 +420,7 @@ impl VideoEncodeH265RateControlStructureEXT {
 crate::enum_impl! {
     VideoEncodeH265RateControlStructureEXT : i32, UNKNOWN, FLAT, DYADIC
 }
-#[doc(alias = "VkVideoEncodeH265CtbSizeFlagsEXT")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeH265CtbSizeFlagsEXT.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeH265CtbSizeFlagBitsEXT.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct VideoEncodeH265CtbSizeFlagsEXT(pub u32);
@@ -436,8 +432,7 @@ impl VideoEncodeH265CtbSizeFlagsEXT {
 crate::bitflags_impl! {
     VideoEncodeH265CtbSizeFlagsEXT : u32, 0x7, S16, S32, S64
 }
-#[doc(alias = "VkVideoEncodeH265TransformBlockSizeFlagsEXT")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeH265TransformBlockSizeFlagsEXT.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoEncodeH265TransformBlockSizeFlagBitsEXT.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct VideoEncodeH265TransformBlockSizeFlagsEXT(pub u32);

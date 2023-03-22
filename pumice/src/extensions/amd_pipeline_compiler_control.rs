@@ -16,8 +16,7 @@ impl Default for PipelineCompilerControlCreateInfoAMD {
         }
     }
 }
-#[doc(alias = "VkPipelineCompilerControlFlagsAMD")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkPipelineCompilerControlFlagsAMD.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkPipelineCompilerControlFlagBitsAMD.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct PipelineCompilerControlFlagsAMD(pub u32);

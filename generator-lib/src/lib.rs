@@ -350,6 +350,7 @@ pub struct Registry {
 
     pub item_map: HashMap<UniqueStr, (u32, ItemKind)>,
     pub interner: Interner,
+    //                              FlagBits,  (Flags, enum Type)
     pub flag_bits_to_flags: HashMap<UniqueStr, (UniqueStr, UniqueStr)>,
 }
 

@@ -212,8 +212,7 @@ impl PerformanceCounterStorageKHR {
 crate::enum_impl! {
     PerformanceCounterStorageKHR : i32, INT32, INT64, UINT32, UINT64, FLOAT32, FLOAT64
 }
-#[doc(alias = "VkPerformanceCounterDescriptionFlagsKHR")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkPerformanceCounterDescriptionFlagsKHR.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkPerformanceCounterDescriptionFlagBitsKHR.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct PerformanceCounterDescriptionFlagsKHR(pub u32);
@@ -225,8 +224,7 @@ crate::bitflags_impl! {
     PerformanceCounterDescriptionFlagsKHR : u32, 0x3, PERFORMANCE_IMPACTING,
     CONCURRENTLY_IMPACTED
 }
-#[doc(alias = "VkAcquireProfilingLockFlagsKHR")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkAcquireProfilingLockFlagsKHR.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkAcquireProfilingLockFlagBitsKHR.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct AcquireProfilingLockFlagsKHR(pub u32);

@@ -478,8 +478,7 @@ impl Default for AccelerationStructureBuildSizesInfoKHR {
         }
     }
 }
-#[doc(alias = "VkGeometryInstanceFlagsKHR")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkGeometryInstanceFlagsKHR.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkGeometryInstanceFlagBitsKHR.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct GeometryInstanceFlagsKHR(pub u32);
@@ -503,8 +502,7 @@ crate::bitflags_impl! {
     TRIANGLE_FLIP_FACING, FORCE_OPAQUE, FORCE_NO_OPAQUE,
     FORCE_OPACITY_MICROMAP_2_STATE_EXT, DISABLE_OPACITY_MICROMAPS_EXT
 }
-#[doc(alias = "VkGeometryFlagsKHR")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkGeometryFlagsKHR.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkGeometryFlagBitsKHR.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct GeometryFlagsKHR(pub u32);
@@ -518,8 +516,7 @@ impl GeometryFlagsKHR {
 crate::bitflags_impl! {
     GeometryFlagsKHR : u32, 0x3, OPAQUE, NO_DUPLICATE_ANY_HIT_INVOCATION
 }
-#[doc(alias = "VkBuildAccelerationStructureFlagsKHR")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkBuildAccelerationStructureFlagsKHR.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkBuildAccelerationStructureFlagBitsKHR.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct BuildAccelerationStructureFlagsKHR(pub u32);
@@ -548,8 +545,7 @@ crate::bitflags_impl! {
     ALLOW_OPACITY_MICROMAP_UPDATE_EXT, ALLOW_DISABLE_OPACITY_MICROMAPS_EXT,
     ALLOW_OPACITY_MICROMAP_DATA_UPDATE_EXT
 }
-#[doc(alias = "VkAccelerationStructureCreateFlagsKHR")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkAccelerationStructureCreateFlagsKHR.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkAccelerationStructureCreateFlagBitsKHR.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct AccelerationStructureCreateFlagsKHR(pub u32);

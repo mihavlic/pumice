@@ -415,8 +415,7 @@ impl Default for VideoCodingControlInfoKHR {
         }
     }
 }
-#[doc(alias = "VkVideoCodecOperationFlagsKHR")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoCodecOperationFlagsKHR.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoCodecOperationFlagBitsKHR.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct VideoCodecOperationFlagsKHR(pub u32);
@@ -435,8 +434,7 @@ crate::bitflags_impl! {
     VideoCodecOperationFlagsKHR : u32, 0x30003, NONE, ENCODE_H264_EXT, ENCODE_H265_EXT,
     DECODE_H264_EXT, DECODE_H265_EXT
 }
-#[doc(alias = "VkVideoChromaSubsamplingFlagsKHR")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoChromaSubsamplingFlagsKHR.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoChromaSubsamplingFlagBitsKHR.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct VideoChromaSubsamplingFlagsKHR(pub u32);
@@ -450,8 +448,7 @@ impl VideoChromaSubsamplingFlagsKHR {
 crate::bitflags_impl! {
     VideoChromaSubsamplingFlagsKHR : u32, 0xf, INVALID, MONOCHROME, S420, S422, S444
 }
-#[doc(alias = "VkVideoComponentBitDepthFlagsKHR")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoComponentBitDepthFlagsKHR.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoComponentBitDepthFlagBitsKHR.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct VideoComponentBitDepthFlagsKHR(pub u32);
@@ -465,8 +462,7 @@ crate::bitflags_impl! {
     VideoComponentBitDepthFlagsKHR : u32, 0x15, DEPTH_INVALID_KHR, DEPTH_8_KHR,
     DEPTH_10_KHR, DEPTH_12_KHR
 }
-#[doc(alias = "VkVideoCapabilityFlagsKHR")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoCapabilityFlagsKHR.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoCapabilityFlagBitsKHR.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct VideoCapabilityFlagsKHR(pub u32);
@@ -477,8 +473,7 @@ impl VideoCapabilityFlagsKHR {
 crate::bitflags_impl! {
     VideoCapabilityFlagsKHR : u32, 0x3, PROTECTED_CONTENT, SEPARATE_REFERENCE_IMAGES
 }
-#[doc(alias = "VkVideoSessionCreateFlagsKHR")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoSessionCreateFlagsKHR.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoSessionCreateFlagBitsKHR.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct VideoSessionCreateFlagsKHR(pub u32);
@@ -488,8 +483,7 @@ impl VideoSessionCreateFlagsKHR {
 crate::bitflags_impl! {
     VideoSessionCreateFlagsKHR : u32, 0x1, PROTECTED_CONTENT
 }
-#[doc(alias = "VkVideoCodingControlFlagsKHR")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoCodingControlFlagsKHR.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkVideoCodingControlFlagBitsKHR.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct VideoCodingControlFlagsKHR(pub u32);

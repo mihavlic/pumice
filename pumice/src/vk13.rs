@@ -1394,8 +1394,7 @@ impl Default for CommandBufferInheritanceRenderingInfo {
         }
     }
 }
-#[doc(alias = "VkPipelineCreationFeedbackFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkPipelineCreationFeedbackFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkPipelineCreationFeedbackFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct PipelineCreationFeedbackFlags(pub u32);
@@ -1411,8 +1410,7 @@ crate::bitflags_impl! {
     PipelineCreationFeedbackFlags : u32, 0x7, VALID, APPLICATION_PIPELINE_CACHE_HIT,
     BASE_PIPELINE_ACCELERATION
 }
-#[doc(alias = "VkToolPurposeFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkToolPurposeFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkToolPurposeFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct ToolPurposeFlags(pub u32);
@@ -1435,8 +1433,7 @@ crate::bitflags_impl! {
     ToolPurposeFlags : u32, 0x7f, VALIDATION, PROFILING, TRACING, ADDITIONAL_FEATURES,
     MODIFYING_FEATURES, DEBUG_REPORTING_EXT, DEBUG_MARKERS_EXT
 }
-#[doc(alias = "VkAccessFlags2")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkAccessFlags2.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkAccessFlagBits2.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct AccessFlags2(pub u64);
@@ -1530,8 +1527,7 @@ crate::bitflags_impl! {
     INVOCATION_MASK_READ_HUAWEI, MICROMAP_READ_EXT, MICROMAP_WRITE_EXT,
     OPTICAL_FLOW_READ_NV, OPTICAL_FLOW_WRITE_NV
 }
-#[doc(alias = "VkPipelineStageFlags2")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkPipelineStageFlags2.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkPipelineStageFlagBits2.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct PipelineStageFlags2(pub u64);
@@ -1632,8 +1628,7 @@ crate::bitflags_impl! {
     MESH_SHADER_EXT, SUBPASS_SHADING_HUAWEI, INVOCATION_MASK_HUAWEI,
     ACCELERATION_STRUCTURE_COPY_KHR, MICROMAP_BUILD_EXT, OPTICAL_FLOW_NV
 }
-#[doc(alias = "VkSubmitFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkSubmitFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkSubmitFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct SubmitFlags(pub u32);
@@ -1644,8 +1639,7 @@ impl SubmitFlags {
 crate::bitflags_impl! {
     SubmitFlags : u32, 0x1, PROTECTED
 }
-#[doc(alias = "VkFormatFeatureFlags2")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkFormatFeatureFlags2.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkFormatFeatureFlagBits2.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct FormatFeatureFlags2(pub u64);
@@ -1752,8 +1746,7 @@ crate::bitflags_impl! {
     BLOCK_MATCHING_QCOM, BOX_FILTER_SAMPLED_QCOM, OPTICAL_FLOW_IMAGE_NV,
     OPTICAL_FLOW_VECTOR_NV, OPTICAL_FLOW_COST_NV
 }
-#[doc(alias = "VkRenderingFlags")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkRenderingFlags.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkRenderingFlagBits.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct RenderingFlags(pub u32);

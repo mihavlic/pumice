@@ -176,7 +176,6 @@ pub fn write_bindings(mut ctx: Context, template: &dyn AsRef<Path>, out: &dyn As
     let ctx = Rc::new(ctx);
 
     let mut added_variants = get_enum_added_variants(&ctx);
-
     {
         // QUIRK structures added by extensions may use the non-extension version of their StructureType variant,
         // there is no pretty way to solve this so we just enable all of its variants
@@ -186,6 +185,12 @@ pub fn write_bindings(mut ctx: Context, template: &dyn AsRef<Path>, out: &dyn As
             .iter_mut()
             .for_each(|a| a.applicable = true);
     }
+
+    let flags_to_flag_bits = ctx
+        .flag_bits_to_flags
+        .iter()
+        .map(|(&k, &(v, _))| (v, k))
+        .collect();
 
     apply_renames(&added_variants, &ctx);
 
@@ -240,12 +245,20 @@ pub fn write_bindings(mut ctx: Context, template: &dyn AsRef<Path>, out: &dyn As
     write_deep_copy(&mut derives, out, &ctx);
     write_dumb_hash(&mut derives, out, &ctx);
 
-    write_sections(&sorted_symbols, &added_variants, &mut derives, out, &ctx);
+    write_sections(
+        &sorted_symbols,
+        &added_variants,
+        &flags_to_flag_bits,
+        &mut derives,
+        out,
+        &ctx,
+    );
 }
 
 fn write_sections(
     sorted_symbols: &[(usize, u32)],
     added_variants: &HashMap<UniqueStr, Vec<AddedVariants>>,
+    flags_to_flag_bits: &HashMap<UniqueStr, UniqueStr>,
     derives: &mut DeriveData,
     out: &Path,
     ctx: &Rc<Context>,
@@ -270,7 +283,15 @@ fn write_sections(
 
         for &(symbol, _) in symbols {
             let Symbol(name, body) = &ctx.reg.symbols[symbol];
-            write_symbol(&mut writer, *name, body, derives, &added_variants, &ctx);
+            write_symbol(
+                &mut writer,
+                *name,
+                body,
+                derives,
+                &added_variants,
+                &flags_to_flag_bits,
+                &ctx,
+            );
         }
     }
 }

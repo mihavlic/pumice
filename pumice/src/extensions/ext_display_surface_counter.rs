@@ -36,8 +36,7 @@ impl Default for SurfaceCapabilities2EXT {
         }
     }
 }
-#[doc(alias = "VkSurfaceCounterFlagsEXT")]
-/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkSurfaceCounterFlagsEXT.html)
+/// [Vulkan Specification](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkSurfaceCounterFlagBitsEXT.html)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct SurfaceCounterFlagsEXT(pub u32);
