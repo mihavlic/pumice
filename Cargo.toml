@@ -3,11 +3,11 @@ members = [
     "generator",
     "generator-lib",
     "codewrite-macro",
-    "codewrite"
+    "codewrite",
+    "pumice"
 ]
 exclude = [
     "codegen-template",
-    "pumice"
 ]
 
 [profile.release]
