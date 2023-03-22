@@ -34,8 +34,13 @@ macro_rules! aspects {
 }
 
 impl FormatAspectBits {
-    pub fn total_bits(self) -> u8 {
-        self.color + self.depth + self.stencil + self.unused
+    pub fn total_bits(self) -> u32 {
+        self.color as u32 + self.depth as u32 + self.stencil as u32 + self.unused as u32
+    }
+    pub fn total_bytes(self) -> u32 {
+        let bits = self.total_bits();
+        assert!(bits % 8 == 0, "Bits aren't a multiple of 8");
+        bits / 8
     }
 }
 impl crate::vk10::Format {
