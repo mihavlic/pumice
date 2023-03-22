@@ -85,13 +85,13 @@ pub fn write_bindings(mut ctx: Context, template: &dyn AsRef<Path>, out: &dyn As
             "EntryWrapper",
             "InstanceWrapper",
             "DeviceWrapper",
-            // these macros are in ::crate because they have [macro_export]
+            "VulkanResult",
+            // these macros are in ::crate because they are [macro_export]
             // but they are actually defined in util/impl_macros
             "enum_impl",
             "bitflags_impl",
             "non_dispatchable_handle",
             "dispatchable_handle",
-            "VulkanResult"
         ],
         "util": [
             "cstr",
@@ -148,9 +148,10 @@ pub fn write_bindings(mut ctx: Context, template: &dyn AsRef<Path>, out: &dyn As
     }
 
     {
-        // since rust can't express C bitfields we emulate the behaviour by just merging such struct fields with the same algorithm
-        // and leaving to the programmer to deal with packing and upacking the values, also since any of the passes could be doing something
-        // with struct fields we do this at the earliest time possible
+        // since rust can't express C bitfields we emulate the behaviour by just merging such struct
+        // fields with the same algorithm and leaving to the programmer to deal with packing and
+        // upacking the values
+        // any of the other passes could be doing something with struct fields so we do this at the earliest time possible
         for &(index, _) in &ctx.symbols {
             let Symbol(_, body) = &ctx.reg.symbols[index];
             if let SymbolBody::Struct {
@@ -249,33 +250,28 @@ fn write_sections(
     out: &Path,
     ctx: &Rc<Context>,
 ) {
-    let mut buf = PathBuf::new();
-    let mut prev_section = u32::MAX;
-    let mut section_writer = None;
+    let mut path = PathBuf::new();
+    for symbols in sorted_symbols.binary_group_by_key(|&(_, section_index)| section_index) {
+        let section_index = symbols[0].1;
+        let section = &ctx.sections[section_index as usize];
 
-    for &(symbol_index, section_index) in sorted_symbols {
-        if section_index != prev_section {
-            let section = &ctx.sections[section_index as usize];
+        let mut writer = {
+            // build the section path, for example:
+            // {out}/src/extensions/amd_buffer_marker.rs
+            path.clear();
+            path.extend(out);
+            path.push("src");
+            path.extend(section.path());
+            path.push(section.name().resolve());
+            path.set_extension("rs");
 
-            {
-                buf.clear();
-                buf.extend(out);
-                buf.push("src");
-                buf.extend(section.path());
-                buf.push(section.name().resolve());
-                buf.set_extension("rs");
+            SectionWriter::new(section.ident.clone(), &path, false, ctx)
+        };
 
-                section_writer = Some(SectionWriter::new(section.ident.clone(), &buf, false, ctx));
-            }
-
-            prev_section = section_index;
+        for &(symbol, _) in symbols {
+            let Symbol(name, body) = &ctx.reg.symbols[symbol];
+            write_symbol(&mut writer, *name, body, derives, &added_variants, &ctx);
         }
-
-        let writer = section_writer.as_mut().unwrap();
-
-        let Symbol(name, body) = &ctx.reg.symbols[symbol_index];
-
-        write_symbol(writer, *name, body, derives, &added_variants, &ctx);
     }
 }
 
@@ -1078,7 +1074,7 @@ fn write_format_util(out: &Path, ctx: &Rc<Context>) {
     )
 }
 
-fn parse_format_string(str: &str) -> [u8; 4] {
+fn parse_format_string(str: &str) -> [u16; 4] {
     let mut counts = [None; 7];
 
     let mut chars = str.chars();
@@ -1096,7 +1092,7 @@ fn parse_format_string(str: &str) -> [u8; 4] {
                 .find(|(_, c)| !c.is_ascii_digit())
                 .map(|(i, _)| i)
                 .unwrap_or(rem.len());
-            let number = rem[..end].parse::<u8>().unwrap();
+            let number = rem[..end].parse::<u16>().unwrap();
 
             let index = match ch {
                 'R' => 0,

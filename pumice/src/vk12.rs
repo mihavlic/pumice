@@ -1429,6 +1429,9 @@ pub struct SemaphoreType(pub i32);
 impl SemaphoreType {
     pub const BINARY: Self = Self(0);
     pub const TIMELINE: Self = Self(1);
+    /// khr_timeline_semaphore
+    pub const BINARY_KHR: Self = Self::BINARY;
+    pub const TIMELINE_KHR: Self = Self::TIMELINE;
 }
 crate::enum_impl! {
     SemaphoreType : i32, BINARY, TIMELINE
@@ -1440,6 +1443,8 @@ crate::enum_impl! {
 pub struct SemaphoreWaitFlags(pub u32);
 impl SemaphoreWaitFlags {
     pub const ANY: Self = Self(1 << 0);
+    /// khr_timeline_semaphore
+    pub const ANY_KHR: Self = Self::ANY;
 }
 crate::bitflags_impl! {
     SemaphoreWaitFlags : u32, 0x1, ANY
@@ -1453,6 +1458,10 @@ impl SamplerReductionMode {
     pub const WEIGHTED_AVERAGE: Self = Self(0);
     pub const MIN: Self = Self(1);
     pub const MAX: Self = Self(2);
+    /// ext_sampler_filter_minmax
+    pub const WEIGHTED_AVERAGE_EXT: Self = Self::WEIGHTED_AVERAGE;
+    pub const MIN_EXT: Self = Self::MIN;
+    pub const MAX_EXT: Self = Self::MAX;
 }
 crate::enum_impl! {
     SamplerReductionMode : i32, WEIGHTED_AVERAGE, MIN, MAX
@@ -1467,6 +1476,11 @@ impl DescriptorBindingFlags {
     pub const UPDATE_UNUSED_WHILE_PENDING: Self = Self(1 << 1);
     pub const PARTIALLY_BOUND: Self = Self(1 << 2);
     pub const VARIABLE_DESCRIPTOR_COUNT: Self = Self(1 << 3);
+    /// ext_descriptor_indexing
+    pub const UPDATE_AFTER_BIND_EXT: Self = Self::UPDATE_AFTER_BIND;
+    pub const UPDATE_UNUSED_WHILE_PENDING_EXT: Self = Self::UPDATE_UNUSED_WHILE_PENDING;
+    pub const PARTIALLY_BOUND_EXT: Self = Self::PARTIALLY_BOUND;
+    pub const VARIABLE_DESCRIPTOR_COUNT_EXT: Self = Self::VARIABLE_DESCRIPTOR_COUNT;
 }
 crate::bitflags_impl! {
     DescriptorBindingFlags : u32, 0xf, UPDATE_AFTER_BIND, UPDATE_UNUSED_WHILE_PENDING,
@@ -1501,6 +1515,19 @@ impl DriverId {
     pub const SAMSUNG_PROPRIETARY: Self = Self(21);
     pub const MESA_VENUS: Self = Self(22);
     pub const MESA_DOZEN: Self = Self(23);
+    /// khr_driver_properties
+    pub const AMD_PROPRIETARY_KHR: Self = Self::AMD_PROPRIETARY;
+    pub const AMD_OPEN_SOURCE_KHR: Self = Self::AMD_OPEN_SOURCE;
+    pub const MESA_RADV_KHR: Self = Self::MESA_RADV;
+    pub const NVIDIA_PROPRIETARY_KHR: Self = Self::NVIDIA_PROPRIETARY;
+    pub const INTEL_PROPRIETARY_WINDOWS_KHR: Self = Self::INTEL_PROPRIETARY_WINDOWS;
+    pub const INTEL_OPEN_SOURCE_MESA_KHR: Self = Self::INTEL_OPEN_SOURCE_MESA;
+    pub const IMAGINATION_PROPRIETARY_KHR: Self = Self::IMAGINATION_PROPRIETARY;
+    pub const QUALCOMM_PROPRIETARY_KHR: Self = Self::QUALCOMM_PROPRIETARY;
+    pub const ARM_PROPRIETARY_KHR: Self = Self::ARM_PROPRIETARY;
+    pub const GOOGLE_SWIFTSHADER_KHR: Self = Self::GOOGLE_SWIFTSHADER;
+    pub const GGP_PROPRIETARY_KHR: Self = Self::GGP_PROPRIETARY;
+    pub const BROADCOM_PROPRIETARY_KHR: Self = Self::BROADCOM_PROPRIETARY;
 }
 crate::enum_impl! {
     DriverId : i32, AMD_PROPRIETARY, AMD_OPEN_SOURCE, MESA_RADV, NVIDIA_PROPRIETARY,
@@ -1521,6 +1548,12 @@ impl ResolveModeFlags {
     pub const AVERAGE: Self = Self(1 << 1);
     pub const MIN: Self = Self(1 << 2);
     pub const MAX: Self = Self(1 << 3);
+    /// khr_depth_stencil_resolve
+    pub const NONE_KHR: Self = Self::NONE;
+    pub const SAMPLE_ZERO_KHR: Self = Self::SAMPLE_ZERO;
+    pub const AVERAGE_KHR: Self = Self::AVERAGE;
+    pub const MIN_KHR: Self = Self::MIN;
+    pub const MAX_KHR: Self = Self::MAX;
 }
 crate::bitflags_impl! {
     ResolveModeFlags : u32, 0xf, NONE, SAMPLE_ZERO, AVERAGE, MIN, MAX
@@ -1534,6 +1567,10 @@ impl ShaderFloatControlsIndependence {
     pub const I32_ONLY: Self = Self(0);
     pub const ALL: Self = Self(1);
     pub const NONE: Self = Self(2);
+    /// khr_shader_float_controls
+    pub const I32_ONLY_KHR: Self = Self::I32_ONLY;
+    pub const ALL_KHR: Self = Self::ALL;
+    pub const NONE_KHR: Self = Self::NONE;
 }
 crate::enum_impl! {
     ShaderFloatControlsIndependence : i32, I32_ONLY, ALL, NONE

@@ -3178,16 +3178,27 @@ impl ImageLayout {
     pub const VIDEO_DECODE_DPB_KHR: Self = Self(1000024002);
     /// khr_shared_presentable_image
     pub const SHARED_PRESENT_KHR: Self = Self(1000111000);
+    /// khr_maintenance2
+    pub const DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL_KHR: Self = Self::DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
+    pub const DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL_KHR: Self = Self::DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL;
     /// nv_shading_rate_image
     pub const SHADING_RATE_OPTIMAL_NV: Self = Self::FRAGMENT_SHADING_RATE_ATTACHMENT_OPTIMAL_KHR;
     /// ext_fragment_density_map
     pub const FRAGMENT_DENSITY_MAP_OPTIMAL_EXT: Self = Self(1000218000);
     /// khr_fragment_shading_rate
     pub const FRAGMENT_SHADING_RATE_ATTACHMENT_OPTIMAL_KHR: Self = Self(1000164003);
+    /// khr_separate_depth_stencil_layouts
+    pub const DEPTH_ATTACHMENT_OPTIMAL_KHR: Self = Self::DEPTH_ATTACHMENT_OPTIMAL;
+    pub const DEPTH_READ_ONLY_OPTIMAL_KHR: Self = Self::DEPTH_READ_ONLY_OPTIMAL;
+    pub const STENCIL_ATTACHMENT_OPTIMAL_KHR: Self = Self::STENCIL_ATTACHMENT_OPTIMAL;
+    pub const STENCIL_READ_ONLY_OPTIMAL_KHR: Self = Self::STENCIL_READ_ONLY_OPTIMAL;
     /// khr_video_encode_queue
     pub const VIDEO_ENCODE_DST_KHR: Self = Self(1000299000);
     pub const VIDEO_ENCODE_SRC_KHR: Self = Self(1000299001);
     pub const VIDEO_ENCODE_DPB_KHR: Self = Self(1000299002);
+    /// khr_synchronization2
+    pub const READ_ONLY_OPTIMAL_KHR: Self = Self::READ_ONLY_OPTIMAL;
+    pub const ATTACHMENT_OPTIMAL_KHR: Self = Self::ATTACHMENT_OPTIMAL;
     /// ext_attachment_feedback_loop_layout
     pub const ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT: Self = Self(1000339000);
 }
@@ -3229,6 +3240,8 @@ impl AttachmentStoreOp {
     pub const DONT_CARE: Self = Self(1);
     /// vk13
     pub const NONE: Self = Self(1000301000);
+    /// khr_dynamic_rendering
+    pub const NONE_KHR: Self = Self::NONE;
     /// qcom_render_pass_store_ops
     pub const NONE_QCOM: Self = Self::NONE;
     /// ext_load_store_op_none
@@ -3329,10 +3342,14 @@ impl DescriptorType {
     pub const INPUT_ATTACHMENT: Self = Self(10);
     /// vk13
     pub const INLINE_UNIFORM_BLOCK: Self = Self(1000138000);
+    /// ext_inline_uniform_block
+    pub const INLINE_UNIFORM_BLOCK_EXT: Self = Self::INLINE_UNIFORM_BLOCK;
     /// khr_acceleration_structure
     pub const ACCELERATION_STRUCTURE_KHR: Self = Self(1000150000);
     /// nv_ray_tracing
     pub const ACCELERATION_STRUCTURE_NV: Self = Self(1000165000);
+    /// valve_mutable_descriptor_type
+    pub const MUTABLE_VALVE: Self = Self::MUTABLE_EXT;
     /// qcom_image_processing
     pub const SAMPLE_WEIGHT_IMAGE_QCOM: Self = Self(1000440000);
     pub const BLOCK_MATCH_IMAGE_QCOM: Self = Self(1000440001);
@@ -3453,6 +3470,8 @@ pub struct PipelineCacheCreateFlags(pub u32);
 impl PipelineCacheCreateFlags {
     /// vk13
     pub const EXTERNALLY_SYNCHRONIZED: Self = Self(1 << 0);
+    /// ext_pipeline_creation_cache_control
+    pub const EXTERNALLY_SYNCHRONIZED_EXT: Self = Self::EXTERNALLY_SYNCHRONIZED;
 }
 crate::bitflags_impl! {
     PipelineCacheCreateFlags : u32, 0x1, EXTERNALLY_SYNCHRONIZED
@@ -3550,6 +3569,8 @@ impl SamplerAddressMode {
     pub const CLAMP_TO_BORDER: Self = Self(3);
     /// vk12
     pub const MIRROR_CLAMP_TO_EDGE: Self = Self(4);
+    /// khr_sampler_mirror_clamp_to_edge
+    pub const MIRROR_CLAMP_TO_EDGE_KHR: Self = Self::MIRROR_CLAMP_TO_EDGE;
 }
 crate::enum_impl! {
     SamplerAddressMode : i32, REPEAT, MIRRORED_REPEAT, CLAMP_TO_EDGE, CLAMP_TO_BORDER,
@@ -4059,6 +4080,64 @@ impl Format {
     pub const PVRTC1_4BPP_SRGB_BLOCK_IMG: Self = Self(1000054005);
     pub const PVRTC2_2BPP_SRGB_BLOCK_IMG: Self = Self(1000054006);
     pub const PVRTC2_4BPP_SRGB_BLOCK_IMG: Self = Self(1000054007);
+    /// ext_texture_compression_astc_hdr
+    pub const ASTC_4x4_SFLOAT_BLOCK_EXT: Self = Self::ASTC_4x4_SFLOAT_BLOCK;
+    pub const ASTC_5x4_SFLOAT_BLOCK_EXT: Self = Self::ASTC_5x4_SFLOAT_BLOCK;
+    pub const ASTC_5x5_SFLOAT_BLOCK_EXT: Self = Self::ASTC_5x5_SFLOAT_BLOCK;
+    pub const ASTC_6x5_SFLOAT_BLOCK_EXT: Self = Self::ASTC_6x5_SFLOAT_BLOCK;
+    pub const ASTC_6x6_SFLOAT_BLOCK_EXT: Self = Self::ASTC_6x6_SFLOAT_BLOCK;
+    pub const ASTC_8x5_SFLOAT_BLOCK_EXT: Self = Self::ASTC_8x5_SFLOAT_BLOCK;
+    pub const ASTC_8x6_SFLOAT_BLOCK_EXT: Self = Self::ASTC_8x6_SFLOAT_BLOCK;
+    pub const ASTC_8x8_SFLOAT_BLOCK_EXT: Self = Self::ASTC_8x8_SFLOAT_BLOCK;
+    pub const ASTC_10x5_SFLOAT_BLOCK_EXT: Self = Self::ASTC_10x5_SFLOAT_BLOCK;
+    pub const ASTC_10x6_SFLOAT_BLOCK_EXT: Self = Self::ASTC_10x6_SFLOAT_BLOCK;
+    pub const ASTC_10x8_SFLOAT_BLOCK_EXT: Self = Self::ASTC_10x8_SFLOAT_BLOCK;
+    pub const ASTC_10x10_SFLOAT_BLOCK_EXT: Self = Self::ASTC_10x10_SFLOAT_BLOCK;
+    pub const ASTC_12x10_SFLOAT_BLOCK_EXT: Self = Self::ASTC_12x10_SFLOAT_BLOCK;
+    pub const ASTC_12x12_SFLOAT_BLOCK_EXT: Self = Self::ASTC_12x12_SFLOAT_BLOCK;
+    /// khr_sampler_ycbcr_conversion
+    pub const G8B8G8R8_422_UNORM_KHR: Self = Self::G8B8G8R8_422_UNORM;
+    pub const B8G8R8G8_422_UNORM_KHR: Self = Self::B8G8R8G8_422_UNORM;
+    pub const G8_B8_R8_3PLANE_420_UNORM_KHR: Self = Self::G8_B8_R8_3PLANE_420_UNORM;
+    pub const G8_B8R8_2PLANE_420_UNORM_KHR: Self = Self::G8_B8R8_2PLANE_420_UNORM;
+    pub const G8_B8_R8_3PLANE_422_UNORM_KHR: Self = Self::G8_B8_R8_3PLANE_422_UNORM;
+    pub const G8_B8R8_2PLANE_422_UNORM_KHR: Self = Self::G8_B8R8_2PLANE_422_UNORM;
+    pub const G8_B8_R8_3PLANE_444_UNORM_KHR: Self = Self::G8_B8_R8_3PLANE_444_UNORM;
+    pub const R10X6_UNORM_PACK16_KHR: Self = Self::R10X6_UNORM_PACK16;
+    pub const R10X6G10X6_UNORM_2PACK16_KHR: Self = Self::R10X6G10X6_UNORM_2PACK16;
+    pub const R10X6G10X6B10X6A10X6_UNORM_4PACK16_KHR: Self = Self::R10X6G10X6B10X6A10X6_UNORM_4PACK16;
+    pub const G10X6B10X6G10X6R10X6_422_UNORM_4PACK16_KHR: Self = Self::G10X6B10X6G10X6R10X6_422_UNORM_4PACK16;
+    pub const B10X6G10X6R10X6G10X6_422_UNORM_4PACK16_KHR: Self = Self::B10X6G10X6R10X6G10X6_422_UNORM_4PACK16;
+    pub const G10X6_B10X6_R10X6_3PLANE_420_UNORM_3PACK16_KHR: Self = Self::G10X6_B10X6_R10X6_3PLANE_420_UNORM_3PACK16;
+    pub const G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16_KHR: Self = Self::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16;
+    pub const G10X6_B10X6_R10X6_3PLANE_422_UNORM_3PACK16_KHR: Self = Self::G10X6_B10X6_R10X6_3PLANE_422_UNORM_3PACK16;
+    pub const G10X6_B10X6R10X6_2PLANE_422_UNORM_3PACK16_KHR: Self = Self::G10X6_B10X6R10X6_2PLANE_422_UNORM_3PACK16;
+    pub const G10X6_B10X6_R10X6_3PLANE_444_UNORM_3PACK16_KHR: Self = Self::G10X6_B10X6_R10X6_3PLANE_444_UNORM_3PACK16;
+    pub const R12X4_UNORM_PACK16_KHR: Self = Self::R12X4_UNORM_PACK16;
+    pub const R12X4G12X4_UNORM_2PACK16_KHR: Self = Self::R12X4G12X4_UNORM_2PACK16;
+    pub const R12X4G12X4B12X4A12X4_UNORM_4PACK16_KHR: Self = Self::R12X4G12X4B12X4A12X4_UNORM_4PACK16;
+    pub const G12X4B12X4G12X4R12X4_422_UNORM_4PACK16_KHR: Self = Self::G12X4B12X4G12X4R12X4_422_UNORM_4PACK16;
+    pub const B12X4G12X4R12X4G12X4_422_UNORM_4PACK16_KHR: Self = Self::B12X4G12X4R12X4G12X4_422_UNORM_4PACK16;
+    pub const G12X4_B12X4_R12X4_3PLANE_420_UNORM_3PACK16_KHR: Self = Self::G12X4_B12X4_R12X4_3PLANE_420_UNORM_3PACK16;
+    pub const G12X4_B12X4R12X4_2PLANE_420_UNORM_3PACK16_KHR: Self = Self::G12X4_B12X4R12X4_2PLANE_420_UNORM_3PACK16;
+    pub const G12X4_B12X4_R12X4_3PLANE_422_UNORM_3PACK16_KHR: Self = Self::G12X4_B12X4_R12X4_3PLANE_422_UNORM_3PACK16;
+    pub const G12X4_B12X4R12X4_2PLANE_422_UNORM_3PACK16_KHR: Self = Self::G12X4_B12X4R12X4_2PLANE_422_UNORM_3PACK16;
+    pub const G12X4_B12X4_R12X4_3PLANE_444_UNORM_3PACK16_KHR: Self = Self::G12X4_B12X4_R12X4_3PLANE_444_UNORM_3PACK16;
+    pub const G16B16G16R16_422_UNORM_KHR: Self = Self::G16B16G16R16_422_UNORM;
+    pub const B16G16R16G16_422_UNORM_KHR: Self = Self::B16G16R16G16_422_UNORM;
+    pub const G16_B16_R16_3PLANE_420_UNORM_KHR: Self = Self::G16_B16_R16_3PLANE_420_UNORM;
+    pub const G16_B16R16_2PLANE_420_UNORM_KHR: Self = Self::G16_B16R16_2PLANE_420_UNORM;
+    pub const G16_B16_R16_3PLANE_422_UNORM_KHR: Self = Self::G16_B16_R16_3PLANE_422_UNORM;
+    pub const G16_B16R16_2PLANE_422_UNORM_KHR: Self = Self::G16_B16R16_2PLANE_422_UNORM;
+    pub const G16_B16_R16_3PLANE_444_UNORM_KHR: Self = Self::G16_B16_R16_3PLANE_444_UNORM;
+    /// ext_ycbcr_2plane_444_formats
+    pub const G8_B8R8_2PLANE_444_UNORM_EXT: Self = Self::G8_B8R8_2PLANE_444_UNORM;
+    pub const G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16_EXT: Self = Self::G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16;
+    pub const G12X4_B12X4R12X4_2PLANE_444_UNORM_3PACK16_EXT: Self = Self::G12X4_B12X4R12X4_2PLANE_444_UNORM_3PACK16;
+    pub const G16_B16R16_2PLANE_444_UNORM_EXT: Self = Self::G16_B16R16_2PLANE_444_UNORM;
+    /// ext_4444_formats
+    pub const A4R4G4B4_UNORM_PACK16_EXT: Self = Self::A4R4G4B4_UNORM_PACK16;
+    pub const A4B4G4R4_UNORM_PACK16_EXT: Self = Self::A4B4G4R4_UNORM_PACK16;
     /// nv_optical_flow
     pub const R16G16_S10_5_NV: Self = Self(1000464000);
 }
@@ -6052,21 +6131,34 @@ impl Result {
     pub const ERROR_VIDEO_PROFILE_FORMAT_NOT_SUPPORTED_KHR: Self = Self(-1000023003);
     pub const ERROR_VIDEO_PROFILE_CODEC_NOT_SUPPORTED_KHR: Self = Self(-1000023004);
     pub const ERROR_VIDEO_STD_VERSION_NOT_SUPPORTED_KHR: Self = Self(-1000023005);
+    /// khr_maintenance1
+    pub const ERROR_OUT_OF_POOL_MEMORY_KHR: Self = Self::ERROR_OUT_OF_POOL_MEMORY;
+    /// khr_external_memory
+    pub const ERROR_INVALID_EXTERNAL_HANDLE_KHR: Self = Self::ERROR_INVALID_EXTERNAL_HANDLE;
     /// ext_image_drm_format_modifier
     pub const ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT: Self = Self(
         -1000158000,
     );
+    /// ext_descriptor_indexing
+    pub const ERROR_FRAGMENTATION_EXT: Self = Self::ERROR_FRAGMENTATION;
+    /// ext_global_priority
+    pub const ERROR_NOT_PERMITTED_EXT: Self = Self::ERROR_NOT_PERMITTED_KHR;
     /// khr_global_priority
     pub const ERROR_NOT_PERMITTED_KHR: Self = Self(-1000174001);
     /// ext_buffer_device_address
     pub const ERROR_INVALID_DEVICE_ADDRESS_EXT: Self = Self::ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS;
     /// ext_full_screen_exclusive
     pub const ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT: Self = Self(-1000255000);
+    /// khr_buffer_device_address
+    pub const ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS_KHR: Self = Self::ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS;
     /// khr_deferred_host_operations
     pub const THREAD_IDLE_KHR: Self = Self(1000268000);
     pub const THREAD_DONE_KHR: Self = Self(1000268001);
     pub const OPERATION_DEFERRED_KHR: Self = Self(1000268002);
     pub const OPERATION_NOT_DEFERRED_KHR: Self = Self(1000268003);
+    /// ext_pipeline_creation_cache_control
+    pub const PIPELINE_COMPILE_REQUIRED_EXT: Self = Self::PIPELINE_COMPILE_REQUIRED;
+    pub const ERROR_PIPELINE_COMPILE_REQUIRED_EXT: Self = Self::PIPELINE_COMPILE_REQUIRED;
     /// ext_image_compression_control
     pub const ERROR_COMPRESSION_EXHAUSTED_EXT: Self = Self(-1000338000);
 }
@@ -6138,8 +6230,27 @@ impl DynamicState {
     pub const FRAGMENT_SHADING_RATE_KHR: Self = Self(1000226000);
     /// ext_line_rasterization
     pub const LINE_STIPPLE_EXT: Self = Self(1000259000);
+    /// ext_extended_dynamic_state
+    pub const CULL_MODE_EXT: Self = Self::CULL_MODE;
+    pub const FRONT_FACE_EXT: Self = Self::FRONT_FACE;
+    pub const PRIMITIVE_TOPOLOGY_EXT: Self = Self::PRIMITIVE_TOPOLOGY;
+    pub const VIEWPORT_WITH_COUNT_EXT: Self = Self::VIEWPORT_WITH_COUNT;
+    pub const SCISSOR_WITH_COUNT_EXT: Self = Self::SCISSOR_WITH_COUNT;
+    pub const VERTEX_INPUT_BINDING_STRIDE_EXT: Self = Self::VERTEX_INPUT_BINDING_STRIDE;
+    pub const DEPTH_TEST_ENABLE_EXT: Self = Self::DEPTH_TEST_ENABLE;
+    pub const DEPTH_WRITE_ENABLE_EXT: Self = Self::DEPTH_WRITE_ENABLE;
+    pub const DEPTH_COMPARE_OP_EXT: Self = Self::DEPTH_COMPARE_OP;
+    pub const DEPTH_BOUNDS_TEST_ENABLE_EXT: Self = Self::DEPTH_BOUNDS_TEST_ENABLE;
+    pub const STENCIL_TEST_ENABLE_EXT: Self = Self::STENCIL_TEST_ENABLE;
+    pub const STENCIL_OP_EXT: Self = Self::STENCIL_OP;
     /// ext_vertex_input_dynamic_state
     pub const VERTEX_INPUT_EXT: Self = Self(1000352000);
+    /// ext_extended_dynamic_state2
+    pub const PATCH_CONTROL_POINTS_EXT: Self = Self(1000377000);
+    pub const RASTERIZER_DISCARD_ENABLE_EXT: Self = Self::RASTERIZER_DISCARD_ENABLE;
+    pub const DEPTH_BIAS_ENABLE_EXT: Self = Self::DEPTH_BIAS_ENABLE;
+    pub const LOGIC_OP_EXT: Self = Self(1000377003);
+    pub const PRIMITIVE_RESTART_ENABLE_EXT: Self = Self::PRIMITIVE_RESTART_ENABLE;
     /// ext_color_write_enable
     pub const COLOR_WRITE_ENABLE_EXT: Self = Self(1000381000);
     /// ext_extended_dynamic_state3
@@ -6185,14 +6296,14 @@ crate::enum_impl! {
     DISCARD_RECTANGLE_EXT, SAMPLE_LOCATIONS_EXT, RAY_TRACING_PIPELINE_STACK_SIZE_KHR,
     VIEWPORT_SHADING_RATE_PALETTE_NV, VIEWPORT_COARSE_SAMPLE_ORDER_NV,
     EXCLUSIVE_SCISSOR_NV, FRAGMENT_SHADING_RATE_KHR, LINE_STIPPLE_EXT, VERTEX_INPUT_EXT,
-    COLOR_WRITE_ENABLE_EXT, TESSELLATION_DOMAIN_ORIGIN_EXT, DEPTH_CLAMP_ENABLE_EXT,
-    POLYGON_MODE_EXT, RASTERIZATION_SAMPLES_EXT, SAMPLE_MASK_EXT,
-    ALPHA_TO_COVERAGE_ENABLE_EXT, ALPHA_TO_ONE_ENABLE_EXT, LOGIC_OP_ENABLE_EXT,
-    COLOR_BLEND_ENABLE_EXT, COLOR_BLEND_EQUATION_EXT, COLOR_WRITE_MASK_EXT,
-    RASTERIZATION_STREAM_EXT, CONSERVATIVE_RASTERIZATION_MODE_EXT,
-    EXTRA_PRIMITIVE_OVERESTIMATION_SIZE_EXT, DEPTH_CLIP_ENABLE_EXT,
-    SAMPLE_LOCATIONS_ENABLE_EXT, COLOR_BLEND_ADVANCED_EXT, PROVOKING_VERTEX_MODE_EXT,
-    LINE_RASTERIZATION_MODE_EXT, LINE_STIPPLE_ENABLE_EXT,
+    PATCH_CONTROL_POINTS_EXT, LOGIC_OP_EXT, COLOR_WRITE_ENABLE_EXT,
+    TESSELLATION_DOMAIN_ORIGIN_EXT, DEPTH_CLAMP_ENABLE_EXT, POLYGON_MODE_EXT,
+    RASTERIZATION_SAMPLES_EXT, SAMPLE_MASK_EXT, ALPHA_TO_COVERAGE_ENABLE_EXT,
+    ALPHA_TO_ONE_ENABLE_EXT, LOGIC_OP_ENABLE_EXT, COLOR_BLEND_ENABLE_EXT,
+    COLOR_BLEND_EQUATION_EXT, COLOR_WRITE_MASK_EXT, RASTERIZATION_STREAM_EXT,
+    CONSERVATIVE_RASTERIZATION_MODE_EXT, EXTRA_PRIMITIVE_OVERESTIMATION_SIZE_EXT,
+    DEPTH_CLIP_ENABLE_EXT, SAMPLE_LOCATIONS_ENABLE_EXT, COLOR_BLEND_ADVANCED_EXT,
+    PROVOKING_VERTEX_MODE_EXT, LINE_RASTERIZATION_MODE_EXT, LINE_STIPPLE_ENABLE_EXT,
     DEPTH_CLIP_NEGATIVE_ONE_TO_ONE_EXT, VIEWPORT_W_SCALING_ENABLE_NV,
     VIEWPORT_SWIZZLE_NV, COVERAGE_TO_COLOR_ENABLE_NV, COVERAGE_TO_COLOR_LOCATION_NV,
     COVERAGE_MODULATION_MODE_NV, COVERAGE_MODULATION_TABLE_ENABLE_NV,
@@ -6251,10 +6362,14 @@ impl ObjectType {
     /// nvx_binary_import
     pub const CU_MODULE_NVX: Self = Self(1000029000);
     pub const CU_FUNCTION_NVX: Self = Self(1000029001);
+    /// khr_descriptor_update_template
+    pub const DESCRIPTOR_UPDATE_TEMPLATE_KHR: Self = Self::DESCRIPTOR_UPDATE_TEMPLATE;
     /// ext_debug_utils
     pub const DEBUG_UTILS_MESSENGER_EXT: Self = Self(1000128000);
     /// khr_acceleration_structure
     pub const ACCELERATION_STRUCTURE_KHR: Self = Self(1000150000);
+    /// khr_sampler_ycbcr_conversion
+    pub const SAMPLER_YCBCR_CONVERSION_KHR: Self = Self::SAMPLER_YCBCR_CONVERSION;
     /// ext_validation_cache
     pub const VALIDATION_CACHE_EXT: Self = Self(1000160000);
     /// nv_ray_tracing
@@ -6265,6 +6380,8 @@ impl ObjectType {
     pub const DEFERRED_OPERATION_KHR: Self = Self(1000268000);
     /// nv_device_generated_commands
     pub const INDIRECT_COMMANDS_LAYOUT_NV: Self = Self(1000277000);
+    /// ext_private_data
+    pub const PRIVATE_DATA_SLOT_EXT: Self = Self::PRIVATE_DATA_SLOT;
     /// fuchsia_buffer_collection
     pub const BUFFER_COLLECTION_FUCHSIA: Self = Self(1000366000);
     /// ext_opacity_micromap
@@ -6379,6 +6496,8 @@ impl MemoryHeapFlags {
     pub const DEVICE_LOCAL: Self = Self(1 << 0);
     /// vk11
     pub const MULTI_INSTANCE: Self = Self(1 << 1);
+    /// khr_device_group_creation
+    pub const MULTI_INSTANCE_KHR: Self = Self::MULTI_INSTANCE;
 }
 crate::bitflags_impl! {
     MemoryHeapFlags : u32, 0x3, DEVICE_LOCAL, MULTI_INSTANCE
@@ -6431,6 +6550,8 @@ impl AccessFlags {
     /// nv_device_generated_commands
     pub const COMMAND_PREPROCESS_READ_NV: Self = Self(1 << 17);
     pub const COMMAND_PREPROCESS_WRITE_NV: Self = Self(1 << 18);
+    /// khr_synchronization2
+    pub const NONE_KHR: Self = Self::NONE;
 }
 crate::bitflags_impl! {
     AccessFlags : u32, 0xfffffff, INDIRECT_COMMAND_READ, INDEX_READ,
@@ -6479,6 +6600,8 @@ impl BufferUsageFlags {
     pub const RAY_TRACING_NV: Self = Self::SHADER_BINDING_TABLE_KHR;
     /// ext_buffer_device_address
     pub const SHADER_DEVICE_ADDRESS_EXT: Self = Self::SHADER_DEVICE_ADDRESS;
+    /// khr_buffer_device_address
+    pub const SHADER_DEVICE_ADDRESS_KHR: Self = Self::SHADER_DEVICE_ADDRESS;
     /// khr_video_encode_queue
     pub const VIDEO_ENCODE_DST_KHR: Self = Self(1 << 15);
     pub const VIDEO_ENCODE_SRC_KHR: Self = Self(1 << 16);
@@ -6510,6 +6633,8 @@ impl BufferCreateFlags {
     pub const DEVICE_ADDRESS_CAPTURE_REPLAY: Self = Self(1 << 4);
     /// ext_buffer_device_address
     pub const DEVICE_ADDRESS_CAPTURE_REPLAY_EXT: Self = Self::DEVICE_ADDRESS_CAPTURE_REPLAY;
+    /// khr_buffer_device_address
+    pub const DEVICE_ADDRESS_CAPTURE_REPLAY_KHR: Self = Self::DEVICE_ADDRESS_CAPTURE_REPLAY;
 }
 crate::bitflags_impl! {
     BufferCreateFlags : u32, 0x1f, SPARSE_BINDING, SPARSE_RESIDENCY, SPARSE_ALIASED,
@@ -6623,8 +6748,19 @@ impl ImageCreateFlags {
     pub const DISJOINT: Self = Self(1 << 9);
     /// nv_corner_sampled_image
     pub const CORNER_SAMPLED_NV: Self = Self(1 << 13);
+    /// khr_device_group
+    pub const SPLIT_INSTANCE_BIND_REGIONS_KHR: Self = Self::SPLIT_INSTANCE_BIND_REGIONS;
+    /// khr_maintenance1
+    pub const C2D_ARRAY_COMPATIBLE_KHR: Self = Self::C2D_ARRAY_COMPATIBLE;
+    /// khr_maintenance2
+    pub const BLOCK_TEXEL_VIEW_COMPATIBLE_KHR: Self = Self::BLOCK_TEXEL_VIEW_COMPATIBLE;
+    pub const EXTENDED_USAGE_KHR: Self = Self::EXTENDED_USAGE;
     /// ext_sample_locations
     pub const SAMPLE_LOCATIONS_COMPATIBLE_DEPTH_EXT: Self = Self(1 << 12);
+    /// khr_sampler_ycbcr_conversion
+    pub const DISJOINT_KHR: Self = Self::DISJOINT;
+    /// khr_bind_memory2
+    pub const ALIAS_KHR: Self = Self::ALIAS;
     /// ext_fragment_density_map
     pub const SUBSAMPLED_EXT: Self = Self(1 << 14);
     /// ext_multisampled_render_to_single_sampled
@@ -6690,6 +6826,12 @@ impl PipelineCreateFlags {
     /// vk13
     pub const FAIL_ON_PIPELINE_COMPILE_REQUIRED: Self = Self(1 << 8);
     pub const EARLY_RETURN_ON_FAILURE: Self = Self(1 << 9);
+    /// khr_dynamic_rendering
+    pub const RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_KHR: Self = Self(1 << 21);
+    pub const RENDERING_FRAGMENT_DENSITY_MAP_ATTACHMENT_EXT: Self = Self(1 << 22);
+    /// khr_device_group
+    pub const VIEW_INDEX_FROM_DEVICE_INDEX_KHR: Self = Self::VIEW_INDEX_FROM_DEVICE_INDEX;
+    pub const DISPATCH_BASE_KHR: Self = Self::DISPATCH_BASE;
     /// khr_ray_tracing_pipeline
     pub const RAY_TRACING_NO_NULL_ANY_HIT_SHADERS_KHR: Self = Self(1 << 14);
     pub const RAY_TRACING_NO_NULL_CLOSEST_HIT_SHADERS_KHR: Self = Self(1 << 15);
@@ -6707,6 +6849,9 @@ impl PipelineCreateFlags {
     pub const INDIRECT_BINDABLE_NV: Self = Self(1 << 18);
     /// khr_pipeline_library
     pub const LIBRARY_KHR: Self = Self(1 << 11);
+    /// ext_pipeline_creation_cache_control
+    pub const FAIL_ON_PIPELINE_COMPILE_REQUIRED_EXT: Self = Self::FAIL_ON_PIPELINE_COMPILE_REQUIRED;
+    pub const EARLY_RETURN_ON_FAILURE_EXT: Self = Self::EARLY_RETURN_ON_FAILURE;
     /// ext_graphics_pipeline_library
     pub const RETAIN_LINK_TIME_OPTIMIZATION_INFO_EXT: Self = Self(1 << 23);
     pub const LINK_TIME_OPTIMIZATION_EXT: Self = Self(1 << 10);
@@ -6722,9 +6867,11 @@ impl PipelineCreateFlags {
     pub const PROTECTED_ACCESS_ONLY_EXT: Self = Self(1 << 30);
 }
 crate::bitflags_impl! {
-    PipelineCreateFlags : u32, 0x4f9fffff, DISABLE_OPTIMIZATION, ALLOW_DERIVATIVES,
+    PipelineCreateFlags : u32, 0x4fffffff, DISABLE_OPTIMIZATION, ALLOW_DERIVATIVES,
     DERIVATIVE, VIEW_INDEX_FROM_DEVICE_INDEX, DISPATCH_BASE,
     FAIL_ON_PIPELINE_COMPILE_REQUIRED, EARLY_RETURN_ON_FAILURE,
+    RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_KHR,
+    RENDERING_FRAGMENT_DENSITY_MAP_ATTACHMENT_EXT,
     RAY_TRACING_NO_NULL_ANY_HIT_SHADERS_KHR, RAY_TRACING_NO_NULL_CLOSEST_HIT_SHADERS_KHR,
     RAY_TRACING_NO_NULL_MISS_SHADERS_KHR, RAY_TRACING_NO_NULL_INTERSECTION_SHADERS_KHR,
     RAY_TRACING_SKIP_TRIANGLES_KHR, RAY_TRACING_SKIP_AABBS_KHR,
@@ -6744,6 +6891,9 @@ impl PipelineShaderStageCreateFlags {
     /// vk13
     pub const ALLOW_VARYING_SUBGROUP_SIZE: Self = Self(1 << 0);
     pub const REQUIRE_FULL_SUBGROUPS: Self = Self(1 << 1);
+    /// ext_subgroup_size_control
+    pub const ALLOW_VARYING_SUBGROUP_SIZE_EXT: Self = Self::ALLOW_VARYING_SUBGROUP_SIZE;
+    pub const REQUIRE_FULL_SUBGROUPS_EXT: Self = Self::REQUIRE_FULL_SUBGROUPS;
 }
 crate::bitflags_impl! {
     PipelineShaderStageCreateFlags : u32, 0x3, ALLOW_VARYING_SUBGROUP_SIZE,
@@ -6816,8 +6966,21 @@ impl FormatFeatureFlags {
     /// khr_video_decode_queue
     pub const VIDEO_DECODE_OUTPUT_KHR: Self = Self(1 << 25);
     pub const VIDEO_DECODE_DPB_KHR: Self = Self(1 << 26);
+    /// khr_maintenance1
+    pub const TRANSFER_SRC_KHR: Self = Self::TRANSFER_SRC;
+    pub const TRANSFER_DST_KHR: Self = Self::TRANSFER_DST;
+    /// ext_sampler_filter_minmax
+    pub const SAMPLED_IMAGE_FILTER_MINMAX_EXT: Self = Self::SAMPLED_IMAGE_FILTER_MINMAX;
     /// khr_acceleration_structure
     pub const ACCELERATION_STRUCTURE_VERTEX_BUFFER_KHR: Self = Self(1 << 29);
+    /// khr_sampler_ycbcr_conversion
+    pub const MIDPOINT_CHROMA_SAMPLES_KHR: Self = Self::MIDPOINT_CHROMA_SAMPLES;
+    pub const SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER_KHR: Self = Self::SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER;
+    pub const SAMPLED_IMAGE_YCBCR_CONVERSION_SEPARATE_RECONSTRUCTION_FILTER_KHR: Self = Self::SAMPLED_IMAGE_YCBCR_CONVERSION_SEPARATE_RECONSTRUCTION_FILTER;
+    pub const SAMPLED_IMAGE_YCBCR_CONVERSION_CHROMA_RECONSTRUCTION_EXPLICIT_KHR: Self = Self::SAMPLED_IMAGE_YCBCR_CONVERSION_CHROMA_RECONSTRUCTION_EXPLICIT;
+    pub const SAMPLED_IMAGE_YCBCR_CONVERSION_CHROMA_RECONSTRUCTION_EXPLICIT_FORCEABLE_KHR: Self = Self::SAMPLED_IMAGE_YCBCR_CONVERSION_CHROMA_RECONSTRUCTION_EXPLICIT_FORCEABLE;
+    pub const DISJOINT_KHR: Self = Self::DISJOINT;
+    pub const COSITED_CHROMA_SAMPLES_KHR: Self = Self::COSITED_CHROMA_SAMPLES;
     /// ext_filter_cubic
     pub const SAMPLED_IMAGE_FILTER_CUBIC_EXT: Self = Self(1 << 13);
     /// ext_fragment_density_map
@@ -6929,11 +7092,17 @@ impl ImageAspectFlags {
     pub const PLANE_2: Self = Self(1 << 6);
     /// vk13
     pub const NONE: Self = Self(0);
+    /// khr_sampler_ycbcr_conversion
+    pub const PLANE_0_KHR: Self = Self::PLANE_0;
+    pub const PLANE_1_KHR: Self = Self::PLANE_1;
+    pub const PLANE_2_KHR: Self = Self::PLANE_2;
     /// ext_image_drm_format_modifier
     pub const MEMORY_PLANE_0_EXT: Self = Self(1 << 7);
     pub const MEMORY_PLANE_1_EXT: Self = Self(1 << 8);
     pub const MEMORY_PLANE_2_EXT: Self = Self(1 << 9);
     pub const MEMORY_PLANE_3_EXT: Self = Self(1 << 10);
+    /// khr_maintenance4
+    pub const NONE_KHR: Self = Self::NONE;
 }
 crate::bitflags_impl! {
     ImageAspectFlags : u32, 0x7ff, COLOR, DEPTH, STENCIL, METADATA, PLANE_0, PLANE_1,
@@ -7012,6 +7181,8 @@ impl PipelineStageFlags {
     pub const FRAGMENT_SHADING_RATE_ATTACHMENT_KHR: Self = Self(1 << 22);
     /// nv_device_generated_commands
     pub const COMMAND_PREPROCESS_NV: Self = Self(1 << 17);
+    /// khr_synchronization2
+    pub const NONE_KHR: Self = Self::NONE;
     /// ext_mesh_shader
     pub const TASK_SHADER_EXT: Self = Self(1 << 19);
     pub const MESH_SHADER_EXT: Self = Self(1 << 20);
@@ -7112,6 +7283,10 @@ impl DescriptorPoolCreateFlags {
     pub const FREE_DESCRIPTOR_SET: Self = Self(1 << 0);
     /// vk12
     pub const UPDATE_AFTER_BIND: Self = Self(1 << 1);
+    /// ext_descriptor_indexing
+    pub const UPDATE_AFTER_BIND_EXT: Self = Self::UPDATE_AFTER_BIND;
+    /// valve_mutable_descriptor_type
+    pub const HOST_ONLY_VALVE: Self = Self::HOST_ONLY_EXT;
     /// ext_mutable_descriptor_type
     pub const HOST_ONLY_EXT: Self = Self(1 << 2);
 }
@@ -7129,6 +7304,10 @@ impl DependencyFlags {
     /// vk11
     pub const DEVICE_GROUP: Self = Self(1 << 2);
     pub const VIEW_LOCAL: Self = Self(1 << 1);
+    /// khr_multiview
+    pub const VIEW_LOCAL_KHR: Self = Self::VIEW_LOCAL;
+    /// khr_device_group
+    pub const DEVICE_GROUP_KHR: Self = Self::DEVICE_GROUP;
     /// ext_attachment_feedback_loop_layout
     pub const FEEDBACK_LOOP_EXT: Self = Self(1 << 3);
 }
@@ -7145,6 +7324,10 @@ impl DescriptorSetLayoutCreateFlags {
     pub const UPDATE_AFTER_BIND_POOL: Self = Self(1 << 1);
     /// khr_push_descriptor
     pub const PUSH_DESCRIPTOR_KHR: Self = Self(1 << 0);
+    /// ext_descriptor_indexing
+    pub const UPDATE_AFTER_BIND_POOL_EXT: Self = Self::UPDATE_AFTER_BIND_POOL;
+    /// valve_mutable_descriptor_type
+    pub const HOST_ONLY_POOL_VALVE: Self = Self::HOST_ONLY_POOL_EXT;
     /// ext_mutable_descriptor_type
     pub const HOST_ONLY_POOL_EXT: Self = Self(1 << 2);
 }
@@ -7164,6 +7347,10 @@ impl SubpassDescriptionFlags {
     /// qcom_render_pass_shader_resolve
     pub const FRAGMENT_REGION_QCOM: Self = Self(1 << 2);
     pub const SHADER_RESOLVE_QCOM: Self = Self(1 << 3);
+    /// arm_rasterization_order_attachment_access
+    pub const RASTERIZATION_ORDER_ATTACHMENT_COLOR_ACCESS_ARM: Self = Self::RASTERIZATION_ORDER_ATTACHMENT_COLOR_ACCESS_EXT;
+    pub const RASTERIZATION_ORDER_ATTACHMENT_DEPTH_ACCESS_ARM: Self = Self::RASTERIZATION_ORDER_ATTACHMENT_DEPTH_ACCESS_EXT;
+    pub const RASTERIZATION_ORDER_ATTACHMENT_STENCIL_ACCESS_ARM: Self = Self::RASTERIZATION_ORDER_ATTACHMENT_STENCIL_ACCESS_EXT;
     /// ext_rasterization_order_attachment_access
     pub const RASTERIZATION_ORDER_ATTACHMENT_COLOR_ACCESS_EXT: Self = Self(1 << 4);
     pub const RASTERIZATION_ORDER_ATTACHMENT_DEPTH_ACCESS_EXT: Self = Self(1 << 5);
@@ -7202,6 +7389,8 @@ pub struct FramebufferCreateFlags(pub u32);
 impl FramebufferCreateFlags {
     /// vk12
     pub const IMAGELESS: Self = Self(1 << 0);
+    /// khr_imageless_framebuffer
+    pub const IMAGELESS_KHR: Self = Self::IMAGELESS;
 }
 crate::bitflags_impl! {
     FramebufferCreateFlags : u32, 0x1, IMAGELESS
@@ -7214,6 +7403,8 @@ pub struct EventCreateFlags(pub u32);
 impl EventCreateFlags {
     /// vk13
     pub const DEVICE_ONLY: Self = Self(1 << 0);
+    /// khr_synchronization2
+    pub const DEVICE_ONLY_KHR: Self = Self::DEVICE_ONLY;
 }
 crate::bitflags_impl! {
     EventCreateFlags : u32, 0x1, DEVICE_ONLY
@@ -7236,6 +7427,8 @@ crate::bitflags_impl! {
 #[repr(transparent)]
 pub struct PipelineColorBlendStateCreateFlags(pub u32);
 impl PipelineColorBlendStateCreateFlags {
+    /// arm_rasterization_order_attachment_access
+    pub const RASTERIZATION_ORDER_ATTACHMENT_ACCESS_ARM: Self = Self::RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXT;
     /// ext_rasterization_order_attachment_access
     pub const RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXT: Self = Self(1 << 0);
 }
@@ -7249,6 +7442,9 @@ crate::bitflags_impl! {
 #[repr(transparent)]
 pub struct PipelineDepthStencilStateCreateFlags(pub u32);
 impl PipelineDepthStencilStateCreateFlags {
+    /// arm_rasterization_order_attachment_access
+    pub const RASTERIZATION_ORDER_ATTACHMENT_DEPTH_ACCESS_ARM: Self = Self::RASTERIZATION_ORDER_ATTACHMENT_DEPTH_ACCESS_EXT;
+    pub const RASTERIZATION_ORDER_ATTACHMENT_STENCIL_ACCESS_ARM: Self = Self::RASTERIZATION_ORDER_ATTACHMENT_STENCIL_ACCESS_EXT;
     /// ext_rasterization_order_attachment_access
     pub const RASTERIZATION_ORDER_ATTACHMENT_DEPTH_ACCESS_EXT: Self = Self(1 << 0);
     pub const RASTERIZATION_ORDER_ATTACHMENT_STENCIL_ACCESS_EXT: Self = Self(1 << 1);

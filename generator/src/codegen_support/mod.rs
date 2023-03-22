@@ -49,6 +49,7 @@ pub fn get_command_kind(params: &[Declaration], ctx: &Context) -> CommandKind {
     CommandKind::Entry
 }
 
+#[derive(Debug)]
 pub struct AddedVariants<'a> {
     pub source_section: UniqueStr,
     pub applicable: bool,
@@ -62,28 +63,26 @@ pub fn get_enum_added_variants(ctx: &Context) -> HashMap<UniqueStr, Vec<AddedVar
         .reg
         .features
         .iter()
-        .map(|f| (ctx.conf.is_feature_used(f.name), f.name, &f.children));
+        .map(|f| (ctx.conf.is_feature_used(f.name), false, f.name, &f.children));
     let extensions = ctx
         .reg
         .extensions
         .iter()
         .filter(|e| e.kind != ExtensionKind::Disabled)
         .map(|e| {
-            (
-                ctx.conf.is_extension_used(e.name)
-                // when an extention is promoted to core, all its enum values are copied into a
-                // feature <require> thus variants from the extensions are no longer applicable if
-                // this occurs note that this isn't done for constants because extensions specify
-                // their name and version that way
-                && !e.promotedto
-                    .map(|core| ctx.conf.is_feature_used(core))
-                    .unwrap_or(false),
-                e.name,
-                &e.children,
-            )
+            // when an extention is promoted to core, all its enum values are copied into a feature <require>
+            // so variants from the extensions are no longer neccessary to be generated
+            // if this occurs note that this isn't done for constants because extensions specify their name and version that way
+            let promoted = e
+                .promotedto
+                .map(|core| ctx.conf.is_feature_used(core))
+                .unwrap_or(false);
+            let enabled = ctx.conf.is_extension_used(e.name);
+
+            (enabled, promoted, e.name, &e.children)
         });
 
-    for (applicable, section_name, children) in features.chain(extensions) {
+    for (enabled, _, section_name, children) in features.chain(extensions) {
         for item in children {
             match item {
                 FeatureExtensionItem::Comment(_) => {}
@@ -94,10 +93,11 @@ pub fn get_enum_added_variants(ctx: &Context) -> HashMap<UniqueStr, Vec<AddedVar
                     feature,
                     items,
                 } => {
-                    let applicable = applicable
+                    let applicable = enabled
                         && !skip_conf_conditions(
                             api, *extension, None, *feature, *profile, &ctx.conf,
                         );
+
                     'outer: for item in items {
                         match item {
                             InterfaceItem::Simple { .. } => {}
@@ -108,13 +108,12 @@ pub fn get_enum_added_variants(ctx: &Context) -> HashMap<UniqueStr, Vec<AddedVar
                             } => {
                                 let entry = enum_supplements.entry(extends).or_insert(Vec::new());
 
-                                let add = (name, value);
-
-                                // we deduplicate the variants here, because khronos was so nice to willingly put
+                                // we must deduplicate enum variants here, because khronos was so nice to willingly put
                                 // duplicates in the registry, like VK_STRUCTURE_TYPE_DEVICE_GROUP_PRESENT_CAPABILITIES_KHR
-                                'middle: for added in &mut *entry {
+                                // an applicable source overrides one that is not applicable, otherwise the one to be added first wins
+                                'dedup: for added in entry.iter_mut() {
                                     for i in 0..added.variants.len() {
-                                        let &(n, _) = &added.variants[i];
+                                        let (n, _) = added.variants[i];
                                         if n == name {
                                             if !applicable {
                                                 continue 'outer;
@@ -123,7 +122,7 @@ pub fn get_enum_added_variants(ctx: &Context) -> HashMap<UniqueStr, Vec<AddedVar
                                             // we remove it and overwrite it with the current one, otherwise we skip this one
                                             else if !added.applicable {
                                                 added.variants.remove(i);
-                                                break 'middle;
+                                                break 'dedup;
                                             } else {
                                                 continue;
                                             }
@@ -134,12 +133,12 @@ pub fn get_enum_added_variants(ctx: &Context) -> HashMap<UniqueStr, Vec<AddedVar
                                 if let Some(a) =
                                     entry.iter_mut().find(|a| a.source_section == section_name)
                                 {
-                                    a.variants.push(add);
+                                    a.variants.push((name, value));
                                 } else {
                                     entry.push(AddedVariants {
                                         source_section: section_name,
                                         applicable: applicable,
-                                        variants: vec![add],
+                                        variants: vec![(name, value)],
                                     });
                                 }
                             }

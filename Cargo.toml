@@ -9,3 +9,7 @@ exclude = [
     "codegen-template",
     "pumice"
 ]
+
+[profile.release]
+# the generator is already fast enough, enabling this because just I've been bitten by a silent overflow
+overflow-checks = true

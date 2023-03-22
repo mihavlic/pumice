@@ -1417,6 +1417,8 @@ impl DescriptorUpdateTemplateType {
     pub const DESCRIPTOR_SET: Self = Self(0);
     /// khr_push_descriptor
     pub const PUSH_DESCRIPTORS_KHR: Self = Self(1);
+    /// khr_descriptor_update_template
+    pub const DESCRIPTOR_SET_KHR: Self = Self::DESCRIPTOR_SET;
 }
 crate::enum_impl! {
     DescriptorUpdateTemplateType : i32, DESCRIPTOR_SET, PUSH_DESCRIPTORS_KHR
@@ -1455,6 +1457,14 @@ impl ExternalMemoryHandleTypeFlags {
     pub const D3D11_TEXTURE_KMT: Self = Self(1 << 4);
     pub const D3D12_HEAP: Self = Self(1 << 5);
     pub const D3D12_RESOURCE: Self = Self(1 << 6);
+    /// khr_external_memory_capabilities
+    pub const OPAQUE_FD_KHR: Self = Self::OPAQUE_FD;
+    pub const OPAQUE_WIN32_KHR: Self = Self::OPAQUE_WIN32;
+    pub const OPAQUE_WIN32_KMT_KHR: Self = Self::OPAQUE_WIN32_KMT;
+    pub const D3D11_TEXTURE_KHR: Self = Self::D3D11_TEXTURE;
+    pub const D3D11_TEXTURE_KMT_KHR: Self = Self::D3D11_TEXTURE_KMT;
+    pub const D3D12_HEAP_KHR: Self = Self::D3D12_HEAP;
+    pub const D3D12_RESOURCE_KHR: Self = Self::D3D12_RESOURCE;
     /// ext_external_memory_dma_buf
     pub const DMA_BUF_EXT: Self = Self(1 << 9);
     /// android_external_memory_android_hardware_buffer
@@ -1482,6 +1492,10 @@ impl ExternalMemoryFeatureFlags {
     pub const DEDICATED_ONLY: Self = Self(1 << 0);
     pub const EXPORTABLE: Self = Self(1 << 1);
     pub const IMPORTABLE: Self = Self(1 << 2);
+    /// khr_external_memory_capabilities
+    pub const DEDICATED_ONLY_KHR: Self = Self::DEDICATED_ONLY;
+    pub const EXPORTABLE_KHR: Self = Self::EXPORTABLE;
+    pub const IMPORTABLE_KHR: Self = Self::IMPORTABLE;
 }
 crate::bitflags_impl! {
     ExternalMemoryFeatureFlags : u32, 0x7, DEDICATED_ONLY, EXPORTABLE, IMPORTABLE
@@ -1498,6 +1512,12 @@ impl ExternalSemaphoreHandleTypeFlags {
     pub const D3D12_FENCE: Self = Self(1 << 3);
     pub const D3D11_FENCE: Self = Self::D3D12_FENCE;
     pub const SYNC_FD: Self = Self(1 << 4);
+    /// khr_external_semaphore_capabilities
+    pub const OPAQUE_FD_KHR: Self = Self::OPAQUE_FD;
+    pub const OPAQUE_WIN32_KHR: Self = Self::OPAQUE_WIN32;
+    pub const OPAQUE_WIN32_KMT_KHR: Self = Self::OPAQUE_WIN32_KMT;
+    pub const D3D12_FENCE_KHR: Self = Self::D3D12_FENCE;
+    pub const SYNC_FD_KHR: Self = Self::SYNC_FD;
     /// fuchsia_external_semaphore
     pub const ZIRCON_EVENT_FUCHSIA: Self = Self(1 << 7);
 }
@@ -1513,6 +1533,9 @@ pub struct ExternalSemaphoreFeatureFlags(pub u32);
 impl ExternalSemaphoreFeatureFlags {
     pub const EXPORTABLE: Self = Self(1 << 0);
     pub const IMPORTABLE: Self = Self(1 << 1);
+    /// khr_external_semaphore_capabilities
+    pub const EXPORTABLE_KHR: Self = Self::EXPORTABLE;
+    pub const IMPORTABLE_KHR: Self = Self::IMPORTABLE;
 }
 crate::bitflags_impl! {
     ExternalSemaphoreFeatureFlags : u32, 0x3, EXPORTABLE, IMPORTABLE
@@ -1524,6 +1547,8 @@ crate::bitflags_impl! {
 pub struct SemaphoreImportFlags(pub u32);
 impl SemaphoreImportFlags {
     pub const TEMPORARY: Self = Self(1 << 0);
+    /// khr_external_semaphore
+    pub const TEMPORARY_KHR: Self = Self::TEMPORARY;
 }
 crate::bitflags_impl! {
     SemaphoreImportFlags : u32, 0x1, TEMPORARY
@@ -1538,6 +1563,11 @@ impl ExternalFenceHandleTypeFlags {
     pub const OPAQUE_WIN32: Self = Self(1 << 1);
     pub const OPAQUE_WIN32_KMT: Self = Self(1 << 2);
     pub const SYNC_FD: Self = Self(1 << 3);
+    /// khr_external_fence_capabilities
+    pub const OPAQUE_FD_KHR: Self = Self::OPAQUE_FD;
+    pub const OPAQUE_WIN32_KHR: Self = Self::OPAQUE_WIN32;
+    pub const OPAQUE_WIN32_KMT_KHR: Self = Self::OPAQUE_WIN32_KMT;
+    pub const SYNC_FD_KHR: Self = Self::SYNC_FD;
 }
 crate::bitflags_impl! {
     ExternalFenceHandleTypeFlags : u32, 0xf, OPAQUE_FD, OPAQUE_WIN32, OPAQUE_WIN32_KMT,
@@ -1551,6 +1581,9 @@ pub struct ExternalFenceFeatureFlags(pub u32);
 impl ExternalFenceFeatureFlags {
     pub const EXPORTABLE: Self = Self(1 << 0);
     pub const IMPORTABLE: Self = Self(1 << 1);
+    /// khr_external_fence_capabilities
+    pub const EXPORTABLE_KHR: Self = Self::EXPORTABLE;
+    pub const IMPORTABLE_KHR: Self = Self::IMPORTABLE;
 }
 crate::bitflags_impl! {
     ExternalFenceFeatureFlags : u32, 0x3, EXPORTABLE, IMPORTABLE
@@ -1562,6 +1595,8 @@ crate::bitflags_impl! {
 pub struct FenceImportFlags(pub u32);
 impl FenceImportFlags {
     pub const TEMPORARY: Self = Self(1 << 0);
+    /// khr_external_fence
+    pub const TEMPORARY_KHR: Self = Self::TEMPORARY;
 }
 crate::bitflags_impl! {
     FenceImportFlags : u32, 0x1, TEMPORARY
@@ -1576,6 +1611,11 @@ impl PeerMemoryFeatureFlags {
     pub const COPY_DST: Self = Self(1 << 1);
     pub const GENERIC_SRC: Self = Self(1 << 2);
     pub const GENERIC_DST: Self = Self(1 << 3);
+    /// khr_device_group
+    pub const COPY_SRC_KHR: Self = Self::COPY_SRC;
+    pub const COPY_DST_KHR: Self = Self::COPY_DST;
+    pub const GENERIC_SRC_KHR: Self = Self::GENERIC_SRC;
+    pub const GENERIC_DST_KHR: Self = Self::GENERIC_DST;
 }
 crate::bitflags_impl! {
     PeerMemoryFeatureFlags : u32, 0xf, COPY_SRC, COPY_DST, GENERIC_SRC, GENERIC_DST
@@ -1590,6 +1630,11 @@ impl MemoryAllocateFlags {
     /// vk12
     pub const DEVICE_ADDRESS: Self = Self(1 << 1);
     pub const DEVICE_ADDRESS_CAPTURE_REPLAY: Self = Self(1 << 2);
+    /// khr_device_group
+    pub const DEVICE_MASK_KHR: Self = Self::DEVICE_MASK;
+    /// khr_buffer_device_address
+    pub const DEVICE_ADDRESS_KHR: Self = Self::DEVICE_ADDRESS;
+    pub const DEVICE_ADDRESS_CAPTURE_REPLAY_KHR: Self = Self::DEVICE_ADDRESS_CAPTURE_REPLAY;
 }
 crate::bitflags_impl! {
     MemoryAllocateFlags : u32, 0x7, DEVICE_MASK, DEVICE_ADDRESS,
@@ -1603,6 +1648,9 @@ pub struct PointClippingBehavior(pub i32);
 impl PointClippingBehavior {
     pub const ALL_CLIP_PLANES: Self = Self(0);
     pub const USER_CLIP_PLANES_ONLY: Self = Self(1);
+    /// khr_maintenance2
+    pub const ALL_CLIP_PLANES_KHR: Self = Self::ALL_CLIP_PLANES;
+    pub const USER_CLIP_PLANES_ONLY_KHR: Self = Self::USER_CLIP_PLANES_ONLY;
 }
 crate::enum_impl! {
     PointClippingBehavior : i32, ALL_CLIP_PLANES, USER_CLIP_PLANES_ONLY
@@ -1615,6 +1663,9 @@ pub struct TessellationDomainOrigin(pub i32);
 impl TessellationDomainOrigin {
     pub const UPPER_LEFT: Self = Self(0);
     pub const LOWER_LEFT: Self = Self(1);
+    /// khr_maintenance2
+    pub const UPPER_LEFT_KHR: Self = Self::UPPER_LEFT;
+    pub const LOWER_LEFT_KHR: Self = Self::LOWER_LEFT;
 }
 crate::enum_impl! {
     TessellationDomainOrigin : i32, UPPER_LEFT, LOWER_LEFT
@@ -1630,6 +1681,12 @@ impl SamplerYcbcrModelConversion {
     pub const YCBCR_709: Self = Self(2);
     pub const YCBCR_601: Self = Self(3);
     pub const YCBCR_2020: Self = Self(4);
+    /// khr_sampler_ycbcr_conversion
+    pub const RGB_IDENTITY_KHR: Self = Self::RGB_IDENTITY;
+    pub const YCBCR_IDENTITY_KHR: Self = Self::YCBCR_IDENTITY;
+    pub const YCBCR_709_KHR: Self = Self::YCBCR_709;
+    pub const YCBCR_601_KHR: Self = Self::YCBCR_601;
+    pub const YCBCR_2020_KHR: Self = Self::YCBCR_2020;
 }
 crate::enum_impl! {
     SamplerYcbcrModelConversion : i32, RGB_IDENTITY, YCBCR_IDENTITY, YCBCR_709,
@@ -1643,6 +1700,9 @@ pub struct SamplerYcbcrRange(pub i32);
 impl SamplerYcbcrRange {
     pub const ITU_FULL: Self = Self(0);
     pub const ITU_NARROW: Self = Self(1);
+    /// khr_sampler_ycbcr_conversion
+    pub const ITU_FULL_KHR: Self = Self::ITU_FULL;
+    pub const ITU_NARROW_KHR: Self = Self::ITU_NARROW;
 }
 crate::enum_impl! {
     SamplerYcbcrRange : i32, ITU_FULL, ITU_NARROW
@@ -1655,6 +1715,9 @@ pub struct ChromaLocation(pub i32);
 impl ChromaLocation {
     pub const COSITED_EVEN: Self = Self(0);
     pub const MIDPOINT: Self = Self(1);
+    /// khr_sampler_ycbcr_conversion
+    pub const COSITED_EVEN_KHR: Self = Self::COSITED_EVEN;
+    pub const MIDPOINT_KHR: Self = Self::MIDPOINT;
 }
 crate::enum_impl! {
     ChromaLocation : i32, COSITED_EVEN, MIDPOINT

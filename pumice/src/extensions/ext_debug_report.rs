@@ -96,8 +96,12 @@ impl DebugReportObjectTypeEXT {
     /// nvx_binary_import
     pub const CU_MODULE_NVX: Self = Self(1000029000);
     pub const CU_FUNCTION_NVX: Self = Self(1000029001);
+    /// khr_descriptor_update_template
+    pub const DESCRIPTOR_UPDATE_TEMPLATE_KHR: Self = Self::DESCRIPTOR_UPDATE_TEMPLATE;
     /// khr_acceleration_structure
     pub const ACCELERATION_STRUCTURE_KHR: Self = Self(1000150000);
+    /// khr_sampler_ycbcr_conversion
+    pub const SAMPLER_YCBCR_CONVERSION_KHR: Self = Self::SAMPLER_YCBCR_CONVERSION;
     /// nv_ray_tracing
     pub const ACCELERATION_STRUCTURE_NV: Self = Self(1000165000);
     /// fuchsia_buffer_collection

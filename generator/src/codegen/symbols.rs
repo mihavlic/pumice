@@ -284,24 +284,24 @@ pub fn write_symbol(
             // Vec<source section, name, value>
             let mut members = member_iter.chain(supl_iter).collect::<Vec<_>>();
 
-            // Vulkan enums allow for some variant to be an alias of another these are mostly used
-            // for backwards compatibility when some enum is promoted to core, the _KHR and such
+            // Vulkan enums allow for some variant to be an alias of another. These are mostly used
+            // for backwards compatibility - when some enum is promoted to core, the _KHR and such
             // variants remain. However if we are only generating the extensions which used to have
-            // these variants natively we may happen to not generate the core version that currently
-            // has the actual variants of which these are aliases. Thus we only "softly" no-generate
-            // these variants and here we look for aliases to softly removed ("not applicable")
-            // variants and if this happens we replace the alias to its supposed value
+            // these variants natively we may happen to not generate the core version that has the
+            // actual variants of which these are aliases. Thus we only "softly" remove these
+            // variants and now we look for aliases to softly removed ("not applicable") variants
+            // and if this happens we replace the alias to its supposed value
             for (_, _, val) in &mut members {
                 'propagate: loop {
                     match val {
+                        // if the variant is an alias, we find the alias target and if it's not applicable,
+                        // we "inline" its variant value into this variant, we then loop around and repeat this
+                        // in the case of chained aliases
                         ConstantValue::Symbol(target) => {
                             for added in supl.into_iter().flatten() {
                                 for &(name, other_val) in &added.variants {
                                     if name == *target {
                                         if !added.applicable {
-                                            // if the variant has a value that is an alias of another variant,
-                                            // we must "inline" the variant, we then loop and match the value again
-                                            // because it is possible that it's just another alias of a not applicable variant
                                             *val = other_val;
                                             continue 'propagate;
                                         } else {
@@ -326,6 +326,7 @@ pub fn write_symbol(
             for i in 0..members.len() {
                 let (_, a_name, mut a_val) = members[i];
 
+                // we find the concrete value of the variant
                 while let ConstantValue::Symbol(to) = a_val {
                     a_val = members
                         .iter()
@@ -336,6 +337,7 @@ pub fn write_symbol(
                         .2;
                 }
 
+                // compare our concrete value against all other members
                 for j in (i + 1)..members.len() {
                     let (b_ext, b_name, mut b_val) = members[j];
 
