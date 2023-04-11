@@ -4,12 +4,12 @@ VULKAN_DOCS="https://raw.githubusercontent.com/KhronosGroup/Vulkan-Docs/main"
 
 if ! test -f "vk.xml"; then
     echo Downloading vk.xml
-    wget "$VULKAN_DOCS/xml/vk.xml" 2> /dev/null
+    curl "$VULKAN_DOCS/xml/vk.xml" > vk.xml
 fi
 
 if ! test -f "video.xml"; then
     echo Downloading video.xml
-    wget "$VULKAN_DOCS/xml/video.xml" 2> /dev/null
+    curl "$VULKAN_DOCS/xml/video.xml" > video.xml
 fi
 
 if test -z "$1"; then
