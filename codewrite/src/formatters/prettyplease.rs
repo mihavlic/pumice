@@ -1,4 +1,8 @@
-use std::{fmt::Write, mem::ManuallyDrop, thread::panicking};
+use std::{
+    fmt::{self, Write},
+    mem::ManuallyDrop,
+    thread::panicking,
+};
 
 use crate::WriteLast;
 
@@ -24,7 +28,7 @@ impl<W: std::fmt::Write> PrettyFormatter<W> {
     }
 }
 
-pub fn format_pretty_or_fallback<W: Write>(src: &str, mut writer: W) -> syn::Result<()> {
+pub fn format_pretty_or_fallback<W: fmt::Write>(src: &str, mut writer: W) -> syn::Result<()> {
     let syn_file = match syn::parse_file(&src) {
         Ok(f) => f,
         Err(mut e) => {

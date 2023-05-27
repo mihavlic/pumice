@@ -23,7 +23,6 @@ pub fn write_deep_copy(derives: &mut DeriveData, out: &Path, ctx: &Rc<Context>) 
     let mut w = SectionWriter::new(
         ctx.create_section("deep_copy"),
         out.join("src/deep_copy.rs"),
-        true,
         &ctx,
     );
 

@@ -13,7 +13,6 @@ fn main() {
     let vk_xml = &args[0];
     let video_xml = &args[1];
     let glue = &args[2];
-    let out = &args[3];
     let sections = &args[4]
         .to_str()
         .expect("Expected a comma separated list of ascii identifiers for section selection.");
@@ -55,13 +54,7 @@ VK_EXT_directfb_surface,
 VK_QNX_screen_surface,",
         ));
 
-        Some(
-            _tmp.as_ref()
-                .unwrap()
-                .split(',')
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty()),
-        )
+        Some(_tmp.as_ref().unwrap().split_ascii_whitespace())
     };
     let (feature, extensions) = get_sections(selected, &reg);
 
@@ -75,5 +68,5 @@ VK_QNX_screen_surface,",
 
     let ctx = Context::new(conf, reg);
 
-    write_bindings(ctx, glue, out);
+    write_bindings(ctx, glue.as_ref());
 }

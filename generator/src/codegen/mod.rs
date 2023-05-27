@@ -14,7 +14,6 @@ use crate::codegen_support::{
 };
 use crate::context::{Context, SectionFunctions};
 use crate::context::{Section, SectionKind};
-use crate::fs_utils::{copy_dir_recursive, delete_dir_children};
 use crate::{cat, cstring, doc_boilerplate, fun, import, import_str, string};
 
 use codewrite::{Cond, Iter, Separated};
@@ -37,37 +36,34 @@ use std::{
 
 use self::symbols::write_symbol;
 
-pub fn write_bindings(mut ctx: Context, template: &dyn AsRef<Path>, out: &dyn AsRef<Path>) {
-    let out = out.as_ref();
+pub fn write_bindings(mut ctx: Context, out: &Path) {
+    // {
+    //     std::fs::create_dir_all(out).unwrap();
+    //     for entry in std::fs::read_dir(out).unwrap() {
+    //         let path = entry.unwrap().path();
+    //         if path.is_dir() {
+    //             std::fs::remove_dir_all(path).unwrap();
+    //         } else {
+    //             std::fs::remove_file(path).unwrap();
+    //         }
+    //     }
 
-    {
-        std::fs::create_dir_all(out).unwrap();
-        for entry in std::fs::read_dir(out).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                std::fs::remove_dir_all(path).unwrap();
-            } else {
-                std::fs::remove_file(path).unwrap();
-            }
-        }
+    //     delete_dir_children(out).unwrap();
+    //     std::fs::create_dir_all(out.join("src/extensions")).unwrap();
+    //     copy_dir_recursive(out, out).unwrap();
+    // }
 
-        delete_dir_children(out).unwrap();
-        std::fs::create_dir_all(out.join("src/extensions")).unwrap();
-        copy_dir_recursive(template, out).unwrap();
-    }
-
-    // we need to replace the name field of the template
-    // form "pumice-template" to "template"
-    // cargo fully crawls git crates and parses all Cargo.tomls regardless of whether their crates
-    // are well formed, so we need the template to have a different name on-disk
-    // see https://github.com/rust-lang/cargo/issues/1462
-    {
-        let cargo_toml = out.join("Cargo.toml");
-        let contents = std::fs::read_to_string(&cargo_toml)
-            .unwrap()
-            .replace("pumice-template", "pumice");
-        std::fs::write(&cargo_toml, contents).unwrap();
-    }
+    // // form "pumice-template" to "template"
+    // // cargo fully crawls git crates and parses all Cargo.tomls regardless of whether their crates
+    // // are well formed, so we need the template to have a different name on-disk
+    // // see https://github.com/rust-lang/cargo/issues/1462
+    // {
+    //     let cargo_toml = out.join("Cargo.toml");
+    //     let contents = std::fs::read_to_string(&cargo_toml)
+    //         .unwrap()
+    //         .replace("pumice-template", "pumice");
+    //     std::fs::write(&cargo_toml, contents).unwrap();
+    // }
 
     // manually input sections and their contained symbols for the template handwritten files
     macro_rules! manual_symbols {
@@ -278,7 +274,7 @@ fn write_sections(
             path.push(section.name().resolve());
             path.set_extension("rs");
 
-            SectionWriter::new(section.ident.clone(), &path, false, ctx)
+            SectionWriter::new(section.ident.clone(), &path, ctx)
         };
 
         for &(symbol, _) in symbols {
@@ -300,7 +296,6 @@ fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Rc<Context>) 
     let mut tables = SectionWriter::new(
         ctx.create_section("tables"),
         out.join("src/loader/tables.rs"),
-        true,
         &ctx,
     );
     // (index of owning section, name of function, actual name of function)
@@ -567,7 +562,6 @@ fn write_pnext_visit(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Rc<Conte
     let mut pnext = SectionWriter::new(
         ctx.create_section("pnext"),
         out.join("src/util/pnext.rs"),
-        false,
         ctx,
     );
 
@@ -605,7 +599,7 @@ fn write_vk_module(
     out: &Path,
     ctx: &Rc<Context>,
 ) {
-    let mut vk = SectionWriter::new(ctx.create_section("vk"), out.join("src/vk.rs"), false, &ctx);
+    let mut vk = SectionWriter::new(ctx.create_section("vk"), out.join("src/vk.rs"), &ctx);
     for feature in features {
         code!(
             vk,
@@ -626,7 +620,6 @@ fn write_extension_metadata(extensions: &[&Extension], out: &Path, ctx: &Rc<Cont
     let mut meta = SectionWriter::new(
         ctx.create_section("metadata"),
         out.join("src/extensions/metadata.rs"),
-        true,
         &ctx,
     );
     let exts = fun!(|w| {
@@ -684,16 +677,10 @@ fn write_wrappers(
     out: &Path,
     ctx: &Rc<Context>,
 ) {
-    let mut lib = SectionWriter::new(
-        ctx.create_section("lib"),
-        out.join("src/lib.rs"),
-        true,
-        &ctx,
-    );
+    let mut lib = SectionWriter::new(ctx.create_section("lib"), out.join("src/lib.rs"), &ctx);
     let mut exts = SectionWriter::new(
         ctx.create_section("extensions"),
         out.join("src/extensions/mod.rs"),
-        true,
         &ctx,
     );
     code!(
@@ -780,7 +767,6 @@ fn write_access_flags_util(out: &Path, ctx: &Rc<Context>) {
     let mut lib = SectionWriter::new(
         ctx.create_section("access"),
         out.join("src/util/access.rs"),
-        false,
         &ctx,
     );
 
@@ -848,7 +834,6 @@ fn pipeline_stage_flags_util(out: &Path, ctx: &Rc<Context>) {
     let mut lib = SectionWriter::new(
         ctx.create_section("access"),
         out.join("src/util/stage.rs"),
-        false,
         &ctx,
     );
 
@@ -1018,7 +1003,6 @@ fn write_format_util(out: &Path, ctx: &Rc<Context>) {
     let mut lib = SectionWriter::new(
         ctx.create_section("format"),
         out.join("src/util/format.rs"),
-        true,
         &ctx,
     );
 

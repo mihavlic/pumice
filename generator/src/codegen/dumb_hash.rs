@@ -24,7 +24,6 @@ pub fn write_dumb_hash(derives: &mut DeriveData, out: &Path, ctx: &Rc<Context>) 
     let mut w = SectionWriter::new(
         ctx.create_section("dumb_hash"),
         out.join("src/dumb_hash.rs"),
-        true,
         &ctx,
     );
 

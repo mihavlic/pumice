@@ -1,6 +1,5 @@
 use std::{
     fmt::Write,
-    fs::OpenOptions,
     iter,
     ops::Deref,
     path::{Path, PathBuf},
@@ -8,9 +7,7 @@ use std::{
     thread::panicking,
 };
 
-use codewrite::{
-    formatters::prettyplease::format_pretty_or_fallback, CFmt, Format2Format, WriteLast,
-};
+use codewrite::{formatters::prettyplease::format_pretty_or_fallback, CFmt, WriteLast};
 use generator_lib::{
     interner::UniqueStr,
     type_declaration::{fmt_type_tokens_impl, BasetypeOrRef, Type, TypeRef},
@@ -23,7 +20,6 @@ pub struct SectionWriter {
     buf: String,
     pub ctx: Rc<Context>,
     pub path: PathBuf,
-    pub append: bool,
 }
 
 impl WriteLast for SectionWriter {
@@ -39,38 +35,47 @@ impl std::fmt::Write for SectionWriter {
 }
 
 impl SectionWriter {
-    pub fn new(
-        section: SectionIdent,
-        path: impl AsRef<Path>,
-        append: bool,
-        ctx: &Rc<Context>,
-    ) -> Self {
+    pub fn new(section: SectionIdent, path: impl AsRef<Path>, ctx: &Rc<Context>) -> Self {
         Self {
             section,
             buf: String::new(),
             ctx: ctx.clone(),
             path: path.as_ref().to_path_buf(),
-            append,
         }
     }
     pub fn save(&self) -> Result<(), String> {
-        let file = if self.append && self.path.exists() {
-            OpenOptions::new()
-                .append(true)
-                .write(true)
-                .open(&self.path)
-                .map_err(|e| format!("Error opening '{}': {e}", self.path.to_string_lossy()))?
-        } else {
-            std::fs::File::create(&self.path)
-                .map_err(|e| format!("Error creating '{}': {e}", self.path.to_string_lossy()))?
-        };
+        let mut string = String::new();
 
-        format_pretty_or_fallback(&self.buf, &mut Format2Format(file)).map_err(|e| {
+        if self.path.exists() {
+            string = std::fs::read_to_string(&self.path)
+                .map_err(|e| format!("Error opening '{}': {e}", self.path.to_string_lossy()))?;
+
+            if let Some(found) = string.find("// CODEGEN START") {
+                string.truncate(found);
+            } else {
+                // we assume that if the file doesn't contain the string, it will be wholly generated
+                string.clear();
+            }
+
+            string.push_str("// CODEGEN START\n\n");
+        }
+
+        format_pretty_or_fallback(&self.buf, &mut string).map_err(|e| {
             format!(
                 "Failed to parse syn file intended for '{}'\nErr: {e}",
                 self.path.to_string_lossy()
             )
-        })
+        })?;
+
+        std::fs::create_dir_all(self.path.parent().unwrap()).map_err(|e| {
+            format!(
+                "Failed to create_dir_all() '{}'\nErr: {e}",
+                self.path.to_string_lossy()
+            )
+        })?;
+
+        std::fs::write(&self.path, &string)
+            .map_err(|e| format!("Error writing '{}': {e}", self.path.to_string_lossy()))
     }
     pub fn pop_last_character(&mut self) {
         self.buf.pop();
