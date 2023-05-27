@@ -176,3 +176,5 @@ impl DeviceLoader {
         }
     }
 }
+
+// CODEGEN START

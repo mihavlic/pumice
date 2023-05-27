@@ -40,6 +40,9 @@ impl std::fmt::Display for vk::Result {
         write!(f, "{:?}", self)
     }
 }
+
+// CODEGEN START
+
 pub mod vk;
 pub mod vk10;
 pub mod vk11;

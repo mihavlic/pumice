@@ -172,3 +172,5 @@ impl<'a> Iterator for ExtensionIterator<'a> {
         None
     }
 }
+
+// CODEGEN START

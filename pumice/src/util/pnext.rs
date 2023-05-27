@@ -1,3 +1,7 @@
+
+
+// CODEGEN START
+
 #[macro_export]
 macro_rules! pnext_visit {
     ($pnext:expr, $stype:ident, $object:ident, $op:expr) => {

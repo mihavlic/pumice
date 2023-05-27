@@ -246,3 +246,5 @@ pub fn enumerate_required_extensions(
 
     Some(extensions)
 }
+
+// CODEGEN START

@@ -1,4 +1,7 @@
 pub mod metadata;
+
+// CODEGEN START
+
 pub mod amd_buffer_marker;
 pub mod amd_device_coherent_memory;
 pub mod amd_display_native_hdr;

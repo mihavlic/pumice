@@ -321,6 +321,9 @@ fn test() {
         )
     }
 }
+
+// CODEGEN START
+
 unsafe impl DeepCopy for crate::vk10::BaseOutStructure {
     fn measure(&self, measure: &mut CopyMeasure) {
         unsafe {

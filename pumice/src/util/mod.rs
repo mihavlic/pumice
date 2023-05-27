@@ -27,3 +27,5 @@ macro_rules! vkcall {
         $crate::new_result((), raw)
     }};
 }
+
+// CODEGEN START

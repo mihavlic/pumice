@@ -43,6 +43,9 @@ impl FormatAspectBits {
         bits / 8
     }
 }
+
+// CODEGEN START
+
 impl crate::vk10::Format {
     pub fn get_format_aspects(
         self,

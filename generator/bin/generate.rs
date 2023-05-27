@@ -12,8 +12,8 @@ fn main() {
 
     let vk_xml = &args[0];
     let video_xml = &args[1];
-    let glue = &args[2];
-    let sections = &args[4]
+    let template = &args[2];
+    let sections = &args[3]
         .to_str()
         .expect("Expected a comma separated list of ascii identifiers for section selection.");
 
@@ -28,33 +28,15 @@ fn main() {
     process_registry_xml(&mut reg, &video_xml, None);
 
     reg.finalize();
+    let sections = sections.replace(
+        "@surface",
+        "VK_KHR_swapchain VK_KHR_surface VK_KHR_xlib_surface VK_KHR_xcb_surface VK_KHR_wayland_surface VK_KHR_mir_surface VK_KHR_android_surface VK_KHR_win32_surface VK_GGP_stream_descriptor_surface VK_NN_vi_surface VK_MVK_ios_surface VK_MVK_macos_surface VK_FUCHSIA_imagepipe_surface VK_EXT_metal_surface VK_EXT_headless_surface VK_EXT_directfb_surface VK_QNX_screen_surface",
+    );
 
-    let mut _tmp = None;
     let selected = if sections.contains("@all") {
         None
     } else {
-        _tmp = Some(sections.replace(
-            "@surface",
-            "VK_KHR_swapchain,
-VK_KHR_surface,
-VK_KHR_xlib_surface,
-VK_KHR_xcb_surface,
-VK_KHR_wayland_surface,
-VK_KHR_mir_surface,
-VK_KHR_android_surface,
-VK_KHR_win32_surface,
-VK_GGP_stream_descriptor_surface,
-VK_NN_vi_surface,
-VK_MVK_ios_surface,
-VK_MVK_macos_surface,
-VK_FUCHSIA_imagepipe_surface,
-VK_EXT_metal_surface,
-VK_EXT_headless_surface,
-VK_EXT_directfb_surface,
-VK_QNX_screen_surface,",
-        ));
-
-        Some(_tmp.as_ref().unwrap().split_ascii_whitespace())
+        Some(sections.split_ascii_whitespace())
     };
     let (feature, extensions) = get_sections(selected, &reg);
 
@@ -68,5 +50,5 @@ VK_QNX_screen_surface,",
 
     let ctx = Context::new(conf, reg);
 
-    write_bindings(ctx, glue.as_ref());
+    write_bindings(ctx, template.as_ref());
 }

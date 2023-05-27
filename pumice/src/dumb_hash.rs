@@ -158,6 +158,9 @@ macro_rules! dumb_hash_passthrough_impl {
         )+
     };
 }
+
+// CODEGEN START
+
 impl DumbHash for crate::vk10::BaseOutStructure {
     fn hash<H: Hasher>(&self, state: &mut H) {
         unsafe {

@@ -14,6 +14,9 @@ pub fn get_metadata(name: &CStr) -> Option<&'static ExtensionMetadata> {
         .ok()?;
     Some(&EXTENSION_METADATA[index])
 }
+
+// CODEGEN START
+
 pub const EXTENSION_METADATA: &[ExtensionMetadata] = &[
     ExtensionMetadata {
         name: crate::cstr!("VK_AMD_buffer_marker"),
