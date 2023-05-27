@@ -43,3 +43,5 @@ impl FormatAspectBits {
         bits / 8
     }
 }
+
+// CODEGEN START

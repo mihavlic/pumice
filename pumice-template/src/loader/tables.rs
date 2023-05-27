@@ -25,3 +25,5 @@ impl<T, const S: usize> ConstZeroedHack<T, S> {
         std::mem::ManuallyDrop::into_inner(Self { bytes: [0; S] }.inner)
     }
 }
+
+// CODEGEN START

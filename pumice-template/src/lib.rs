@@ -40,3 +40,5 @@ impl std::fmt::Display for vk::Result {
         write!(f, "{:?}", self)
     }
 }
+
+// CODEGEN START

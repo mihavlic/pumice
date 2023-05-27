@@ -14,3 +14,5 @@ pub fn get_metadata(name: &CStr) -> Option<&'static ExtensionMetadata> {
         .ok()?;
     Some(&EXTENSION_METADATA[index])
 }
+
+// CODEGEN START

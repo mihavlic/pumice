@@ -158,3 +158,5 @@ macro_rules! dumb_hash_passthrough_impl {
         )+
     };
 }
+
+// CODEGEN START
