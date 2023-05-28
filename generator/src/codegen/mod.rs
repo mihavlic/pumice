@@ -37,33 +37,16 @@ use std::{
 use self::symbols::write_symbol;
 
 pub fn write_bindings(mut ctx: Context, out: &Path) {
-    // {
-    //     std::fs::create_dir_all(out).unwrap();
-    //     for entry in std::fs::read_dir(out).unwrap() {
-    //         let path = entry.unwrap().path();
-    //         if path.is_dir() {
-    //             std::fs::remove_dir_all(path).unwrap();
-    //         } else {
-    //             std::fs::remove_file(path).unwrap();
-    //         }
-    //     }
-
-    //     delete_dir_children(out).unwrap();
-    //     std::fs::create_dir_all(out.join("src/extensions")).unwrap();
-    //     copy_dir_recursive(out, out).unwrap();
-    // }
-
-    // // form "pumice-template" to "template"
-    // // cargo fully crawls git crates and parses all Cargo.tomls regardless of whether their crates
-    // // are well formed, so we need the template to have a different name on-disk
-    // // see https://github.com/rust-lang/cargo/issues/1462
-    // {
-    //     let cargo_toml = out.join("Cargo.toml");
-    //     let contents = std::fs::read_to_string(&cargo_toml)
-    //         .unwrap()
-    //         .replace("pumice-template", "pumice");
-    //     std::fs::write(&cargo_toml, contents).unwrap();
-    // }
+    // remove all files in pumice/src/* which do not have a CODEGEN START
+    // which is assumed to mean that they are wholly generated,
+    // we will be writing them from scratch anyway, so it's a good idea to clean the directory first
+    // to prevent us from accumulating unused files in case their name changes
+    crate::fs_utils::for_all_files(&out.join("src"), |path| {
+        let contents = std::fs::read_to_string(path).unwrap();
+        if contents.find("// CODEGEN START").is_none() {
+            std::fs::remove_file(path).unwrap();
+        }
+    });
 
     // manually input sections and their contained symbols for the template handwritten files
     macro_rules! manual_symbols {

@@ -1,14 +1,5 @@
 [workspace]
-members = [
-    "generator",
-    "generator-lib",
-    "codewrite-macro",
-    "codewrite",
-    "pumice"
-]
-exclude = [
-    "codegen-template",
-]
+members = ["generator", "generator-lib", "codewrite-macro", "codewrite", "pumice"]
 
 [profile.release]
 # the generator is already fast enough, enabling this because just I've been bitten by a silent overflow

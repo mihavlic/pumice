@@ -1,68 +1,20 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::Path;
 
-/// https://stackoverflow.com/a/60406693
-pub fn copy_dir_recursive<U: AsRef<Path>, V: AsRef<Path>>(
-    from: U,
-    to: V,
-) -> Result<(), std::io::Error> {
-    let mut stack = Vec::new();
-    stack.push(PathBuf::from(from.as_ref()));
-
-    let output_root = PathBuf::from(to.as_ref());
-    let input_root = PathBuf::from(from.as_ref()).components().count();
-
-    while let Some(working_path) = stack.pop() {
-        // println!("process: {:?}", &working_path);
-
-        // Generate a relative path
-        let src: PathBuf = working_path.components().skip(input_root).collect();
-
-        // Create a destination if missing
-        let dest = if src.components().count() == 0 {
-            output_root.clone()
-        } else {
-            output_root.join(&src)
-        };
-
-        if fs::metadata(&dest).is_err() {
-            // println!(" mkdir: {:?}", dest);
-            fs::create_dir_all(&dest)?;
-        }
-
-        for entry in fs::read_dir(working_path)? {
-            let path = entry?.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else {
-                match path.file_name() {
-                    Some(filename) => {
-                        let dest_path = dest.join(filename);
-                        // println!("  copy: {:?} -> {:?}", &path, &dest_path);
-                        fs::copy(&path, &dest_path)?;
-                    }
-                    None => {
-                        panic!("Failed to get path of '{:?}'", path);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(())
+pub fn for_all_files(path: impl AsRef<Path>, mut fun: impl FnMut(&Path)) {
+    for_all_files_inner(path.as_ref(), &mut fun)
 }
 
-pub fn delete_dir_children(path: impl AsRef<Path>) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(path)? {
-        let path = entry?.path();
+fn for_all_files_inner(path: &Path, mut fun: &mut dyn FnMut(&Path)) {
+    assert!(path.is_dir());
 
-        if path.is_dir() {
-            std::fs::remove_dir_all(path)?;
-        } else {
-            std::fs::remove_file(path)?;
+    let dir = std::fs::read_dir(path).unwrap();
+    for path in dir.map(Result::unwrap) {
+        let meta = path.metadata().unwrap();
+        let path = path.path();
+        if meta.is_file() {
+            fun(&path);
+        } else if meta.is_dir() {
+            for_all_files(&path, &mut fun);
         }
     }
-    Ok(())
 }
