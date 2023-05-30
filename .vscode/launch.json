@@ -7,25 +7,6 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug unit tests in library 'generator'",
-            "cargo": {
-                "args": [
-                    "test",
-                    "--no-run",
-                    "--lib",
-                    "--package=generator"
-                ],
-                "filter": {
-                    "name": "generator",
-                    "kind": "lib"
-                }
-            },
-            "args": [],
-            "cwd": "${workspaceFolder}"
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
             "name": "Debug executable 'generate'",
             "cargo": {
                 "args": [
@@ -41,105 +22,10 @@
             "args": [
                 "${workspaceRoot}/vk.xml",
                 "${workspaceRoot}/video.xml",
-                "${workspaceRoot}/pumice-template",
                 "${workspaceRoot}/pumice",
                 "@all"
             ],
             "cwd": "${workspaceFolder}",
         },
-        {
-            "type": "lldb",
-            "request": "launch",
-            "name": "Debug unit tests in executable 'generate'",
-            "cargo": {
-                "args": [
-                    "test",
-                    "--no-run",
-                    "--bin=generate",
-                    "--package=generator"
-                ],
-                "filter": {
-                    "name": "generate",
-                    "kind": "bin"
-                }
-            },
-            "args": [],
-            "cwd": "${workspaceFolder}"
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
-            "name": "Debug executable 'dump'",
-            "cargo": {
-                "args": [
-                    "build",
-                    "--bin=dump",
-                    "--package=generator"
-                ],
-                "filter": {
-                    "name": "dump",
-                    "kind": "bin"
-                }
-            },
-            "args": [],
-            "cwd": "${workspaceFolder}"
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
-            "name": "Debug unit tests in executable 'dump'",
-            "cargo": {
-                "args": [
-                    "test",
-                    "--no-run",
-                    "--bin=dump",
-                    "--package=generator"
-                ],
-                "filter": {
-                    "name": "dump",
-                    "kind": "bin"
-                }
-            },
-            "args": [],
-            "cwd": "${workspaceFolder}"
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
-            "name": "Debug unit tests in library 'generator-lib'",
-            "cargo": {
-                "args": [
-                    "test",
-                    "--no-run",
-                    "--lib",
-                    "--package=generator-lib"
-                ],
-                "filter": {
-                    "name": "generator-lib",
-                    "kind": "lib"
-                }
-            },
-            "args": [],
-            "cwd": "${workspaceFolder}"
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
-            "name": "Debug unit tests in library 'vulkan-bindings'",
-            "cargo": {
-                "args": [
-                    "test",
-                    "--no-run",
-                    "--lib",
-                    "--package=vulkan-bindings"
-                ],
-                "filter": {
-                    "name": "vulkan-bindings",
-                    "kind": "lib"
-                }
-            },
-            "args": [],
-            "cwd": "${workspaceFolder}"
-        }
     ]
 }

@@ -1,54 +1,58 @@
-use std::{collections::HashSet, env::args_os, fs::read_to_string};
-
-use dependencies::get_sections;
+use std::{env::args_os, fs::read_to_string};
 
 use generator::{codegen::write_bindings, context::Context};
-use generator_lib::{configuration::GenConfig, interner::Intern, process_registry_xml, Registry};
+use generator_lib::{configuration::GenConfig, Registry};
 
-mod dependencies;
+struct SimpleLogger;
+impl log::Log for SimpleLogger {
+    fn enabled(&self, _: &log::Metadata) -> bool {
+        true
+    }
+
+    fn log(&self, record: &log::Record) {
+        let severity = record.level();
+        eprint!("{severity} ");
+        // if let Some(module) = record.module_path() {
+        //     eprint!("{module}::");
+        // }
+        if let Some(file) = record.file() {
+            eprint!("{file}");
+        }
+        if let Some(line) = record.line() {
+            eprint!(":{line}");
+        }
+        eprint!(" ");
+        eprintln!("{}", record.args());
+    }
+
+    fn flush(&self) {
+        // stderr is not buffered
+    }
+}
 
 fn main() {
+    log::set_logger(&SimpleLogger).unwrap();
+    log::set_max_level(log::LevelFilter::Trace);
+
     let args = args_os().skip(1).take(5).collect::<Vec<_>>();
 
     let vk_xml = &args[0];
     let video_xml = &args[1];
-    let template = &args[2];
-    let sections = &args[3]
-        .to_str()
-        .expect("Expected a comma separated list of ascii identifiers for section selection.");
+    let out = &args[2];
 
     let mut reg = Registry::new();
+    let conf = GenConfig::full(&reg);
 
     let vk_xml = read_to_string(vk_xml)
         .unwrap_or_else(|_| panic!("Failed to read {}", vk_xml.to_string_lossy()));
-    process_registry_xml(&mut reg, &vk_xml, None);
-
     let video_xml = read_to_string(video_xml)
         .unwrap_or_else(|_| panic!("Failed to read {}", video_xml.to_string_lossy()));
-    process_registry_xml(&mut reg, &video_xml, None);
 
+    reg.append_registry_xml(&vk_xml, &conf);
+    reg.append_registry_xml(&video_xml, &conf);
     reg.finalize();
-    let sections = sections.replace(
-        "@surface",
-        "VK_KHR_swapchain VK_KHR_surface VK_KHR_xlib_surface VK_KHR_xcb_surface VK_KHR_wayland_surface VK_KHR_mir_surface VK_KHR_android_surface VK_KHR_win32_surface VK_GGP_stream_descriptor_surface VK_NN_vi_surface VK_MVK_ios_surface VK_MVK_macos_surface VK_FUCHSIA_imagepipe_surface VK_EXT_metal_surface VK_EXT_headless_surface VK_EXT_directfb_surface VK_QNX_screen_surface",
-    );
 
-    let selected = if sections.contains("@all") {
-        None
-    } else {
-        Some(sections.split_ascii_whitespace())
-    };
-    let (feature, extensions) = get_sections(selected, &reg);
+    let ctx = Context::new(reg, conf);
 
-    let conf = GenConfig {
-        extensions,
-        feature,
-        profile: None,
-        apis: HashSet::from(["vulkan".intern(&reg)]),
-        protect: HashSet::new(),
-    };
-
-    let ctx = Context::new(conf, reg);
-
-    write_bindings(ctx, template.as_ref());
+    write_bindings(ctx, out.as_ref());
 }

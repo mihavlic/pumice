@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt::Write;
 
 use super::{type_analysis::get_underlying_symbol, AddedVariants};
-use crate::{context::Context, switch};
+use crate::context::Context;
 use generator_lib::{
     interner::{Intern, UniqueStr},
     Declaration, Symbol, SymbolBody,
@@ -64,7 +64,7 @@ pub fn apply_renames(added_variants: &HashMap<UniqueStr, Vec<AddedVariants>>, ct
         extension.name.rename(buf.intern(ctx));
     }
 
-    'outer: for &(i, _) in &ctx.symbols {
+    'outer: for &(i, _) in &ctx.used_symbols {
         let Symbol(name, _) = &ctx.reg.symbols[i];
 
         let str = name.resolve();
@@ -95,7 +95,7 @@ pub fn apply_renames(added_variants: &HashMap<UniqueStr, Vec<AddedVariants>>, ct
 
     // collect all enums that alias a given other enum
     let mut enum_aliases: HashMap<UniqueStr, Vec<UniqueStr>> = HashMap::new();
-    for &(i, _) in &ctx.symbols {
+    for &(i, _) in &ctx.used_symbols {
         let &Symbol(name, ref body) = &ctx.reg.symbols[i];
 
         match body {
@@ -112,7 +112,7 @@ pub fn apply_renames(added_variants: &HashMap<UniqueStr, Vec<AddedVariants>>, ct
         }
     }
 
-    for &(i, _) in &ctx.symbols {
+    for &(i, _) in &ctx.used_symbols {
         let &Symbol(name, ref body) = &ctx.reg.symbols[i];
 
         match body {
@@ -185,11 +185,7 @@ pub fn apply_renames(added_variants: &HashMap<UniqueStr, Vec<AddedVariants>>, ct
     }
 
     for (enum_name, added) in added_variants {
-        for variants in added {
-            if !variants.applicable {
-                continue;
-            }
-
+        for v in added {
             // can't do this, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR creates ambiguity
             // // for example VK_KHR_push_descriptor
             // let tag = variants.source_extension.resolve_original().split('_').nth(1).unwrap();
@@ -199,28 +195,26 @@ pub fn apply_renames(added_variants: &HashMap<UniqueStr, Vec<AddedVariants>>, ct
             //     None
             // };
 
-            for &(name, _) in &variants.variants {
-                make_enum_member_rusty(
-                    enum_name.resolve_original(),
-                    name.resolve_original(),
-                    true,
-                    &mut buf,
-                );
+            make_enum_member_rusty(
+                enum_name.resolve_original(),
+                v.name.resolve_original(),
+                true,
+                &mut buf,
+            );
 
-                // let result = tag.and_then(|t| buf.strip_suffix(t).map(|s| s.trim_end_matches('_')) ).unwrap_or(&buf);
-                name.rename(buf.intern(&ctx));
-            }
+            // let result = tag.and_then(|t| buf.strip_suffix(t).map(|s| s.trim_end_matches('_')) ).unwrap_or(&buf);
+            v.name.rename(buf.intern(&ctx));
         }
     }
 }
 
+#[rustfmt::skip]
 pub fn is_tag_name(s: &str) -> bool {
-    switch!(
-        s;
-        "KHR", "EXT", "NV", "AMD", "VALVE", "IMG", "AMDX", "ARM", "FSL", "BRCM", "NXP", "NVX", "VIV", "VSI", "KDAB", "ANDROID", "CHROMIUM",
-        "FUCHSIA", "GGP", "GOOGLE", "QCOM", "LUNARG", "NZXT", "SAMSUNG", "SEC", "TIZEN", "RENDERDOC", "NN", "MVK",
-        "KHX", "MESA", "INTEL", "HUAWEI", "QNX", "JUICE", "FB", "RASTERGRID" => true;
-        @ false
+    matches!(
+        s,
+        "KHR" | "EXT" | "NV" | "AMD" | "VALVE" | "IMG" | "AMDX" | "ARM" | "FSL" | "BRCM" | "NXP" | "NVX" | "VIV" | "VSI" | "KDAB" | "ANDROID" | "CHROMIUM" |
+        "FUCHSIA" | "GGP" | "GOOGLE" | "QCOM" | "LUNARG" | "NZXT" | "SAMSUNG" | "SEC" | "TIZEN" | "RENDERDOC" | "NN" | "MVK" |
+        "KHX" | "MESA" | "INTEL" | "HUAWEI" | "QNX" | "JUICE" | "FB" | "RASTERGRID"
     )
 }
 

@@ -3,7 +3,7 @@
 
 use std::{
     collections::{hash_map::Entry, HashMap},
-    fmt::Debug,
+    fmt::{Debug, Display},
     ops::Deref,
 };
 
@@ -154,8 +154,87 @@ pub enum ExtensionKind {
     None,
 }
 
+/// https://registry.khronos.org/vulkan/specs/1.3/registry.html#_attributes_of_extension_tags
+/// Looking forward to when Khronos requires P=NP in vk.xml
+#[derive(Clone)]
+pub enum DependsExpr {
+    All(Vec<DependsExpr>),
+    Any(Vec<DependsExpr>),
+    /// Name of an extension or core version, it will be a rust feature
+    Feature(UniqueStr),
+}
+
+impl DependsExpr {
+    pub fn merge_with_any(a: &DependsExpr, b: &DependsExpr) -> DependsExpr {
+        let mut any = Vec::new();
+        if let DependsExpr::Any(a) = a {
+            any.extend(a.iter().cloned());
+        } else {
+            any.push(a.clone());
+        }
+
+        if let DependsExpr::Any(b) = b {
+            any.extend(b.iter().cloned());
+        } else {
+            any.push(b.clone());
+        }
+
+        DependsExpr::Any(any)
+    }
+    pub fn merge_with_all(a: &DependsExpr, b: &DependsExpr) -> DependsExpr {
+        let mut all = Vec::new();
+        if let DependsExpr::All(a) = a {
+            all.extend(a.iter().cloned());
+        } else {
+            all.push(a.clone());
+        }
+
+        if let DependsExpr::All(b) = b {
+            all.extend(b.iter().cloned());
+        } else {
+            all.push(b.clone());
+        }
+
+        DependsExpr::All(all)
+    }
+}
+
+impl Display for DependsExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DependsExpr::All(a) => {
+                write!(f, "all(")?;
+                for (i, inner) in a.iter().enumerate() {
+                    if i != 0 {
+                        write!(f, ", ")?;
+                    }
+                    Display::fmt(inner, f)?;
+                }
+                write!(f, ")")
+            }
+            DependsExpr::Any(a) => {
+                write!(f, "any(")?;
+                for (i, inner) in a.iter().enumerate() {
+                    if i != 0 {
+                        write!(f, ", ")?;
+                    }
+                    Display::fmt(inner, f)?;
+                }
+                write!(f, ")")
+            }
+            DependsExpr::Feature(name) => write!(f, "feature = {name:?}"),
+        }
+    }
+}
+
+impl Debug for DependsExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(self, f)
+    }
+}
+
 // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html#_attributes_of_extension_tags
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct Extension {
     pub name: UniqueStr,
     pub number: u32,
@@ -164,8 +243,7 @@ pub struct Extension {
     pub contact: Option<String>,
 
     pub kind: ExtensionKind,
-    pub requires: Vec<UniqueStr>,
-    pub requires_core: Option<UniqueStr>,
+    pub depends: Option<DependsExpr>,
     pub protect: Option<UniqueStr>,
     pub platform: Option<UniqueStr>,
     pub supported: Vec<UniqueStr>,
@@ -234,13 +312,9 @@ pub enum FeatureExtensionItem {
     Comment(String),
     // consider splitting this off
     Require {
-        profile: Option<UniqueStr>,
-        // The api attribute is only supported inside extension tags, since feature tags already define a specific API.
+        // The api attribute is only supported inside extension tags
         api: Vec<UniqueStr>,
-        // The extension attribute currently does not affect output generators in any way, and is simply metadata. This will be addressed as we better define different types of dependencies between extensions.
-        // bruh
-        extension: Option<UniqueStr>,
-        feature: Option<UniqueStr>,
+        depends: Option<DependsExpr>,
         items: Vec<InterfaceItem>,
     },
     Remove {
@@ -493,9 +567,18 @@ impl Registry {
     pub fn get_item_entry(&self, name: UniqueStr) -> Option<&(u32, ItemKind)> {
         self.item_map.get(&name)
     }
+    /// Parses the xml and adds the definition of all items to itself
+    ///
+    /// Call this for both vk.xml and video.xml
+    pub fn append_registry_xml(&mut self, xml: &str, conf: &GenConfig) {
+        process_registry_xml(self, xml, conf);
+    }
+    /// Renames *all* occurences  of *FlagBits to *Flags
+    ///
+    /// Call this after calling [`Self::append_registry_xml()`]
     pub fn finalize(&mut self) {
         let mut fun = |str: &mut UniqueStr| {
-            if let Some((flags, _)) = self.flag_bits_to_flags.get(&*str) {
+            if let Some((flags, _)) = self.flag_bits_to_flags.get(str) {
                 *str = *flags;
             }
         };
@@ -613,65 +696,55 @@ fn node_collect_text(n: Node, buf: &mut String) {
     }
 }
 
-fn api_guard_skip(node: Node, conf: Option<&GenConfig>, int: &Interner) -> bool {
-    if let Some(conf) = conf {
-        if let Some(str) = node.attribute("api") {
-            for api in iter_comma_separated(str, int) {
-                if conf.is_api_used(api) {
-                    return false;
-                }
+fn api_guard_skip(node: Node, conf: &GenConfig, int: &Interner) -> bool {
+    if let Some(str) = node.attribute("api") {
+        for api in iter_comma_separated(str, int) {
+            if conf.is_api_used(api) {
+                return false;
             }
+        }
+        return true;
+    }
+    false
+}
+
+fn try_skip(n: Node, conf: &GenConfig, int: &Interner) -> bool {
+    let apis = n.attribute("api").or_else(|| n.attribute("supported"));
+    if let Some(str) = apis {
+        if iter_comma_separated(str, int).all(|api| !conf.is_api_used(api)) {
             return true;
         }
     }
-    false
-}
 
-fn try_skip(n: Node, conf: Option<&GenConfig>, int: &Interner) -> bool {
-    if let Some(conf) = conf {
-        let apis = n.attribute("api").or_else(|| n.attribute("supported"));
-        if let Some(str) = apis {
-            let mut tmp = false;
-            for api in iter_comma_separated(str, int) {
-                if conf.is_api_used(api) {
-                    tmp = true;
-                    break;
-                }
-            }
-            if tmp == false {
-                return true;
-            }
-        }
-
-        if let Some(protect) = n.attribute("protect").map(|s| s.intern(int)) {
-            if !conf.is_protect_used(protect) {
-                return true;
-            }
-        }
-
-        if let Some(profile) = n.attribute("profile").map(|s| s.intern(int)) {
-            if !conf.is_profile_used(profile) {
-                return true;
-            }
-        }
-
-        let tag_name = n.tag_name().name();
-        if tag_name == "feature" {
-            let name = n.intern("name", int);
-            if !conf.is_feature_used(name) {
-                return true;
-            }
-        } else if tag_name == "extension" {
-            let name = n.intern("name", int);
-            if !conf.is_extension_used(name) {
-                return true;
-            }
+    if let Some(protect) = n.attribute("protect").map(|s| s.intern(int)) {
+        if !conf.is_protect_used(protect) {
+            return true;
         }
     }
+
+    if let Some(profile) = n.attribute("profile").map(|s| s.intern(int)) {
+        if !conf.is_profile_used(profile) {
+            return true;
+        }
+    }
+
+    let tag_name = n.tag_name().name();
+    if tag_name == "feature" {
+        let name = n.intern("name", int);
+        if !conf.is_feature_used(name) {
+            return true;
+        }
+    } else if tag_name == "extension" {
+        let name = n.intern("name", int);
+        if !conf.is_extension_used(name) {
+            return true;
+        }
+    }
+
     false
 }
 
-pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConfig>) {
+fn process_registry_xml(reg: &mut Registry, xml: &str, conf: &GenConfig) {
     let doc = roxmltree::Document::parse(xml).unwrap();
 
     let r = doc
@@ -883,11 +956,9 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConf
                         // </type>
                         Some("funcpointer") => {
                             // must parse C code, thanks khronos
+                            // the xml doesn't actually capture the whole structure of the type, it's actually easier to collect all the text into a String and parse it manually
                             // all 9 instances of this follow this structure:
                             // typedef 'return type' (VKAPI_PTR *'ptr type')($('argument type'),*)
-
-                            // since the incredible way that the xml is structured, pointer syntax and const decorations are not specially marked
-                            // thus it actually becomes easier to collect all the text into a String and parse it manually
 
                             let mut brackets = {
                                 buf.clear();
@@ -915,8 +986,7 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConf
                             for arg in args_text.split(',') {
                                 // QUIRK
                                 //   the signature `typedef void (VKAPI_PTR *PFN_vkVoidFunction)(void);`
-                                //   has no arguments yet we try to parse them, for this one case we check the argument text
-
+                                //   defines a function with no arguments (C syntax quirk)
                                 if arg == "void" {
                                     continue;
                                 }
@@ -947,7 +1017,7 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConf
                         //   </member>
                         // </type>
                         // <type category="struct" name="VkImageStencilUsageCreateInfoEXT" alias="VkImageStencilUsageCreateInfo"/>
-                        category @ Some("struct" | "union") => {
+                        Some(category @ ("struct" | "union")) => {
                             let mut members = Vec::new();
 
                             for m in node_iter_children(t) {
@@ -961,7 +1031,7 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConf
                                     continue;
                                 }
 
-                                // stolen straight from erupt, sorry
+                                // stolen straight from erupt
                                 let optional = m
                                     .attribute("optional")
                                     .map(|v| match (v.contains("true"), v.contains("false")) {
@@ -988,7 +1058,7 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConf
                             reg.add_symbol(
                                 t.intern("name", reg),
                                 SymbolBody::Struct {
-                                    union: category == Some("union"),
+                                    union: category == "union",
                                     members,
                                 },
                             );
@@ -1008,7 +1078,7 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConf
                                 continue;
                             }
 
-                            // // <enum type="uint32_t" value="256" name="VK_MAX_PHYSICAL_DEVICE_NAME_SIZE"/>
+                            // <enum type="uint32_t" value="256" name="VK_MAX_PHYSICAL_DEVICE_NAME_SIZE"/>
                             let val = guess_constant_val(e.get("value"), reg);
                             let ty = e.get("type").intern(reg);
 
@@ -1198,16 +1268,14 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConf
                 });
             }
             // <extensions comment="Vulkan extension interface definitions">
-            //     <extension name="VK_KHR_surface" number="1" type="instance" author="KHR" contact="James Jones @cubanismo,Ian Elliott @ianelliottus" supported="vulkan">
-            //         <require>
-            //             <enum value="25"                                                name="VK_KHR_SURFACE_SPEC_VERSION"/>
-            //             <enum value="&quot;VK_KHR_surface&quot;"                        name="VK_KHR_SURFACE_EXTENSION_NAME"/>
-            //             <enum offset="0" extends="VkResult" dir="-"                     name="VK_ERROR_SURFACE_LOST_KHR"/>
-            //             <enum offset="1" extends="VkResult" dir="-"                     name="VK_ERROR_NATIVE_WINDOW_IN_USE_KHR"/>
-            //             <enum offset="0" extends="VkObjectType"                         name="VK_OBJECT_TYPE_SURFACE_KHR"/>
-            //             <type name="VkSurfaceKHR"/>
-            //             <type name="VkSurfaceTransformFlagBitsKHR"/>
-            //             <type name="VkPresentModeKHR"/>
+            // <extension name="VK_KHR_display_swapchain" number="4" type="device" depends="VK_KHR_swapchain+VK_KHR_display" author="KHR" contact="James Jones @cubanismo" supported="vulkan,vulkansc" ratified="vulkan,vulkansc">
+            // <require>
+            //     <enum value="10"                                                name="VK_KHR_DISPLAY_SWAPCHAIN_SPEC_VERSION"/>
+            //     <enum value="&quot;VK_KHR_display_swapchain&quot;"              name="VK_KHR_DISPLAY_SWAPCHAIN_EXTENSION_NAME"/>
+            //     <enum offset="0" extends="VkStructureType"                      name="VK_STRUCTURE_TYPE_DISPLAY_PRESENT_INFO_KHR"/>
+            //     <enum offset="1" extends="VkResult" dir="-"                     name="VK_ERROR_INCOMPATIBLE_DISPLAY_KHR"/>
+            //     <type name="VkDisplayPresentInfoKHR"/>
+            //     <command name="vkCreateSharedSwapchainsKHR"/>
             "extensions" => {
                 for e in node_iter_children(n) {
                     if try_skip(n, conf, reg) {
@@ -1237,6 +1305,14 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConf
                         };
                     };
 
+                    let depends = e
+                        .attribute("depends")
+                        .map(|depends| {
+                            let mut chars = depends.chars();
+                            parse_depends(&mut chars, &reg)
+                        })
+                        .flatten();
+
                     reg.add_extension(Extension {
                         name,
                         // video.xml does not have this number yay!
@@ -1245,8 +1321,7 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConf
                         author: e.attribute("author").map(|s| s.to_owned()),
                         contact: e.attribute("contact").map(|s| s.to_owned()),
                         kind,
-                        requires: parse_comma_separated(e.attribute("requires"), reg),
-                        requires_core: e.attribute("requiresCore").map(|s| s.intern(reg)),
+                        depends,
                         protect,
                         platform: e.attribute("platform").map(|s| s.intern(reg)),
                         supported,
@@ -1367,9 +1442,11 @@ pub fn process_registry_xml(reg: &mut Registry, xml: &str, conf: Option<&GenConf
 fn numeric_expression_rustify(buf: &mut String) {
     // junk like '(~0ULL)' (ie. unsigned long long ie. u64) is not valid rust
     // the NOT operator is ! instead of ~ and specifying bit width is not neccessary (I hope)
-    // replace ~ with !
-    assert!(buf.is_ascii());
+
     // operating on bytes like this is safe only for ascii
+    assert!(buf.is_ascii());
+
+    // replace ~ with !
     unsafe {
         for b in buf.as_bytes_mut() {
             if *b == '~' as u8 {
@@ -1424,7 +1501,7 @@ fn convert_spirv_enable(n: Node, int: &Interner) -> Vec<SpirvEnable> {
 fn convert_section_children(
     n: Node,
     inherited_extnumber: Option<u32>,
-    conf: Option<&GenConfig>,
+    conf: &GenConfig,
     reg: &mut Registry,
 ) -> Vec<FeatureExtensionItem> {
     let mut converted = Vec::new();
@@ -1439,6 +1516,11 @@ fn convert_section_children(
 
         match child.tag_name().name() {
             "require" => {
+                let api = parse_comma_separated(child.attribute("api"), reg);
+                if !api.is_empty() && api.iter().all(|a| !conf.is_api_used(*a)) {
+                    continue;
+                }
+
                 let mut items = Vec::new();
                 for item in node_iter_children(child) {
                     let tag_name = item.tag_name().name();
@@ -1525,16 +1607,17 @@ fn convert_section_children(
                     items.push(iitem);
                 }
 
-                let profile = child.attribute("profile").map(|s| s.intern(reg));
-                let api = parse_comma_separated(child.attribute("api"), reg);
-                let extension = child.attribute("extension").map(|s| s.intern(reg));
-                let feature = child.attribute("feature").map(|s| s.intern(reg));
+                let depends = child
+                    .attribute("depends")
+                    .map(|depends| {
+                        let mut chars = depends.chars();
+                        parse_depends(&mut chars, &reg)
+                    })
+                    .flatten();
 
                 converted.push(FeatureExtensionItem::Require {
-                    profile,
                     api,
-                    extension,
-                    feature,
+                    depends,
                     items,
                 });
             }
@@ -1585,8 +1668,8 @@ fn parse_comma_separated(str: Option<&str>, int: &Interner) -> Vec<UniqueStr> {
 }
 
 fn parse_detect_radix(str: &str) -> i32 {
-    if str.len() > 2 && &str[0..2] == "0x" {
-        i32::from_str_radix(&str[2..], 16).unwrap()
+    if let Some(str) = str.strip_prefix("0x") {
+        i32::from_str_radix(str, 16).unwrap()
     } else {
         i32::from_str_radix(str, 10).unwrap()
     }
@@ -1605,4 +1688,107 @@ fn guess_constant_val(val: &str, reg: &mut Registry) -> ConstantValue {
         ConstantValue::Expression(val)
     };
     val
+}
+
+// Is this a scuffed LR parser?
+fn parse_depends(chars: &mut std::str::Chars, int: &Interner) -> Option<DependsExpr> {
+    let mut node = None;
+    let mut operator = None;
+    loop {
+        // skip whitespace
+        loop {
+            let mut clone = chars.clone();
+            let Some(peek) = clone.next() else {
+                return node;
+            };
+
+            if peek.is_ascii_whitespace() {
+                *chars = clone;
+            } else {
+                break;
+            }
+        }
+
+        let str = chars.as_str();
+        let c = chars.next().unwrap();
+
+        let mut next_node = None;
+        match c {
+            '+' => {
+                operator = Some('+');
+            }
+            ',' => {
+                operator = Some(',');
+            }
+            '(' => {
+                // no need to consume the ')', it is consumed by the recursive call
+                next_node = parse_depends(chars, int);
+                assert!(next_node.is_some());
+            }
+            ')' => {
+                return node;
+            }
+            _ => {
+                assert!((c.is_alphanumeric() || c == '_'));
+                let end = str
+                    .char_indices()
+                    .find(|(_, c)| !(c.is_alphanumeric() || *c == '_'))
+                    .map(|(e, _)| e)
+                    .unwrap_or(str.len());
+
+                let ident = &str[..end];
+
+                next_node = Some(DependsExpr::Feature(ident.intern(int)));
+                *chars = str[end..].chars();
+            }
+        }
+
+        if let Some(next_node) = next_node {
+            match operator {
+                None => {
+                    assert!(node.is_none());
+                    node = Some(next_node);
+                }
+                Some('+') => match &mut node {
+                    Some(DependsExpr::All(a)) => a.push(next_node),
+                    Some(_) => {
+                        node = Some(DependsExpr::All(vec![node.unwrap(), next_node]));
+                    }
+                    None => unreachable!(),
+                },
+                Some(',') => match &mut node {
+                    Some(DependsExpr::Any(a)) => a.push(next_node),
+                    Some(_) => {
+                        node = Some(DependsExpr::Any(vec![node.unwrap(), next_node]));
+                    }
+                    None => unreachable!(),
+                },
+                _ => unreachable!(),
+            }
+            operator = None;
+        }
+    }
+}
+
+#[test]
+fn test_parse_depends() {
+    let interner = Interner::new();
+    // the docs don't provide very much in regards to the parsing rules
+    // just "equal precedence, evaluated left to right"
+    // so uhh this is correct?
+
+    // any(
+    //     all(
+    //         any(feature = A, feature = B, feature = C),
+    //         all(feature = D, feature = E)
+    //     ),
+    //     feature = F
+    // )
+
+    let mut chars = "A,B,C+(D+E),F".chars();
+    let node = parse_depends(&mut chars, &interner).unwrap();
+    assert_eq!(
+        node.to_string(),
+        r#"any(all(any(feature = "A", feature = "B", feature = "C"), all(feature = "D", feature = "E")), feature = "F")"#
+    );
 }

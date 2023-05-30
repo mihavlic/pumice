@@ -27,7 +27,7 @@ pub fn write_deep_copy(derives: &mut DeriveData, out: &Path, ctx: &Rc<Context>) 
     );
 
     let mut value_types = Vec::new();
-    for &(symbol_index, _) in &ctx.symbols {
+    for &(symbol_index, _) in &ctx.used_symbols {
         let &Symbol(name, ref body) = &ctx.reg.symbols[symbol_index];
 
         match body {

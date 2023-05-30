@@ -28,7 +28,7 @@ pub fn write_dumb_hash(derives: &mut DeriveData, out: &Path, ctx: &Rc<Context>) 
     );
 
     let mut passthrough = Vec::new();
-    for &(symbol_index, _) in &ctx.symbols {
+    for &(symbol_index, _) in &ctx.used_symbols {
         let &Symbol(name, ref body) = &ctx.reg.symbols[symbol_index];
 
         match body {

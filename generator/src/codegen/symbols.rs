@@ -21,7 +21,7 @@ use codewrite_macro::code;
 use generator_lib::{
     interner::{Intern, UniqueStr},
     type_declaration::{TyToken, TypeRef},
-    ConstantValue, Declaration, RedeclarationMethod, SymbolBody,
+    ConstantValue, Declaration, DependsExpr, RedeclarationMethod, SymbolBody,
 };
 use std::fmt::Write;
 
@@ -48,6 +48,15 @@ pub fn write_symbol(
     let enum_impl = import_str!("enum_impl", ctx);
     let non_dispatchable_handle = import_str!("non_dispatchable_handle", ctx);
     let dispatchable_handle = import_str!("dispatchable_handle", ctx);
+
+    if let Some(meta) = ctx.get_symbol_meta(name) {
+        if let Some(depends) = &meta.depends {
+            code!(
+                w,
+                #[cfg($depends)]
+            )
+        }
+    }
 
     match body {
         &SymbolBody::Alias(of) => {
@@ -276,46 +285,33 @@ pub fn write_symbol(
                 pub struct $name(pub $ty);
             );
 
-            let member_iter = members.iter().map(|a| (name, a.0, &a.1));
-            let supl_raw_iter = supl.into_iter().flatten();
-            let supl_iter = supl_raw_iter
-                .filter(|a| a.applicable)
-                .flat_map(|a| a.variants.iter().map(|b| (a.source_section, b.0, b.1)));
+            let member_iter = members.iter().map(|a| (None, a.0, &a.1, None));
+            let supl_iter = supl.into_iter().flatten().map(|a| {
+                let section_depends = DependsExpr::Feature(a.source_section);
+                let full_depends = if let Some(depends) = a.depends.as_ref() {
+                    DependsExpr::merge_with_all(&section_depends, &depends)
+                } else {
+                    section_depends
+                };
+                (Some(a.source_section), a.name, a.value, Some(full_depends))
+            });
 
             // Vec<source section, name, value>
             let mut members = member_iter.chain(supl_iter).collect::<Vec<_>>();
 
             // Vulkan enums allow for some variant to be an alias of another. These are mostly used
             // for backwards compatibility - when some enum is promoted to core, the _KHR and such
-            // variants remain. However if we are only generating the extensions which used to have
-            // these variants natively we may happen to not generate the core version that has the
-            // actual variants of which these are aliases. Thus we only "softly" remove these
-            // variants and now we look for aliases to softly removed ("not applicable") variants
-            // and if this happens we replace the alias to its supposed value
-            for (_, _, val) in &mut members {
-                'propagate: loop {
-                    match val {
-                        // if the variant is an alias, we find the alias target and if it's not applicable,
-                        // we "inline" its variant value into this variant, we then loop around and repeat this
-                        // in the case of chained aliases
-                        ConstantValue::Symbol(target) => {
-                            for added in supl.into_iter().flatten() {
-                                for &(name, other_val) in &added.variants {
-                                    if name == *target {
-                                        if !added.applicable {
-                                            *val = other_val;
-                                            continue 'propagate;
-                                        } else {
-                                            break 'propagate;
-                                        }
-                                    }
-                                }
-                            }
+            // variants remain.
+            // we need to inline these aliased because they interact poorly with disabled extensions
+            for i in 0..members.len() {
+                let a = members[i].2;
+                if let ConstantValue::Symbol(alias) = a {
+                    let resolved = members
+                        .iter()
+                        .find(|b| b.1 == *alias)
+                        .unwrap_or_else(|| panic!("Variant {alias} not in {name}"));
 
-                            break;
-                        }
-                        _ => break,
-                    }
+                    members[i].2 = resolved.2;
                 }
             }
 
@@ -324,71 +320,61 @@ pub fn write_symbol(
             // thus we just replace their source extension with this marker
             let deleted = ctx.strings.__RESERVED_INVALID_PLACEHOLDER;
 
+            // multiple extensions may add the same variant, we merge their depends expressions
+            // and check that their value is the same
             for i in 0..members.len() {
-                let (_, a_name, mut a_val) = members[i];
+                let a = &members[i];
 
-                // we find the concrete value of the variant
-                while let ConstantValue::Symbol(to) = a_val {
-                    a_val = members
-                        .iter()
-                        .find(|m| m.1 == *to)
-                        .unwrap_or_else(|| {
-                            panic!("Variant {} not in {name}!", to.resolve_original())
-                        })
-                        .2;
+                if a.1 == deleted {
+                    continue;
                 }
 
-                // compare our concrete value against all other members
                 for j in (i + 1)..members.len() {
-                    let (b_ext, b_name, mut b_val) = members[j];
-
-                    if b_ext == deleted {
-                        continue;
-                    }
-
-                    if a_name.eq_resolve(b_name) {
-                        while let ConstantValue::Symbol(to) = b_val {
-                            b_val = members
-                                .iter()
-                                .find(|m| m.1 == *to)
-                                .unwrap_or_else(|| {
-                                    panic!("Variant {} not in {name}!", to.resolve_original())
-                                })
-                                .2;
-                        }
-
-                        if a_val == b_val {
-                            members[j].0 = deleted;
+                    let a = &members[i];
+                    let b = &members[j];
+                    if a.1 == b.1 {
+                        assert_eq!(a.2, b.2);
+                        // None <=> TRUE, since we're doing a logical OR on the expressions
+                        // if any side is None, the whole expression can be eliminated
+                        if let (Some(a_dep), Some(b_dep)) = (&a.3, &b.3) {
+                            members[i].3 = Some(DependsExpr::merge_with_any(a_dep, b_dep));
                         } else {
-                            panic!(
-                                "Duplicates '{}' and '{}' should share a value!",
-                                a_name.resolve_original(),
-                                b_name.resolve_original()
-                            )
+                            members[i].3 = None;
                         }
+                        members[j].1 = deleted;
                     }
                 }
             }
 
             // only now we can safely delete all the duplicate variants
-            members.retain(|m| m.0 != deleted);
+            members.retain(|m| m.1 != deleted);
 
-            let state = Cell::new(name);
-            let variants = Iter::new(&members, |w: &mut SectionWriter, &(ext, name, val)| {
-                if state.get() != ext {
-                    writeln!(w, "/// {ext}").unwrap();
-                    state.set(ext);
-                }
+            let state = Cell::new(None);
+            let variants = Iter::new(
+                &members,
+                |w: &mut SectionWriter, &(ext, name, val, ref depends)| {
+                    if state.get() != ext {
+                        writeln!(w, "/// {}", ext.unwrap()).unwrap();
+                        state.set(ext);
+                    }
 
-                use ConstantValue::*;
-                match val {
-                    Bitpos(pos) => code!(w, pub const $name: Self = Self(1 << $pos);),
-                    Literal(val) => code!(w, pub const $name: Self = Self($val);),
-                    Expression(str) => code!(w, pub const $name: Self = Self($str);),
-                    Symbol(alias) => code!(w, pub const $name: Self = Self::$alias;),
-                    String(_) => unreachable!(),
-                }
-            });
+                    if let Some(depends) = depends {
+                        code!(
+                            w,
+                            #[cfg($depends)]
+                        )
+                    }
+
+                    use ConstantValue::*;
+                    match val {
+                        Bitpos(pos) => code!(w, pub const $name: Self = Self(1 << $pos);),
+                        Literal(val) => code!(w, pub const $name: Self = Self($val);),
+                        Expression(str) => code!(w, pub const $name: Self = Self($str);),
+                        Symbol(alias) => code!(w, pub const $name: Self = Self::$alias;),
+                        String(_) => unreachable!(),
+                    }
+                },
+            );
 
             if !members.is_empty() {
                 code!(
@@ -408,7 +394,7 @@ pub fn write_symbol(
             );
             if *bitmask {
                 let mut all = 0;
-                for &(_, _, val) in &members {
+                for &(_, _, val, _) in &members {
                     match val {
                         &ConstantValue::Bitpos(v) => all |= 1 << v,
                         &ConstantValue::Literal(v) => all |= v,

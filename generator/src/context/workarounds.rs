@@ -1,6 +1,6 @@
-use std::fmt::Write;
+use std::{collections::hash_map::Entry, fmt::Write};
 
-use super::Context;
+use super::{Context, SectionHandle, SymbolMeta};
 use generator_lib::{
     interner::{Intern, UniqueStr},
     type_declaration::parse_type_decl,
@@ -11,7 +11,7 @@ enum Workaround {
     Remove,
     Replace(SymbolBody),
     ReplaceRequireExtendValue(ConstantValue),
-    SetOwnership(u32),
+    SetOwnership(SectionHandle),
 }
 
 fn sorted_get_all(
@@ -58,7 +58,7 @@ pub fn apply_workarounds(ctx: &mut Context) {
     let ownership = |arg: &str| -> Workaround {
         let name = arg.intern(ctx);
         Workaround::SetOwnership(
-            ctx.get_section_idx(ctx.strings.pumice..name)
+            ctx.get_section_by_name(ctx.strings.pumice..name)
                 .unwrap_or_else(|| panic!("No such section '{}'", arg)),
         )
     };
@@ -269,7 +269,7 @@ pub fn apply_workarounds(ctx: &mut Context) {
 
     {
         let vk10 = ctx
-            .get_section_idx(ctx.strings.pumice..ctx.strings.VK_VERSION_1_0)
+            .get_section_by_name(ctx.strings.pumice..ctx.strings.VK_VERSION_1_0)
             .unwrap();
 
         for base in basetypes {
@@ -308,9 +308,17 @@ pub fn apply_workarounds(ctx: &mut Context) {
                     // FIXME technically the clone here is unneccessary as each workaround will be applied only once
                     *body = with.clone();
                 }
-                Workaround::SetOwnership(section_idx) => {
-                    ctx.symbol_ownership.insert(*name, *section_idx);
-                }
+                Workaround::SetOwnership(section_idx) => match ctx.symbol_ownership.entry(*name) {
+                    Entry::Occupied(mut o) => {
+                        o.get_mut().owner = *section_idx;
+                    }
+                    Entry::Vacant(v) => {
+                        v.insert(SymbolMeta {
+                            owner: *section_idx,
+                            depends: None,
+                        });
+                    }
+                },
                 Workaround::ReplaceRequireExtendValue(_) => {}
             }
         }

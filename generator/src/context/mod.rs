@@ -6,14 +6,84 @@ use generator_lib::{
     configuration::GenConfig,
     interner::{Intern, UniqueStr},
     type_declaration::Type,
-    ExtensionKind, Registry, Symbol,
+    DependsExpr, ExtensionKind, Registry, Symbol,
 };
 use std::{
     collections::HashMap,
-    ops::{Deref, Range},
+    marker::PhantomData,
+    ops::{Deref, Index, Range},
+    rc::Rc,
 };
 
 use self::{ownership::resolve_ownership, undangle::undangle, workarounds::apply_workarounds};
+
+pub trait TypedHandle {
+    fn new(index: usize) -> Self;
+    fn index(self) -> usize;
+}
+
+macro_rules! simple_handle {
+    ($($visibility:vis $name:ident),+) => {
+        $(
+            #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+            #[repr(transparent)]
+            $visibility struct $name(u32);
+            #[allow(unused)]
+            impl TypedHandle for $name {
+                fn new(index: usize) -> Self {
+                    assert!(index <= u32::MAX as usize);
+                    Self(index as u32)
+                }
+                #[inline]
+                fn index(self) -> usize {
+                    self.0 as usize
+                }
+            }
+        )+
+    };
+}
+
+pub struct HandleVec<H, T>(Vec<T>, PhantomData<H>);
+
+impl<H: TypedHandle, T> HandleVec<H, T> {
+    pub fn new() -> Self {
+        HandleVec(Vec::new(), PhantomData)
+    }
+    pub fn with_capacity(capacity: usize) -> Self {
+        HandleVec(Vec::with_capacity(capacity), PhantomData)
+    }
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    pub fn push(&mut self, value: T) -> H {
+        let len = self.0.len();
+        self.0.push(value);
+        H::new(len)
+    }
+    pub fn get(&self, index: H) -> Option<&T> {
+        self.0.get(index.index())
+    }
+    pub fn iter(&self) -> std::slice::Iter<'_, T> {
+        self.0.iter()
+    }
+    pub fn iter_kv(
+        &self,
+    ) -> impl Iterator<Item = (H, &T)> + Clone + ExactSizeIterator + DoubleEndedIterator {
+        self.0.iter().enumerate().map(|(i, t)| (H::new(i), t))
+    }
+    pub fn iter_keys(
+        &self,
+    ) -> impl Iterator<Item = H> + Clone + ExactSizeIterator + DoubleEndedIterator {
+        (0..self.len()).map(H::new)
+    }
+}
+
+impl<H: TypedHandle, T> Index<H> for HandleVec<H, T> {
+    type Output = T;
+    fn index(&self, index: H) -> &Self::Output {
+        &self.0[index.index()]
+    }
+}
 
 macro_rules! common_strings {
     ($($string:ident),+ $(@ $($name:ident: $string2:literal),+)?) => {
@@ -97,29 +167,36 @@ common_types! {
     bool: "bool"
 }
 
+simple_handle!(
+    pub SectionHandle
+);
+
+pub struct SymbolMeta {
+    pub owner: SectionHandle,
+    pub depends: Option<Rc<DependsExpr>>,
+}
+
 pub struct Context {
     pub reg: Registry,
     pub conf: GenConfig,
-    pub symbols: Vec<(usize, u32)>,
-    pub symbol_ownership: HashMap<UniqueStr, u32>,
-    pub sections: Vec<Section>,
-    // previously we had sorted the sections vector and then binary searched thta
-    // however the ownership algorithm is order sensitive and this may potentially
-    // cause issues later, instead we now have a hashmap
+    pub used_symbols: Vec<(usize, SectionHandle)>,
+    pub symbol_ownership: HashMap<UniqueStr, SymbolMeta>,
+    pub sections: HandleVec<SectionHandle, Section>,
+    // however the ownership algorithm is order sensitive so we must preserve the order in which sections are declared in the registry
     // (section name, section's index in self.sections)
-    pub section_map: HashMap<SectionIdent, u32>,
+    pub section_map: HashMap<QualifiedSectionName, SectionHandle>,
     pub strings: CommonStrings,
     pub types: CommonTypes,
 }
 
 impl Context {
-    pub fn new(conf: GenConfig, reg: Registry) -> Self {
+    pub fn new(reg: Registry, conf: GenConfig) -> Self {
         let sections_len = reg.features.len() + reg.extensions.len();
 
         let mut s = Self {
-            symbols: Vec::new(),
+            used_symbols: Vec::new(),
             symbol_ownership: HashMap::new(),
-            sections: Vec::with_capacity(sections_len),
+            sections: HandleVec::with_capacity(sections_len),
             section_map: HashMap::with_capacity(sections_len),
             strings: CommonStrings::new(&reg),
             types: CommonTypes::new(&reg),
@@ -143,19 +220,17 @@ impl Context {
                 });
             }
 
-            s.section_map.extend(
-                s.sections
-                    .iter()
-                    .enumerate()
-                    .map(|(i, e)| (e.ident.clone(), i as u32)),
-            );
+            s.section_map
+                .extend(s.sections.iter_kv().map(|(i, e)| (e.ident.clone(), i)));
         }
 
+        // apply some manual fixes to the collected item soup
         apply_workarounds(&mut s);
+        // assign a "section" (an extensions or core version) to every item in the registry
         resolve_ownership(&mut s);
 
         // all the symbols that we will be generating
-        s.symbols = get_used_symbols(&s);
+        s.used_symbols = get_used_symbols(&s);
 
         // some aliases may point at symbols that are not getting generated due to the config
         // so we must propagate them to the aliases that are actually getting generated
@@ -163,18 +238,20 @@ impl Context {
 
         s
     }
-    pub fn get_section_idx(&self, ident: SectionIdent) -> Option<u32> {
-        self.section_map.get(&ident).cloned()
+    pub fn get_section_by_name(&self, ident: QualifiedSectionName) -> Option<SectionHandle> {
+        self.section_map.get(&ident).copied()
     }
-    pub fn get_section(&self, ident: SectionIdent) -> Option<&Section> {
-        self.sections.get(self.get_section_idx(ident)? as usize)
+    pub fn get_section_body_by_name(&self, ident: QualifiedSectionName) -> Option<&Section> {
+        self.sections.get(self.get_section_by_name(ident)?)
     }
-    pub fn symbol_get_section_idx(&self, name: UniqueStr) -> Option<u32> {
-        self.symbol_ownership.get(&name).cloned()
+    pub fn get_symbol_section(&self, name: UniqueStr) -> Option<SectionHandle> {
+        self.symbol_ownership.get(&name).map(|s| s.owner)
     }
-    pub fn symbol_get_section(&self, name: UniqueStr) -> Option<&Section> {
-        self.sections
-            .get(self.symbol_get_section_idx(name)? as usize)
+    pub fn get_symbol_meta(&self, name: UniqueStr) -> Option<&SymbolMeta> {
+        self.symbol_ownership.get(&name)
+    }
+    pub fn get_symbol_section_body(&self, name: UniqueStr) -> Option<&Section> {
+        self.sections.get(self.get_symbol_section(name)?)
     }
     pub fn remove_symbol(&mut self, name: UniqueStr) {
         self.reg.remove_symbol(name);
@@ -182,34 +259,48 @@ impl Context {
     }
     pub fn register_section(&mut self, section: Section) {
         assert!(!self.section_map.contains_key(&section.ident));
-        self.section_map
-            .insert(section.ident.clone(), self.sections.len() as u32);
+        self.section_map.insert(
+            section.ident.clone(),
+            SectionHandle::new(self.sections.len()),
+        );
         self.sections.push(section);
     }
     pub fn section_add_symbols(
         &mut self,
-        ident: SectionIdent,
+        ident: QualifiedSectionName,
         symbols: impl IntoIterator<Item = UniqueStr>,
     ) {
-        let index = *self.section_map.get(&ident).unwrap();
+        let section = *self.section_map.get(&ident).unwrap();
         for symbol in symbols {
             assert!(!self.symbol_ownership.contains_key(&symbol));
-            self.symbol_ownership.insert(symbol, index);
+            self.symbol_ownership.insert(
+                symbol,
+                SymbolMeta {
+                    owner: section,
+                    depends: None,
+                },
+            );
         }
     }
     pub fn section_add_symbols_str<'a, 'b>(
         &'a mut self,
-        ident: SectionIdent,
+        ident: QualifiedSectionName,
         symbols: impl IntoIterator<Item = &'b str>,
     ) {
-        let index = *self.section_map.get(&ident).unwrap();
+        let section = *self.section_map.get(&ident).unwrap();
         for symbol in symbols {
             let symbol = symbol.intern(&self);
             assert!(!self.symbol_ownership.contains_key(&symbol));
-            self.symbol_ownership.insert(symbol, index);
+            self.symbol_ownership.insert(
+                symbol,
+                SymbolMeta {
+                    owner: section,
+                    depends: None,
+                },
+            );
         }
     }
-    pub fn create_section(&self, name: &str) -> SectionIdent {
+    pub fn create_section(&self, name: &str) -> QualifiedSectionName {
         self.strings.pumice..name.intern(self)
     }
 }
@@ -223,11 +314,11 @@ impl Deref for Context {
 }
 
 /// Vec<(symbol index, section index)>
-pub fn get_used_symbols(s: &Context) -> Vec<(usize, u32)> {
+pub fn get_used_symbols(s: &Context) -> Vec<(usize, SectionHandle)> {
     let mut symbols = Vec::new();
     for (i, &Symbol(name, _)) in s.reg.symbols.iter().enumerate() {
-        if let Some(section_idx) = s.symbol_get_section_idx(name) {
-            let section = &s.sections[section_idx as usize];
+        if let Some(section_handle) = s.get_symbol_section(name) {
+            let section = &s.sections[section_handle];
 
             let used = match section.kind {
                 SectionKind::Feature(_) => s.conf.is_feature_used(section.name()),
@@ -235,27 +326,27 @@ pub fn get_used_symbols(s: &Context) -> Vec<(usize, u32)> {
                     let e = &s.reg.extensions[i as usize];
                     e.kind != ExtensionKind::Disabled && s.conf.is_extension_used(section.name())
                 }
-                SectionKind::Path(_) => {
-                    unreachable!("Custom-pathed sections cannot be generated by this method!")
-                }
+                SectionKind::Path(_) => unimplemented!(),
             };
 
             if used {
-                symbols.push((i, section_idx));
+                symbols.push((i, section_handle));
             }
+        } else {
+            log::warn!("[{name}] has no owner, skipping");
         }
     }
     symbols
 }
 
-pub type SectionIdent = Range<UniqueStr>;
+pub type QualifiedSectionName = Range<UniqueStr>;
 
 pub trait SectionFunctions {
     fn lib(&self) -> UniqueStr;
     fn name(&self) -> UniqueStr;
 }
 
-impl SectionFunctions for SectionIdent {
+impl SectionFunctions for QualifiedSectionName {
     fn lib(&self) -> UniqueStr {
         self.start
     }
@@ -266,13 +357,16 @@ impl SectionFunctions for SectionIdent {
 
 #[derive(Clone)]
 pub enum SectionKind {
+    /// A Vulkan core version
     Feature(u32),
+    /// A Vulkan extension
     Extension(u32),
+    /// A section with a custom path, for example the rust module with the function pointer tables
     Path(String),
 }
 
 pub struct Section {
-    pub ident: SectionIdent,
+    pub ident: QualifiedSectionName,
     pub kind: SectionKind,
 }
 

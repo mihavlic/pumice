@@ -3,15 +3,12 @@ pub mod rename;
 pub mod type_analysis;
 pub mod type_query;
 
-use crate::{
-    codegen_support::type_analysis::get_underlying_type,
-    context::{ownership::skip_conf_conditions, Context},
-};
+use crate::{codegen_support::type_analysis::get_underlying_type, context::Context};
 use generator_lib::{
     interner::{Intern, UniqueStr},
-    ConstantValue, Declaration, ExtensionKind, FeatureExtensionItem, InterfaceItem,
+    ConstantValue, Declaration, DependsExpr, ExtensionKind, FeatureExtensionItem, InterfaceItem,
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 pub enum CommandKind {
     Entry,
@@ -52,53 +49,33 @@ pub fn get_command_kind(params: &[Declaration], ctx: &Context) -> CommandKind {
 #[derive(Debug)]
 pub struct AddedVariants<'a> {
     pub source_section: UniqueStr,
-    pub applicable: bool,
-    pub variants: Vec<(UniqueStr, &'a ConstantValue)>,
+    pub name: UniqueStr,
+    pub value: &'a ConstantValue,
+    pub depends: Option<Rc<DependsExpr>>,
 }
 
 pub fn get_enum_added_variants(ctx: &Context) -> HashMap<UniqueStr, Vec<AddedVariants<'_>>> {
     let mut enum_supplements: HashMap<UniqueStr, Vec<AddedVariants<'_>>> = HashMap::new();
 
-    let features = ctx
-        .reg
-        .features
-        .iter()
-        .map(|f| (ctx.conf.is_feature_used(f.name), false, f.name, &f.children));
+    let features = ctx.reg.features.iter().map(|f| (f.name, &f.children));
     let extensions = ctx
         .reg
         .extensions
         .iter()
         .filter(|e| e.kind != ExtensionKind::Disabled)
-        .map(|e| {
-            // when an extention is promoted to core, all its enum values are copied into a feature <require>
-            // so variants from the extensions are no longer neccessary to be generated
-            // if this occurs note that this isn't done for constants because extensions specify their name and version that way
-            let promoted = e
-                .promotedto
-                .map(|core| ctx.conf.is_feature_used(core))
-                .unwrap_or(false);
-            let enabled = ctx.conf.is_extension_used(e.name);
+        .map(|e| (e.name, &e.children));
 
-            (enabled, promoted, e.name, &e.children)
-        });
-
-    for (enabled, _, section_name, children) in features.chain(extensions) {
+    for (section_name, children) in features.chain(extensions) {
         for item in children {
             match item {
                 FeatureExtensionItem::Comment(_) => {}
                 FeatureExtensionItem::Require {
-                    profile,
-                    api,
-                    extension,
-                    feature,
+                    api: _,
+                    depends,
                     items,
                 } => {
-                    let applicable = enabled
-                        && !skip_conf_conditions(
-                            api, *extension, None, *feature, *profile, &ctx.conf,
-                        );
-
-                    'outer: for item in items {
+                    let depends = depends.as_ref().map(|d| Rc::new(d.clone()));
+                    for item in items {
                         match item {
                             InterfaceItem::Simple { .. } => {}
                             &InterfaceItem::Extend {
@@ -106,41 +83,45 @@ pub fn get_enum_added_variants(ctx: &Context) -> HashMap<UniqueStr, Vec<AddedVar
                                 extends,
                                 ref value,
                             } => {
-                                let entry = enum_supplements.entry(extends).or_insert(Vec::new());
+                                let variant = AddedVariants {
+                                    source_section: section_name,
+                                    name,
+                                    value,
+                                    depends: depends.clone(),
+                                };
+                                enum_supplements.entry(extends).or_default().push(variant);
 
-                                // we must deduplicate enum variants here, because khronos was so nice to willingly put
-                                // duplicates in the registry, like VK_STRUCTURE_TYPE_DEVICE_GROUP_PRESENT_CAPABILITIES_KHR
-                                // an applicable source overrides one that is not applicable, otherwise the one to be added first wins
-                                'dedup: for added in entry.iter_mut() {
-                                    for i in 0..added.variants.len() {
-                                        let (n, _) = added.variants[i];
-                                        if n == name {
-                                            if !applicable {
-                                                continue 'outer;
-                                            }
-                                            // if the added variant is not applicable, ie. soft-deleted
-                                            // we remove it and overwrite it with the current one, otherwise we skip this one
-                                            else if !added.applicable {
-                                                added.variants.remove(i);
-                                                break 'dedup;
-                                            } else {
-                                                continue;
-                                            }
-                                        }
-                                    }
-                                }
+                                // // khronos was so nice to willingly put duplicates in the registry, for example VK_STRUCTURE_TYPE_DEVICE_GROUP_PRESENT_CAPABILITIES_KHR
+                                // // we warn about this and choose the first occurence
+                                // let mut found = None;
+                                // for e in &*entry {
+                                //     for v in &e.variants {
+                                //         if v.name == name {
+                                //             found = Some(e.source_section);
+                                //         }
+                                //     }
+                                // }
+                                // if let Some(prev_section) = found {
+                                //     log::warn!("Duplicate variants for enum {extends}::{name}: {prev_section} and {section_name}\nchoosing the earlier definition");
+                                //     continue;
+                                // }
 
-                                if let Some(a) =
-                                    entry.iter_mut().find(|a| a.source_section == section_name)
-                                {
-                                    a.variants.push((name, value));
-                                } else {
-                                    entry.push(AddedVariants {
-                                        source_section: section_name,
-                                        applicable: applicable,
-                                        variants: vec![(name, value)],
-                                    });
-                                }
+                                // let add = AddedVariant {
+                                //     name,
+                                //     value,
+                                //     depends: depends.clone(),
+                                // };
+
+                                // if let Some(a) =
+                                //     entry.iter_mut().find(|a| a.source_section == section_name)
+                                // {
+                                //     a.variants.push(add);
+                                // } else {
+                                //     entry.push(AddedVariants {
+                                //         source_section: section_name,
+                                //         variants: vec![add],
+                                //     });
+                                // }
                             }
                         }
                     }

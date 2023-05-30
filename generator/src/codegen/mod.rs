@@ -12,20 +12,21 @@ use crate::codegen_support::type_query::DeriveData;
 use crate::codegen_support::{
     get_command_kind, get_enum_added_variants, merge_bitfield_members, AddedVariants, CommandKind,
 };
-use crate::context::{Context, SectionFunctions};
+use crate::context::{Context, SectionFunctions, SectionHandle};
 use crate::context::{Section, SectionKind};
 use crate::{cat, cstring, doc_boilerplate, fun, import, import_str, string};
 
 use codewrite::{Cond, Iter, Separated};
 use codewrite_macro::code;
 use deep_copy::write_deep_copy;
-use generator_lib::ConstantValue;
 use generator_lib::{
     interner::{Intern, UniqueStr},
     type_declaration::Type,
     Extension, ExtensionKind, Symbol, SymbolBody,
 };
+use generator_lib::{ConstantValue, DependsExpr};
 use slice_group_by::GroupBy;
+use std::borrow::Cow;
 use std::fmt::Write;
 use std::ops::Not;
 use std::rc::Rc;
@@ -131,7 +132,7 @@ pub fn write_bindings(mut ctx: Context, out: &Path) {
         // fields with the same algorithm and leaving to the programmer to deal with packing and
         // upacking the values
         // any of the other passes could be doing something with struct fields so we do this at the earliest time possible
-        for &(index, _) in &ctx.symbols {
+        for &(index, _) in &ctx.used_symbols {
             let Symbol(_, body) = &ctx.reg.symbols[index];
             if let SymbolBody::Struct {
                 union: false,
@@ -162,7 +163,7 @@ pub fn write_bindings(mut ctx: Context, out: &Path) {
             .get_mut(&"VkStructureType".intern(&ctx))
             .unwrap()
             .iter_mut()
-            .for_each(|a| a.applicable = true);
+            .for_each(|v| v.depends = None)
     }
 
     let flags_to_flag_bits = ctx
@@ -210,7 +211,7 @@ pub fn write_bindings(mut ctx: Context, out: &Path) {
 
     // sort the symbols by their owning section (its index)
     let sorted_symbols = {
-        let mut clone = ctx.symbols.clone();
+        let mut clone = ctx.used_symbols.clone();
         clone.sort_by_key(|i| i.1);
         clone
     };
@@ -235,7 +236,7 @@ pub fn write_bindings(mut ctx: Context, out: &Path) {
 }
 
 fn write_sections(
-    sorted_symbols: &[(usize, u32)],
+    sorted_symbols: &[(usize, SectionHandle)],
     added_variants: &HashMap<UniqueStr, Vec<AddedVariants>>,
     flags_to_flag_bits: &HashMap<UniqueStr, UniqueStr>,
     derives: &mut DeriveData,
@@ -245,7 +246,7 @@ fn write_sections(
     let mut path = PathBuf::new();
     for symbols in sorted_symbols.binary_group_by_key(|&(_, section_index)| section_index) {
         let section_index = symbols[0].1;
-        let section = &ctx.sections[section_index as usize];
+        let section = &ctx.sections[section_index];
 
         let mut writer = {
             // build the section path, for example:
@@ -275,7 +276,7 @@ fn write_sections(
     }
 }
 
-fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Rc<Context>) {
+fn write_tables(sorted_symbols: &[(usize, SectionHandle)], out: &Path, ctx: &Rc<Context>) {
     let mut tables = SectionWriter::new(
         ctx.create_section("tables"),
         out.join("src/loader/tables.rs"),
@@ -287,7 +288,7 @@ fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Rc<Context>) 
     let mut device = Vec::new();
     for &(index, _) in sorted_symbols {
         let &Symbol(name, ref body) = &ctx.reg.symbols[index];
-        let section_idx = ctx.symbol_get_section_idx(name).unwrap();
+        let section_idx = ctx.get_symbol_section(name).unwrap();
         if let SymbolBody::Command { params, .. } = body {
             let what = (section_idx, name, body);
             match get_command_kind(&params, &ctx) {
@@ -424,19 +425,15 @@ fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Rc<Context>) 
             let fields = fun!(move |w| {
                 let groups = commands.binary_group_by_key(|(section_idx, ..)| *section_idx);
                 for group in groups {
-                    let section = &ctx.sections[group[0].0 as usize];
+                    let section = &ctx.sections[group[0].0];
 
-                    fn write_fns(w: &mut SectionWriter, symbols: &[(u32, UniqueStr, &SymbolBody)]) {
-                        for (_, name, _) in symbols {
+                    let fns = fun!(move |w| {
+                        for (_, name, _) in group {
                             code!(
                                 w,
                                 ($name, $string!(name.resolve_original()))
                             );
                         }
-                    }
-
-                    let fns = fun!(move |w| {
-                        write_fns(w, group);
                     });
 
                     match section.kind {
@@ -519,7 +516,7 @@ fn write_tables(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Rc<Context>) 
     }
 }
 
-fn write_pnext_visit(sorted_symbols: &[(usize, u32)], out: &Path, ctx: &Rc<Context>) {
+fn write_pnext_visit(sorted_symbols: &[(usize, SectionHandle)], out: &Path, ctx: &Rc<Context>) {
     let mut stype_to_struct = Vec::new();
 
     for &(symbol_index, _) in sorted_symbols {
@@ -613,39 +610,51 @@ fn write_extension_metadata(extensions: &[&Extension], out: &Path, ctx: &Rc<Cont
                 }
                 ExtensionKind::Instance => true,
                 ExtensionKind::Device => false,
-                // vulkan_video_codecs_common has this, it's not really an extension though
                 ExtensionKind::None => continue,
             };
 
-            let (major, minor) = if let Some(core) = e.requires_core {
-                let mut split = core.resolve().split('.');
-                (
-                    split.next().unwrap().parse().unwrap(),
-                    split.next().unwrap().parse().unwrap(),
-                )
-            } else {
-                (1, 0)
+            // since extensions can be conditionally enabled by arbitrary expressions
+            // we can't always extract a simple list of dependencies
+            let requires = match &e.depends {
+                Some(DependsExpr::All(a)) => a
+                    .iter()
+                    .map(|d| match d {
+                        DependsExpr::All(_) | DependsExpr::Any(_) => None,
+                        DependsExpr::Feature(a) => Some(*a),
+                    })
+                    .collect::<Option<Cow<_>>>(),
+                Some(DependsExpr::Any(_)) => None,
+                Some(DependsExpr::Feature(a)) => Some(Cow::Borrowed(std::slice::from_ref(a))),
+                None => None,
             };
-            let core = format!("VK_API_VERSION_{}_{}", major, minor).intern(&ctx);
-            let requires = Separated::args(&e.requires, |w: &mut SectionWriter, n| {
-                code!(w,
-                    $cstring!(n.resolve_original())
-                );
-            });
+            let requires = requires.iter().flat_map(|a| a.as_ref().iter());
+
+            let core = requires
+                .clone()
+                .map(UniqueStr::resolve_original)
+                .filter(|a| a.starts_with("VK_VERSION"))
+                // string ordering works for versions
+                .max()
+                .unwrap_or("VK_VERSION_1_0")
+                .trim_start_matches("VK_VERSION_");
+            let core = format!("VK_API_VERSION_{core}");
+
+            let requires = Separated::args(
+                requires.filter(|a| !a.resolve_original().starts_with("VK_VERSION")),
+                |w: &mut SectionWriter, n| {
+                    code!(w, $cstring!(n.resolve_original()));
+                },
+            );
 
             code!(
                 w,
                 ExtensionMetadata {
-                    name: $cstring!(e.name.resolve_original()),
-                    instance: $instance,
-                    core_version: $import!(core),
-                    requires_extensions: &[
-                        $requires
-                    ]
+                    name: $cstring!(e.name.resolve_original()), instance: $instance, core_version: $import_str!(core, ctx), requires_extensions: &[$requires]
                 },
-            );
+            )
         }
     });
+
     code!(
         meta,
         pub const EXTENSION_METADATA: &[ExtensionMetadata] = &[
@@ -901,7 +910,7 @@ fn pipeline_stage_flags_util(out: &Path, ctx: &Rc<Context>) {
 
             write!(w, "Self::{top}.0 | Self::{bottom}.0").unwrap();
             for &(special, _) in special {
-                let name = ctx.apply_rename(special);
+                let name = ctx.lookup_rename(special);
                 code!(
                     w,
                     | Self::$name.0
@@ -933,7 +942,7 @@ fn pipeline_stage_flags_util(out: &Path, ctx: &Rc<Context>) {
                     }
                 });
 
-                let rename = ctx.apply_rename(special);
+                let rename = ctx.lookup_rename(special);
                 let name = cat!("UTIL_", rename, "_EQUIVALENT");
                 code!(
                     w,
@@ -944,7 +953,7 @@ fn pipeline_stage_flags_util(out: &Path, ctx: &Rc<Context>) {
 
         let translate_fn_impl = fun!(|w| {
             for &(special, _) in special {
-                let rename = ctx.apply_rename(special);
+                let rename = ctx.lookup_rename(special);
                 let name = cat!("UTIL_", rename, "_EQUIVALENT");
 
                 code!(

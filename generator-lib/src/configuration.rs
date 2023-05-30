@@ -2,10 +2,11 @@ use std::collections::HashSet;
 
 use crate::interner::{Intern, Interner, UniqueStr};
 
+#[derive(Clone)]
 pub struct GenConfig {
     /// names of extensions, for example
     ///   [VK_KHR_surface, VK_KHR_swapchain, VK_KHR_display, ..]
-    pub extensions: HashSet<UniqueStr>,
+    pub extensions: Option<HashSet<UniqueStr>>,
     /// name of a vulkan version
     ///   [VK_VERSION_1_0, VK_VERSION_1_1, VK_VERSION_1_2, VK_VERSION_1_3]
     /// It is expected that selecting a given feature also selects all lower versions.
@@ -24,6 +25,19 @@ pub struct GenConfig {
 }
 
 impl GenConfig {
+    /// Does a best effort attempt to create a config which includes everything
+    pub fn full(int: &Interner) -> Self {
+        let strs2map =
+            |strs: &[&str]| -> HashSet<UniqueStr> { strs.iter().map(|s| s.intern(int)).collect() };
+
+        Self {
+            extensions: None,
+            feature: "VK_VERSION_1_3".intern(int),
+            profile: None,
+            apis: strs2map(&["vulkan"]),
+            protect: strs2map(&["VK_ENABLE_BETA_EXTENSIONS"]),
+        }
+    }
     pub fn from_strs(
         extensions: &[&str],
         feature: &str,
@@ -33,7 +47,7 @@ impl GenConfig {
         int: &Interner,
     ) -> Self {
         Self {
-            extensions: extensions.iter().map(|s| s.intern(int)).collect(),
+            extensions: Some(extensions.iter().map(|s| s.intern(int)).collect()),
             feature: feature.intern(int),
             profile: profile.map(|s| s.intern(int)),
             apis: apis.iter().map(|s| s.intern(int)).collect(),
@@ -41,13 +55,23 @@ impl GenConfig {
         }
     }
     pub fn is_extension_used(&self, name: UniqueStr) -> bool {
-        self.extensions.contains(&name)
+        if let Some(extensions) = &self.extensions {
+            extensions.contains(&name)
+        } else {
+            true
+        }
     }
     pub fn is_feature_used(&self, name: UniqueStr) -> bool {
+        // string comparisons work!
+        // VK_VERSION_1_0 <= VK_VERSION_1_1
         name.resolve_original() <= self.feature.resolve_original()
     }
     pub fn is_profile_used(&self, name: UniqueStr) -> bool {
-        self.profile.map(|p| p == name).unwrap_or(false)
+        if let Some(profile) = self.profile {
+            profile == name
+        } else {
+            false
+        }
     }
     pub fn is_api_used(&self, name: UniqueStr) -> bool {
         self.apis.contains(&name)

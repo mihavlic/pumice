@@ -1,18 +1,12 @@
 use std::{
-    collections::HashSet,
     fs::File,
     io::{BufWriter, Write},
     path::PathBuf,
     str::FromStr,
 };
 
-use dependencies::get_sections;
 use generator::context::{Context, SectionFunctions};
-use generator_lib::{
-    configuration::GenConfig, interner::Intern, process_registry_xml, Registry, Symbol,
-};
-
-mod dependencies;
+use generator_lib::{configuration::GenConfig, Registry, Symbol};
 
 fn main() {
     let reg_path = PathBuf::from_str(concat!(
@@ -30,21 +24,14 @@ fn main() {
     let workarounds = true;
 
     let mut reg = Registry::new();
+    let conf = GenConfig::full(&reg);
 
     if vk {
-        process_registry_xml(
-            &mut reg,
-            &std::fs::read_to_string("./vk.xml").unwrap(),
-            None,
-        );
+        reg.append_registry_xml(&std::fs::read_to_string("./vk.xml").unwrap(), &conf);
     }
 
     if video {
-        process_registry_xml(
-            &mut reg,
-            &std::fs::read_to_string("./video.xml").unwrap(),
-            None,
-        );
+        reg.append_registry_xml(&std::fs::read_to_string("./video.xml").unwrap(), &conf);
     }
 
     reg.finalize();
@@ -53,17 +40,7 @@ fn main() {
         write!(reg_file, "{:#?}", &reg).unwrap();
     }
 
-    let (feature, extensions) = get_sections(Option::<std::iter::Once<_>>::None, &reg);
-
-    let conf = GenConfig {
-        extensions,
-        feature,
-        profile: None,
-        apis: HashSet::from(["vulkan".intern(&reg)]),
-        protect: HashSet::new(),
-    };
-
-    let ctx = Context::new(conf, reg);
+    let ctx = Context::new(reg, conf);
 
     if workarounds {
         write!(reg_file, "{:#?}", &ctx.reg).unwrap();
@@ -78,7 +55,7 @@ fn main() {
     );
 
     for &Symbol(name, _) in &ctx.reg.symbols {
-        let section = ctx.symbol_get_section(name).map(|s| s.name());
+        let section = ctx.get_symbol_section_body(name).map(|s| s.name());
         let section = section.as_ref().map(|s| s.resolve()).unwrap_or("INVALID");
 
         writeln!(own_file, "{}: {}", name.resolve(), section).unwrap();

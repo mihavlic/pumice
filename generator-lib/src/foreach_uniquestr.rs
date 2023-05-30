@@ -2,8 +2,8 @@ use smallvec::SmallVec;
 
 use crate::{
     interner::UniqueStr, type_declaration::Type, ConstantValue, Declaration, DeclarationMetadata,
-    Extension, Feature, FeatureExtensionItem, InterfaceItem, RedeclarationMethod, Symbol,
-    SymbolBody,
+    DependsExpr, Extension, Feature, FeatureExtensionItem, InterfaceItem, RedeclarationMethod,
+    Symbol, SymbolBody,
 };
 
 pub trait ForeachUniquestr {
@@ -152,16 +152,12 @@ impl ForeachUniquestr for FeatureExtensionItem {
         match self {
             FeatureExtensionItem::Comment(_) => {}
             FeatureExtensionItem::Require {
-                profile,
                 api,
-                extension,
-                feature,
+                depends,
                 items,
             } => {
-                profile.foreach(fun);
                 api.foreach(fun);
-                extension.foreach(fun);
-                feature.foreach(fun);
+                depends.foreach(fun);
                 items.foreach(fun);
             }
             FeatureExtensionItem::Remove {
@@ -186,11 +182,19 @@ impl ForeachUniquestr for Feature {
     }
 }
 
+impl ForeachUniquestr for DependsExpr {
+    fn foreach<F: FnMut(&mut UniqueStr)>(&mut self, fun: &mut F) {
+        match self {
+            DependsExpr::All(a) | DependsExpr::Any(a) => a.foreach(fun),
+            DependsExpr::Feature(a) => a.foreach(fun),
+        }
+    }
+}
+
 impl ForeachUniquestr for Extension {
     fn foreach<F: FnMut(&mut UniqueStr)>(&mut self, fun: &mut F) {
         self.name.foreach(fun);
-        self.requires.foreach(fun);
-        self.requires_core.foreach(fun);
+        self.depends.foreach(fun);
         self.protect.foreach(fun);
         self.platform.foreach(fun);
         self.supported.foreach(fun);

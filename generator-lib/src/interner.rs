@@ -11,10 +11,8 @@ use std::{
 /// Yikes this is good code
 
 struct StringHeader {
-    current: NonNull<u8>,
-    current_len: u32,
-    original: NonNull<u8>,
-    original_len: u32,
+    current: &'static str,
+    original: &'static str,
 }
 
 #[derive(Clone, Copy)]
@@ -26,22 +24,10 @@ pub struct UniqueStr {
 
 impl UniqueStr {
     pub fn resolve(&self) -> &str {
-        let header = self.get_header();
-
-        unsafe {
-            let bytes =
-                std::slice::from_raw_parts(header.current.as_ptr(), header.current_len as usize);
-            std::str::from_utf8_unchecked(bytes)
-        }
+        self.get_header().current
     }
     pub fn resolve_original(&self) -> &str {
-        let header = self.get_header();
-
-        unsafe {
-            let bytes =
-                std::slice::from_raw_parts(header.original.as_ptr(), header.original_len as usize);
-            std::str::from_utf8_unchecked(bytes)
-        }
+        self.get_header().original
     }
     pub fn eq_resolve(&self, other: UniqueStr) -> bool {
         let s = self.get_header();
@@ -59,16 +45,10 @@ impl UniqueStr {
 
         // do we want renames to be infectious in this way?
         s.current = to.current;
-        s.current_len = to.current_len;
     }
     pub fn rename_trim_prefix(&self, bytes_len: usize) {
         let s = self.get_header_mut();
-
-        s.current = unsafe { NonNull::new(s.current.as_ptr().add(bytes_len)).unwrap() };
-        s.current_len = s
-            .current_len
-            .checked_sub(bytes_len.try_into().unwrap())
-            .unwrap();
+        s.current = &s.current[bytes_len..];
     }
     fn get_header(&self) -> &StringHeader {
         #[cfg(debug_assertions)]
@@ -240,19 +220,14 @@ impl StringInterner {
 
             let text = allocator.alloc_block(len, 1);
             std::ptr::copy_nonoverlapping(str.as_ptr(), text, len);
-            let str = {
-                // now we've lost the lifetime of the self reference! job well done
-                let bytes = std::slice::from_raw_parts(text, len);
-                std::str::from_utf8_unchecked(bytes)
-            };
 
             let header = allocator.alloc_block_for::<StringHeader>();
-            let nonull = NonNull::new(text).unwrap();
+            // now we've lost the lifetime of the self reference! job well done
+            let str = std::str::from_utf8_unchecked(std::slice::from_raw_parts(text, len));
+
             header.write(StringHeader {
-                current: nonull,
-                current_len: len as u32,
-                original: nonull,
-                original_len: len as u32,
+                current: str,
+                original: str,
             });
 
             let nonnull = NonNull::new(header).unwrap();
@@ -305,19 +280,12 @@ impl Interner {
             guard: s.guard,
         })
     }
-    pub fn apply_rename<'a>(&'a self, str: &'a str) -> &'a str {
+    pub fn lookup_rename<'a>(&'a self, str: &'a str) -> &'a str {
         self.0
             .borrow_mut()
             .map
             .get(str)
-            .map(|&h| unsafe {
-                let header = h.as_ref();
-                let bytes = std::slice::from_raw_parts(
-                    header.current.as_ptr(),
-                    header.current_len as usize,
-                );
-                std::str::from_utf8_unchecked(bytes)
-            })
+            .map(|&h| unsafe { h.as_ref().current })
             .unwrap_or(str)
     }
     pub fn borrow(&self) -> Ref<StringInterner> {

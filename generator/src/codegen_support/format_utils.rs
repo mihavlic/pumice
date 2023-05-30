@@ -13,10 +13,10 @@ use generator_lib::{
     type_declaration::{fmt_type_tokens_impl, BasetypeOrRef, Type, TypeRef},
 };
 
-use crate::context::{Context, SectionFunctions, SectionIdent};
+use crate::context::{Context, QualifiedSectionName, SectionFunctions};
 
 pub struct SectionWriter {
-    pub section: SectionIdent,
+    pub section: QualifiedSectionName,
     buf: String,
     pub ctx: Rc<Context>,
     pub path: PathBuf,
@@ -35,7 +35,7 @@ impl std::fmt::Write for SectionWriter {
 }
 
 impl SectionWriter {
-    pub fn new(section: SectionIdent, path: impl AsRef<Path>, ctx: &Rc<Context>) -> Self {
+    pub fn new(section: QualifiedSectionName, path: impl AsRef<Path>, ctx: &Rc<Context>) -> Self {
         Self {
             section,
             buf: String::new(),
@@ -262,7 +262,7 @@ impl<'a> CFmt<SectionWriter> for Import<BasetypeOrRef<'a>> {
 
 fn fmt_symbol_path(
     name: UniqueStr,
-    current_section: &SectionIdent,
+    current_section: &QualifiedSectionName,
     ctx: &Context,
     w: &mut impl Write,
 ) -> std::fmt::Result {
@@ -281,8 +281,8 @@ fn fmt_symbol_path(
         s.usize, s.u8, s.u16, s.u32, s.u64, s.i8, s.i16, s.i32, s.i64 => unreachable!("Rust-native types shouldn't ever be used by our code!");
         @ {
             let section = ctx
-                .symbol_get_section(name)
-                .unwrap_or_else(|| panic!("Symbol '{}' is unowned by any section!", name));
+                .get_symbol_section_body(name)
+                .unwrap_or_else(|| panic!("Symbol '{}' is unowned by any section!", name.resolve_original()));
 
             let mut foreign = false;
 

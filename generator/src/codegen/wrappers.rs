@@ -713,7 +713,7 @@ pub fn len_paths<'a>(
                         continue;
                     }
                     1 => {
-                        let renamed = ctx.reg.apply_rename(str);
+                        let renamed = ctx.reg.lookup_rename(str);
                         code!(w, .$(on_ident(renamed)));
                         continue;
                     }

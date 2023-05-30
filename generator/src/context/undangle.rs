@@ -6,7 +6,7 @@ use super::Context;
 
 pub fn undangle(ctx: &mut Context) {
     let mut map: HashMap<UniqueStr, UniqueStr> = HashMap::new();
-    for &(symbol_idx, _) in &ctx.symbols {
+    for &(symbol_idx, _) in &ctx.used_symbols {
         if let Symbol(name, SymbolBody::Alias(of)) = &mut ctx.reg.symbols[symbol_idx] {
             if let Some(to) = map.get(of) {
                 *of = *to;
@@ -15,7 +15,7 @@ pub fn undangle(ctx: &mut Context) {
 
             let name = *name;
             let of = *of;
-            if ctx.symbol_get_section_idx(of).is_none() {
+            if ctx.get_symbol_section(of).is_none() {
                 let target =
                     ctx.get_symbol_index(of)
                         .unwrap_or_else(|| panic!("{} {}", name, of)) as usize;
@@ -37,7 +37,7 @@ pub fn undangle(ctx: &mut Context) {
         }
     }
 
-    for &(symbol_idx, _) in &ctx.symbols {
+    for &(symbol_idx, _) in &ctx.used_symbols {
         ctx.reg.symbols[symbol_idx].foreach(&mut |str| {
             if let Some(to) = map.get(str) {
                 *str = *to;
