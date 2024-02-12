@@ -7,23 +7,26 @@ use super::Context;
 pub fn undangle(ctx: &mut Context) {
     let mut map: HashMap<UniqueStr, UniqueStr> = HashMap::new();
     for &(symbol_idx, _) in &ctx.used_symbols {
-        if let Symbol(name, SymbolBody::Alias(of)) = &mut ctx.reg.symbols[symbol_idx] {
-            if let Some(to) = map.get(of) {
-                *of = *to;
+        if let Symbol(name, SymbolBody::Alias(alias)) = &mut ctx.reg.symbols[symbol_idx] {
+            if let Some(to) = map.get(alias) {
+                *alias = *to;
                 continue;
             }
 
             let name = *name;
-            let of = *of;
-            if ctx.get_symbol_section(of).is_none() {
-                let target =
-                    ctx.get_symbol_index(of)
-                        .unwrap_or_else(|| panic!("{} {}", name, of)) as usize;
+            let alias = *alias;
+            if ctx.get_symbol_section(alias).is_none() {
+                let target = ctx
+                    .get_symbol_index(alias)
+                    .unwrap_or_else(|| panic!("{alias}, alias of {name} is not a symbol"))
+                    as usize;
 
-                // asert that this is not an alias of itself and its meory doesn't alias
+                // asert that this is not an alias of itself
                 assert!(symbol_idx != target);
+
                 let ptr1: *mut _ = &mut ctx.reg.symbols[symbol_idx].1;
                 let ptr2: *mut _ = &mut ctx.reg.symbols[target].1;
+
                 unsafe {
                     // we are overwriting a SymbolBody::Alias which is pod so we can afford not to drop it
                     std::ptr::write(ptr1, std::ptr::read(ptr2));
@@ -32,7 +35,7 @@ pub fn undangle(ctx: &mut Context) {
                     std::ptr::write(ptr2, SymbolBody::Alias(name));
                 }
 
-                map.insert(of, name);
+                map.insert(alias, name);
             }
         }
     }

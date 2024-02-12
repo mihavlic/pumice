@@ -3,8 +3,9 @@ use std::{collections::hash_map::Entry, fmt::Write};
 use super::{Context, SectionHandle, SymbolMeta};
 use generator_lib::{
     interner::{Intern, UniqueStr},
-    type_declaration::parse_type_decl,
-    ConstantValue, FeatureExtensionItem, InterfaceItem, RedeclarationMethod, Symbol, SymbolBody,
+    type_declaration::{parse_type_decl, TyToken, Type},
+    ConstantValue, Declaration, DeclarationMetadata, FeatureExtensionItem, InterfaceItem,
+    RedeclarationMethod, Symbol, SymbolBody,
 };
 
 enum Workaround {
@@ -49,6 +50,35 @@ pub fn apply_workarounds(ctx: &mut Context) {
         Workaround::Replace(SymbolBody::Redeclaration(RedeclarationMethod::Type(
             parse_type_decl(arg, ctx).1,
         )))
+    };
+
+    let redeclare_struct = |arg: &str| -> Workaround {
+        let mut aaa = arg.split("{");
+
+        let mut first = aaa.next().unwrap().split_ascii_whitespace();
+
+        let keyword = first.next().unwrap();
+        assert_eq!(first.next(), Some("{"));
+
+        let second = aaa.next().unwrap().split(';').map(str::trim);
+        let mut members = Vec::new();
+        for member in second {
+            if member.starts_with("}") {
+                break;
+            }
+            let (name, ty, bitfield) = parse_type_decl(member, ctx);
+            members.push(Declaration {
+                name: name.unwrap(),
+                ty,
+                bitfield,
+                metadata: DeclarationMetadata::default(),
+            });
+        }
+
+        Workaround::Replace(SymbolBody::Struct {
+            union: keyword == "union",
+            members,
+        })
     };
 
     let redeclare_custom = |arg: fn(&mut dyn Write) -> std::fmt::Result| -> Workaround {
@@ -243,6 +273,94 @@ pub fn apply_workarounds(ctx: &mut Context) {
         (redeclare("void *"),       "MTLTexture_id"),
         (redeclare("void *"),       "MTLSharedEvent_id"),
         (redeclare("void *"),       "IOSurfaceRef"),
+        // some cuda things from headers
+        (redeclare("void *"), "NvSciSyncAttrList"),
+        (redeclare("void *"), "NvSciSyncObj"),
+        (redeclare("void *"), "NvSciBufAttrList"),
+        (redeclare("void *"), "NvSciBufObj"),
+        (redeclare_struct("struct { uint64_t payload[6]; }"), "NvSciSyncFence"),
+        //  ownership
+        (ownership("VK_NV_external_sci_sync2"), "NvSciSyncAttrList"),
+        (ownership("VK_NV_external_sci_sync2"), "NvSciSyncObj"),
+        (ownership("VK_NV_external_sci_sync2"), "NvSciBufAttrList"),
+        (ownership("VK_NV_external_sci_sync2"), "NvSciBufObj"),
+        (ownership("VK_NV_external_sci_sync2"), "NvSciSyncFence"),
+        // 264 video encode
+        (redeclare_struct(
+            "struct {
+                uint32_t                                flags;
+                uint32_t                                first_mb_in_slice;
+                StdVideoH264SliceType                   slice_type;
+                uint16_t                                idr_pic_id;
+                uint8_t                                 num_ref_idx_l0_active_minus1;
+                uint8_t                                 num_ref_idx_l1_active_minus1;
+                StdVideoH264CabacInitIdc                cabac_init_idc;
+                StdVideoH264DisableDeblockingFilterIdc  disable_deblocking_filter_idc;
+                int8_t                                  slice_alpha_c0_offset_div2;
+                int8_t                                  slice_beta_offset_div2;
+                const void*                             pWeightTable;
+            }"
+            ),
+            "StdVideoEncodeH264SliceHeader"
+        ),
+        (redeclare_struct(
+            "struct {
+                StdVideoEncodeH264PictureInfoFlags      flags;
+                uint8_t                                 seq_parameter_set_id;
+                uint8_t                                 pic_parameter_set_id;
+                StdVideoH264PictureType                 pictureType;
+                uint32_t                                frame_num;
+                int32_t                                 PicOrderCnt;
+            }"
+            ),
+            "StdVideoEncodeH264PictureInfo"
+        ),
+        (redeclare_struct(
+            "struct {
+                uint32_t                                FrameNum;
+                int32_t                                 PicOrderCnt;
+                uint16_t                                long_term_pic_num;
+                uint16_t                                long_term_frame_idx;
+            }"
+            ),
+            "StdVideoEncodeH264ReferenceInfo"
+        ),
+        (alias("uint32_t"), "StdVideoEncodeH264SliceHeaderFlags"),
+        (alias("uint32_t"), "StdVideoEncodeH264ReferenceListsInfo"),
+        (alias("int32_t"), "StdVideoEncodeH264PictureInfoFlags"),
+        (alias("uint32_t"), "StdVideoEncodeH264ReferenceInfoFlags"),
+        (redeclare("uint16_t[2]"), "StdVideoEncodeH264RefMgmtFlags"),
+        (alias("uint32_t"), "StdVideoEncodeH264RefListModEntry"),
+        (alias("uint32_t"), "StdVideoEncodeH264RefPicMarkingEntry"),
+        //  ownership
+        (ownership("vulkan_video_codec_h264std_encode"), "StdVideoEncodeH264SliceHeader"),
+        (ownership("vulkan_video_codec_h264std_encode"), "StdVideoEncodeH264PictureInfo"),
+        (ownership("vulkan_video_codec_h264std_encode"), "StdVideoEncodeH264ReferenceInfo"),
+        (ownership("vulkan_video_codec_h264std_encode"), "StdVideoEncodeH264SliceHeaderFlags"),
+        (ownership("vulkan_video_codec_h264std_encode"), "StdVideoEncodeH264ReferenceListsInfo"),
+        (ownership("vulkan_video_codec_h264std_encode"), "StdVideoEncodeH264PictureInfoFlags"),
+        (ownership("vulkan_video_codec_h264std_encode"), "StdVideoEncodeH264ReferenceInfoFlags"),
+        (ownership("vulkan_video_codec_h264std_encode"), "StdVideoEncodeH264RefMgmtFlags"),
+        (ownership("vulkan_video_codec_h264std_encode"), "StdVideoEncodeH264RefListModEntry"),
+        (ownership("vulkan_video_codec_h264std_encode"), "StdVideoEncodeH264RefPicMarkingEntry"),
+        // 265 video encode
+        (ownership("vulkan_video_codec_h265std_encode"), "StdVideoEncodeH265PictureInfoFlags"),
+        (ownership("vulkan_video_codec_h265std_encode"), "StdVideoEncodeH265PictureInfo"),
+        (ownership("vulkan_video_codec_h265std_encode"), "StdVideoEncodeH265SliceSegmentHeader"),
+        (ownership("vulkan_video_codec_h265std_encode"), "StdVideoEncodeH265ReferenceInfo"),
+        (ownership("vulkan_video_codec_h265std_encode"), "StdVideoEncodeH265ReferenceListsInfo"),
+        (ownership("vulkan_video_codec_h265std_encode"), "StdVideoEncodeH265SliceSegmentHeaderFlags"),
+        (ownership("vulkan_video_codec_h265std_encode"), "StdVideoEncodeH265ReferenceInfoFlags"),
+        (ownership("vulkan_video_codec_h265std_encode"), "StdVideoEncodeH265ReferenceModificationFlags"),
+        //  ownership
+        (alias("uint32_t"), "StdVideoEncodeH265PictureInfoFlags"),
+        (alias("uint32_t"), "StdVideoEncodeH265PictureInfo"),
+        (alias("uint32_t"), "StdVideoEncodeH265SliceSegmentHeader"),
+        (alias("uint32_t"), "StdVideoEncodeH265ReferenceInfo"),
+        (alias("uint32_t"), "StdVideoEncodeH265ReferenceListsInfo"),
+        (alias("uint32_t"), "StdVideoEncodeH265SliceSegmentHeaderFlags"),
+        (alias("uint32_t"), "StdVideoEncodeH265ReferenceInfoFlags"),
+        (alias("uint32_t"), "StdVideoEncodeH265ReferenceModificationFlags"),
     ].into_iter().map(|(method, name)| (name.intern(ctx), method)).collect::<Vec<_>>();
 
     // base types that are included from the cursed `vk_platform`, they are removed and then have a special case in the path resolution function

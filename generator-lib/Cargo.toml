@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-roxmltree = "0.14.1"
-smallvec = {version = "1.9", features = ["union", "write"]}
+roxmltree = "0.18.0"
+smallvec = { version = "1.9", features = ["union", "write"] }

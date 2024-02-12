@@ -97,14 +97,15 @@ pub enum SymbolBody {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum Optional {
     Always,
+    #[default]
     Sometimes,
     Never,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DeclarationMetadata {
     /// Legal values the declaration can have
     pub values: Vec<UniqueStr>,
@@ -123,6 +124,14 @@ pub struct Declaration {
 }
 
 impl Declaration {
+    pub fn simple(name: &str, ty: Type, int: &Interner) -> Self {
+        Self {
+            name: name.intern(int),
+            ty,
+            bitfield: None,
+            metadata: DeclarationMetadata::default(),
+        }
+    }
     pub fn parse(str: &str, metadata: DeclarationMetadata, int: &Interner) -> Self {
         let (name, ty, bitfield) = parse_type_decl(str, int);
         Self {
@@ -1469,13 +1478,12 @@ fn convert_spirv_enable(n: Node, int: &Interner) -> Vec<SpirvEnable> {
     for enable in node_iter_children(n) {
         assert!(enable.tag_name().name() == "enable");
 
-        let attrs = enable.attributes();
-        assert!(attrs.len() > 0);
+        let attr = enable.attributes().next().unwrap();
 
-        let val = attrs[0].value().intern(int);
+        let val = attr.value().intern(int);
         // there are four variants of the enable tag, here we discriminate by the first attribute
         // FIXME this is rather fragile
-        let out = match attrs[0].name() {
+        let out = match attr.name() {
             "version" => SpirvEnable::Version(val),
             "extension" => SpirvEnable::Extension(val),
             "struct" => SpirvEnable::Feature {
@@ -1529,11 +1537,15 @@ fn convert_section_children(
                         continue;
                     }
 
+                    if let Some(api) = item.attribute("api") {
+                        if iter_comma_separated(api, reg).all(|a| !conf.is_api_used(a)) {
+                            continue;
+                        }
+                    }
+
                     let name = item.intern("name", reg);
                     let iitem = match tag_name {
                         "type" | "command" => {
-                            assert!(child.attribute("api").is_none());
-
                             // QUIRK extensions can introduce aliases, in pursuit of consistency we add them to "the soup"
                             // though this doesn't seem to be excersized in the registry
                             if let Some(value) = item.attribute("alias") {
@@ -1543,12 +1555,9 @@ fn convert_section_children(
                             InterfaceItem::Simple { name }
                         }
                         "enum" => {
-                            // I don't think this is applicable here as it is already in a <require> which has its own api property
-                            // however the spec says "used to address subtle incompatibilities"
+                            // to took 40 minutes to find
                             // https://www.khronos.org/registry/vulkan/specs/1.3/registry.html#_enum_tags
                             // todo convert potential usage in a separate <require> block, that should have the same semantics
-                            assert!(child.attribute("api").is_none());
-
                             if let Some(extends) = item.attribute("extends") {
                                 // This was so incredibly hard to find! It took like 40 minutes!
                                 // https://registry.khronos.org/vulkan/specs/1.3/styleguide.html#_assigning_extension_token_values

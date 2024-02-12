@@ -363,6 +363,9 @@ impl From<UniqueStr> for Type {
 }
 
 impl Type {
+    pub fn from_slice(slice: &[TyToken]) -> Type {
+        TypeRef::from_slice(slice).to_owned()
+    }
     pub fn from_only_basetype(basetype: UniqueStr) -> Self {
         Self(smallvec::smallvec![TyToken::BaseType(basetype)])
     }

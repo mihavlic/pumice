@@ -76,53 +76,19 @@ pub fn get_enum_added_variants(ctx: &Context) -> HashMap<UniqueStr, Vec<AddedVar
                 } => {
                     let depends = depends.as_ref().map(|d| Rc::new(d.clone()));
                     for item in items {
-                        match item {
-                            InterfaceItem::Simple { .. } => {}
-                            &InterfaceItem::Extend {
+                        if let &InterfaceItem::Extend {
+                            name,
+                            extends,
+                            ref value,
+                        } = item
+                        {
+                            let variant = AddedVariants {
+                                source_section: section_name,
                                 name,
-                                extends,
-                                ref value,
-                            } => {
-                                let variant = AddedVariants {
-                                    source_section: section_name,
-                                    name,
-                                    value,
-                                    depends: depends.clone(),
-                                };
-                                enum_supplements.entry(extends).or_default().push(variant);
-
-                                // // khronos was so nice to willingly put duplicates in the registry, for example VK_STRUCTURE_TYPE_DEVICE_GROUP_PRESENT_CAPABILITIES_KHR
-                                // // we warn about this and choose the first occurence
-                                // let mut found = None;
-                                // for e in &*entry {
-                                //     for v in &e.variants {
-                                //         if v.name == name {
-                                //             found = Some(e.source_section);
-                                //         }
-                                //     }
-                                // }
-                                // if let Some(prev_section) = found {
-                                //     log::warn!("Duplicate variants for enum {extends}::{name}: {prev_section} and {section_name}\nchoosing the earlier definition");
-                                //     continue;
-                                // }
-
-                                // let add = AddedVariant {
-                                //     name,
-                                //     value,
-                                //     depends: depends.clone(),
-                                // };
-
-                                // if let Some(a) =
-                                //     entry.iter_mut().find(|a| a.source_section == section_name)
-                                // {
-                                //     a.variants.push(add);
-                                // } else {
-                                //     entry.push(AddedVariants {
-                                //         source_section: section_name,
-                                //         variants: vec![add],
-                                //     });
-                                // }
-                            }
+                                value,
+                                depends: depends.clone(),
+                            };
+                            enum_supplements.entry(extends).or_default().push(variant);
                         }
                     }
                 }
